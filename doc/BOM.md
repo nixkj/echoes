@@ -7,7 +7,7 @@
 - Amplifier: https://www.adafruit.com/product/3006
 - Light Sensor: https://www.mantech.co.za/ProductInfo.aspx?Item=15M8211
 
-## Additional Components
+## Auxiliary Components
 
 - Speaker: https://www.robotics.org.za/W14595
 - Capacitor: https://www.mantech.co.za/ProductInfo.aspx?Item=82M0489
@@ -27,7 +27,7 @@
 - Cabling: https://www.mantech.co.za/ProductInfo.aspx?Item=352M0339
   - Will need 100-150 m
 
-## 
+## Additional
 
 - Raspberry Pi
 - Wi-Fi Access Point
