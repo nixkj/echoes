@@ -1,3 +1,5 @@
+# Pins
+
 | Device | ESP32 Pin | Component Pin | Notes |
 |------|----------|---------------|------|
 | BH1750 Light Sensor | 21 | SDA | I2C data line. Labeled as GPIO21 / V_SPI HD / SDA on your board. |
@@ -17,3 +19,12 @@
 | MAX98357A Amplifier | GND | GND | Ground. Leave SD (shutdown) floating for always-on, or connect to a spare GPIO (e.g., 4) for mute control if desired. GAIN can be left open for default. |
 | LED-05-BWC | 5 | Anode (+) | Via a 220–470Ω resistor to limit current. Labeled as GPIO5 / V_SPI CS0 / SS. |
 | LED-05-BWC | GND | Cathode (-) | Ground. |
+
+## Alternatives
+Test the setup step-by-step: Connect and test I2C (light sensor) first, then I2S input (mic), then output (amp), and finally the LED.
+- I2C: SDA to GPIO19 (MISO), SCL to GPIO18 (SCK)—these are also flexible.
+- I2S BCK: GPIO17 (TXD2) instead of 26.
+- I2S WS: GPIO16 (RXD2) instead of 25.
+- MIC_SD: GPIO34 or 35 (input-only) instead of 33.
+- AMP_SD: GPIO4 instead of 27.
+- LED: GPIO13 or 14 instead of 5.
