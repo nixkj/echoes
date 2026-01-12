@@ -26,6 +26,6 @@ Test the setup step-by-step: Connect and test I2C (light sensor) first, then I2S
 - I2C: SDA to GPIO19 (MISO), SCL to GPIO18 (SCK)—these are also flexible.
 - I2S BCK: GPIO17 (TXD2) instead of 26.
 - I2S WS: GPIO16 (RXD2) instead of 25.
-- MIC_SD: GPIO34 or 35 (input-only) instead of 33.
+- **MIC_SD: GPIO34 or 35 (input-only) instead of 33.**
 - AMP_SD: GPIO4 instead of 27.
 - LED: GPIO13 or 14 instead of 5.
