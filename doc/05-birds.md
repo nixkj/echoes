@@ -12,3 +12,18 @@
 
 - Red-eyed Dove (Streptopelia semitorquata): Search "Streptopelia semitorquata" - pigeon-like coo that's more repetitive and "declarative".
 
+## Samples
+
+All Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+
+Hadada Ibis - https://xeno-canto.org/660390
+Cossypha caffra - https://xeno-canto.org/416973
+Laniarius ferrugineus - https://xeno-canto.org/267222
+Corvus albus - https://xeno-canto.org/292589
+Cuculus solitarius - https://xeno-canto.org/1044888
+* Lamprotornis nitens - https://xeno-canto.org/186140  
+Bubo africanus - https://xeno-canto.org/444328
+* Dicrurus adsimilis - https://xeno-canto.org/715717
+Serinus canicollis - https://xeno-canto.org/428884
+
+Streptopelia semitorquata - https://xeno-canto.org/1053509
