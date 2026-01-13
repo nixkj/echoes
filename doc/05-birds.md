@@ -11,4 +11,4 @@
 - Cape Canary (Serinus canicollis): Search "Serinus canicollis" — Sweet twittering songs.
 
 - Red-eyed Dove (Streptopelia semitorquata): Search "Streptopelia semitorquata" - pigeon-like coo that's more repetitive and "declarative".
-- 
+
