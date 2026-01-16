@@ -17,9 +17,8 @@
 | MAX98357A Amplifier | 27 | DIN/SD | I2S data in (from ESP32 to amp). Labeled as GPIO27. |
 | MAX98357A Amplifier | 3V3 | VIN | 3.3V power (amp supports up to 5V, but use 3.3V for consistency). |
 | MAX98357A Amplifier | GND | GND | Ground. Leave SD (shutdown) floating for always-on, or connect to a spare GPIO (e.g., 4) for mute control if desired. GAIN can be left open for default. |
-| LED-05-BWC | 13->5) | Anode (+) | Via a 220–470Ω resistor to limit current. |
+| LED-05-BWC | 13->5 | Anode (+) | Via a 220–470Ω resistor to limit current. |
 | LED-05-BWC | GND | Cathode (-) | Ground. |
-| Speaker | 32 | INL | Output to audio amplifier left channel (temporary). |
 
 ## Alternatives
 Test the setup step-by-step: Connect and test I2C (light sensor) first, then I2S input (mic), then output (amp), and finally the LED.
