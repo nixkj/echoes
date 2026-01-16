@@ -8,7 +8,7 @@
 | BH1750 Light Sensor | GND | GND | Ground. Connect ADDR to GND if using default address (0x23). |
 | ICS-43434 Microphone | 26 | SCK | I2S bit clock (BCK). Labeled as GPIO26. Shared with amp. |
 | ICS-43434 Microphone | 25 | WS | I2S word select (LRCLK). Labeled as GPIO25. Shared with amp. |
-| ICS-43434 Microphone | 33 | SD | I2S data out (from mic to ESP32). Labeled as GPIO33 (input-only, suitable). |
+| ICS-43434 Microphone | 35 | SD | I2S data out (from mic to ESP32). Labeled as GPIO35 (input-only). |
 | ICS-43434 Microphone | GND | SEL | Ground for left channel (mono). Tie to 3.3V for right if preferred. |
 | ICS-43434 Microphone | 3V3 | VDD | 3.3V power. |
 | ICS-43434 Microphone | GND | GND | Ground. |
