@@ -19,6 +19,9 @@
 | MAX98357A Amplifier | GND | GND | Ground. Leave SD (shutdown) floating for always-on, or connect to a spare GPIO (e.g., 4) for mute control if desired. GAIN can be left open for default. |
 | LED-05-BWC | 13 | Anode (+) | Via a 220–470Ω resistor to limit current. |
 | LED-05-BWC | GND | Cathode (-) | Ground. |
+| ALS-PT19 Analogue Light Sensor | GND | - | Ground. |
+| ALS-PT19 Analogue Light Sensor | 3V3 | + | 3.3V power. |
+| ALS-PT19 Analogue Light Sensor | 34 | OUT | Analogue output. |
 
 ## KJN
 Amplifier to 17,16,4?
