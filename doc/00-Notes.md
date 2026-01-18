@@ -41,13 +41,8 @@
   - Wroom32
 - Adafruit MAX98357A I2S 3W Class D Amplifier Breakout
 - Adafruit ICS-43434 I2S MEMS Microphone Breakout
-- GY-302 BH1750 BH1750FVI light intensity illumination module
+- SEN0097 LIGHT SENSOR-BH1750 or ALS-PT19 Analogue Light Sensor
 
-## Audio samples
-
-- Download bird calls: https://xeno-canto.org
-  - Attribution vital, but must also pay attention to the license
- 
 # Pins
 
 | Device | ESP32 Pin | Component Pin | Notes |
@@ -93,6 +88,11 @@ exec(open('script.py').read())
 - Cape Canary (Serinus canicollis): Search "Serinus canicollis" — Sweet twittering songs.
 - Red-eyed Dove (Streptopelia semitorquata): Search "Streptopelia semitorquata" - pigeon-like coo that's more repetitive and "declarative".
 - Weaver
+
+## Audio samples
+
+- Download bird calls: https://xeno-canto.org
+  - Attribution vital, but must also pay attention to the license
 
 ## Samples
 
