@@ -24,8 +24,6 @@ THRESH_VOICE   = 8000.0
 
 RATIO_THRESH = 5.0   # For discriminating whistle vs clap
 
-BLINK_INTERVAL = 0.5  # seconds (not used now, but kept)
-
 WHISTLE_CONFIRM = 1
 VOICE_CONFIRM   = 2
 CLAP_CONFIRM    = 1   # Claps are shorter impulses
