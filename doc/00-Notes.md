@@ -87,7 +87,7 @@ exec(open('script.py').read())
 - Fork-tailed Drongo (Dicrurus adsimilis): Search "Dicrurus adsimilis" — Mimicry and sharp calls.
 - Cape Canary (Serinus canicollis): Search "Serinus canicollis" — Sweet twittering songs.
 - Red-eyed Dove (Streptopelia semitorquata): Search "Streptopelia semitorquata" - pigeon-like coo that's more repetitive and "declarative".
-- Weaver
+- Southern Masked Weaver (Ploceus velatus): Search "Ploceus velatus" - 
 
 ## Audio samples
 
@@ -108,4 +108,6 @@ All Creative Commons Attribution-NonCommercial-ShareAlike 4.0
 - * Dicrurus adsimilis - https://xeno-canto.org/715717
 - Serinus canicollis - https://xeno-canto.org/428884
 - Streptopelia semitorquata - https://xeno-canto.org/1053509
-- Weaver
+- Ploceus velatus - https://xeno-canto.org/288872
+
+
