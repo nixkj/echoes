@@ -12,8 +12,8 @@
 | ICS-43434 Microphone | GND | SEL | Ground for left channel (mono). Tie to 3.3V for right if preferred. |
 | ICS-43434 Microphone | 3V3 | VDD | 3.3V power. |
 | ICS-43434 Microphone | GND | GND | Ground. |
-| MAX98357A Amplifier | 19 | BCLK/SCK | I2S bit clock. |
-| MAX98357A Amplifier | 18 | LRCLK/WS | I2S word select. |
+| MAX98357A Amplifier | 18 | BCLK/SCK | I2S bit clock. |
+| MAX98357A Amplifier | 19 | LRCLK/WS | I2S word select. |
 | MAX98357A Amplifier | 17 | DIN/SD | I2S data in (from ESP32 to amp). Labeled as GPIO27. |
 | MAX98357A Amplifier | 3V3 | VIN | 3.3V power (amp supports up to 5V, but use 3.3V for consistency). |
 | MAX98357A Amplifier | GND | GND | Ground. Leave SD (shutdown) floating for always-on, or connect to a spare GPIO (e.g., 4) for mute control if desired. GAIN can be left open for default. |
