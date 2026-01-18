@@ -106,8 +106,8 @@ def compute_goertzel(buf, n):
 # =====================
 mic = I2S(
     0,
-    sck=Pin(26),
-    ws=Pin(25),
+    sck=Pin(33),
+    ws=Pin(32),
     sd=Pin(35),
     mode=I2S.RX,
     bits=BITS,
