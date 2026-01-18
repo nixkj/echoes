@@ -12,8 +12,8 @@
 | ICS-43434 Microphone | GND | SEL | Ground for left channel (mono). Tie to 3.3V for right if preferred. |
 | ICS-43434 Microphone | 3V3 | VDD | 3.3V power. |
 | ICS-43434 Microphone | GND | GND | Ground. |
-| MAX98357A Amplifier | 19 | LRCLK/WS | I2S word select. Shared with mic. |
-| MAX98357A Amplifier | 18 | BCLK/SCK | I2S bit clock. Shared with mic. |
+| MAX98357A Amplifier | 18 | BCLK/SCK | I2S bit clock. |
+| MAX98357A Amplifier | 19 | LRCLK/WS | I2S word select. |
 | MAX98357A Amplifier | 17 | DIN/SD | I2S data in (from ESP32 to amp). Labeled as GPIO27. |
 | MAX98357A Amplifier | 3V3 | VIN | 3.3V power (amp supports up to 5V, but use 3.3V for consistency). |
 | MAX98357A Amplifier | GND | GND | Ground. Leave SD (shutdown) floating for always-on, or connect to a spare GPIO (e.g., 4) for mute control if desired. GAIN can be left open for default. |
@@ -22,15 +22,3 @@
 | ALS-PT19 Analogue Light Sensor | GND | - | Ground. |
 | ALS-PT19 Analogue Light Sensor | 3V3 | + | 3.3V power. |
 | ALS-PT19 Analogue Light Sensor | 34 | OUT | Analogue output. |
-
-## KJN
-Amplifier to 17,16,4?
-
-## Alternatives
-Test the setup step-by-step: Connect and test I2C (light sensor) first, then I2S input (mic), then output (amp), and finally the LED.
-- I2C: SDA to GPIO19 (MISO), SCL to GPIO18 (SCK)—these are also flexible.
-- I2S BCK: GPIO17 (TXD2) instead of 26.
-- I2S WS: GPIO16 (RXD2) instead of 25.
-- **MIC_SD: GPIO34 or 35 (input-only) instead of 33.**
-- AMP_SD: GPIO4 instead of 27.
-- LED: GPIO13 or 14 instead of 5.
