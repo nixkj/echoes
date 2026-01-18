@@ -2,10 +2,10 @@
 
 | Device | ESP32 Pin | Component Pin | Notes |
 |------|----------|---------------|------|
-| BH1750 Light Sensor | 21 | SDA | I2C data line. Labeled as GPIO21 / V_SPI HD / SDA on your board. |
-| BH1750 Light Sensor | 22 | SCL | I2C clock line. Labeled as GPIO22 / V_SPI WP / SCL / RTS0. |
-| BH1750 Light Sensor | 3V3 | VCC | 3.3V power (use the pin labeled 3.3V). |
-| BH1750 Light Sensor | GND | GND | Ground. Connect ADDR to GND if using default address (0x23). |
+| SEN0097 BH1750 Light Sensor | 21 | SDA | I2C data line. Labeled as GPIO21 / V_SPI HD / SDA on your board. |
+| SEN0097 BH1750 Light Sensor | 22 | SCL | I2C clock line. Labeled as GPIO22 / V_SPI WP / SCL / RTS0. |
+| SEN0097 BH1750 Light Sensor | 3V3 | VCC | 3.3V power (use the pin labeled 3.3V). |
+| SEN0097 BH1750 Light Sensor | GND | GND | Ground. Connect ADDR to GND if using default address (0x23). |
 | ICS-43434 Microphone | 32 | BCLK/SCK | I2S bit clock (BCK). |
 | ICS-43434 Microphone | 33 | LRCLK/WS | I2S word select (LRCLK). |
 | ICS-43434 Microphone | 35 | DOUT/SD | I2S data out (from mic to ESP32). Labeled as GPIO35 (input-only). |
