@@ -3,7 +3,7 @@
 ## Major
 
 - ESP32 Board: https://www.robotics.org.za/ESP32-DEV
-  - Note blue led connected on GPIO2
+  - Note: blue led connected to GPIO2
 - Microphone: https://www.adafruit.com/product/6049
 - Amplifier: https://www.adafruit.com/product/3006
 - Digital Light Sensor: https://wiki.dfrobot.com/Light_Sensor__SKU_SEN0097_
