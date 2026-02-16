@@ -95,7 +95,7 @@ echoes/
 
 ```c
 #define FIRMWARE_VERSION    "1.0.0"
-#define OTA_URL             "http://192.168.101.2/firmware/bird_system.bin"
+#define OTA_URL             "http://192.168.101.2/firmware/echoes.bin"
 #define VERSION_URL         "http://192.168.101.2/firmware/version.txt"
 ```
 
@@ -114,7 +114,7 @@ echoes/
 
 1. Edit version in `main/ota.h`
 2. Build: `idf.py build`
-3. Copy: `cp build/echoes.bin ~/firmware_server/firmware/bird_system.bin`
+3. Copy: `cp build/echoes.bin ~/firmware_server/firmware/echoes.bin`
 4. Update: `echo "1.0.1" > ~/firmware_server/firmware/version.txt`
 
 ## Build Script Commands

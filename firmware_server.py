@@ -14,11 +14,11 @@ Directory structure:
     ├── firmware_server.py (this file)
     └── firmware/
         ├── version.txt
-        └── bird_system.bin
+        └── echoes.bin
 
 Access URLs:
     http://<your-ip>:8000/firmware/version.txt
-    http://<your-ip>:8000/firmware/bird_system.bin
+    http://<your-ip>:8000/firmware/echoes.bin
 """
 
 import http.server
@@ -105,11 +105,11 @@ def ensure_firmware_directory():
 Place your firmware files in this directory:
 
 1. version.txt - Current firmware version (e.g., "1.0.1")
-2. bird_system.bin - Compiled firmware binary
+2. echoes.bin - Compiled firmware binary
 
 To update firmware:
 1. Build your project: idf.py build
-2. Copy binary: cp build/sa_bird_system.bin firmware/bird_system.bin
+2. Copy binary: cp build/sa_echoes.bin firmware/echoes.bin
 3. Update version: echo "1.0.1" > firmware/version.txt
 
 ESP32 devices will check this server for updates.
@@ -123,10 +123,10 @@ ESP32 devices will check this server for updates.
             print("Create it with: echo '1.0.0' > firmware/version.txt")
         
         # Check if firmware binary exists
-        binary_file = os.path.join(FIRMWARE_DIR, "bird_system.bin")
+        binary_file = os.path.join(FIRMWARE_DIR, "echoes.bin")
         if not os.path.exists(binary_file):
             print(f"WARNING: {binary_file} not found!")
-            print("Copy it from your build: cp build/sa_bird_system.bin firmware/")
+            print("Copy it from your build: cp build/sa_echoes.bin firmware/")
 
 def get_local_ip():
     """Get local IP address"""
@@ -162,9 +162,9 @@ def main():
             print(f"  Network: http://{local_ip}:{PORT}/firmware/")
             print(f"\nFirmware files:")
             print(f"  Version: http://{local_ip}:{PORT}/firmware/version.txt")
-            print(f"  Binary:  http://{local_ip}:{PORT}/firmware/bird_system.bin")
+            print(f"  Binary:  http://{local_ip}:{PORT}/firmware/echoes.bin")
             print(f"\nUpdate sa_bird_ota.h with these URLs:")
-            print(f"  #define OTA_URL         \"http://{local_ip}:{PORT}/firmware/bird_system.bin\"")
+            print(f"  #define OTA_URL         \"http://{local_ip}:{PORT}/firmware/echoes.bin\"")
             print(f"  #define VERSION_URL     \"http://{local_ip}:{PORT}/firmware/version.txt\"")
             print(f"\nPress Ctrl+C to stop the server")
             print("=" * 60)

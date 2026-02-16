@@ -168,8 +168,8 @@ deploy_ota() {
     
     # Copy binary
     print_info "Copying firmware binary..."
-    cp "${BUILD_DIR}/${BINARY_NAME}" "${FIRMWARE_DIR}/bird_system.bin"
-    print_success "Binary copied to $FIRMWARE_DIR/bird_system.bin"
+    cp "${BUILD_DIR}/${BINARY_NAME}" "${FIRMWARE_DIR}/echoes.bin"
+    print_success "Binary copied to $FIRMWARE_DIR/echoes.bin"
     
     # Update version file
     print_info "Updating version file..."
@@ -178,15 +178,15 @@ deploy_ota() {
     
     # Calculate MD5 for verification
     if command -v md5sum &> /dev/null; then
-        MD5=$(md5sum "${FIRMWARE_DIR}/bird_system.bin" | cut -d' ' -f1)
+        MD5=$(md5sum "${FIRMWARE_DIR}/echoes.bin" | cut -d' ' -f1)
         print_info "MD5: $MD5"
     elif command -v md5 &> /dev/null; then
-        MD5=$(md5 -q "${FIRMWARE_DIR}/bird_system.bin")
+        MD5=$(md5 -q "${FIRMWARE_DIR}/echoes.bin")
         print_info "MD5: $MD5"
     fi
     
     print_success "OTA update deployed!"
-    print_info "Firmware: ${FIRMWARE_DIR}/bird_system.bin"
+    print_info "Firmware: ${FIRMWARE_DIR}/echoes.bin"
     print_info "Version: $VERSION"
     print_warning "Make sure firmware server is running!"
 }
@@ -291,6 +291,7 @@ Commands:
 
 Examples:
   ./build.sh build              # Build firmware
+  ./build.sh clean              # Remove edit backups and build directory
   ./build.sh build clean        # Clean build
   ./build.sh flash              # Flash via USB
   ./build.sh erase              # Erase flash
@@ -324,6 +325,10 @@ main() {
         build)
             check_idf
             build_firmware "$2"
+            ;;
+        clean)
+            find . -type f \( -name '*~' -o -name '.*.un~' \) -delete
+	    rm -rf build
             ;;
         flash)
             check_idf

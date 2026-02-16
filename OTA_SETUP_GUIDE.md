@@ -19,7 +19,7 @@ Edit `main/ota.h`:
 
 Edit `main/ota.h`:
 ```c
-#define OTA_URL             "http://192.168.101.2/firmware/bird_system.bin"
+#define OTA_URL             "http://192.168.101.2/firmware/echoes.bin"
 #define VERSION_URL         "http://192.168.101.2/firmware/version.txt"
 ```
 Replace `192.168.101.2` with your computer's IP address.
@@ -31,7 +31,7 @@ Replace `192.168.101.2` with your computer's IP address.
 . ~/esp/esp-idf-v5.4/export.sh
 
 # Build and flash
-cd ~/2026/echoes/20260216/echoes
+cd ~/echoes
 idf.py build
 idf.py -p /dev/tty.usbserial-110 erase-flash
 idf.py -p /dev/tty.usbserial-110 flash monitor
@@ -99,14 +99,14 @@ echoes/
 
 /* OTA Configuration */
 #define FIRMWARE_VERSION    "1.0.0"            // Current version
-#define OTA_URL             "http://192.168.101.2/firmware/bird_system.bin"
+#define OTA_URL             "http://192.168.101.2/firmware/echoes.bin"
 #define VERSION_URL         "http://192.168.101.2/firmware/version.txt"
 ```
 
 **Important:** 
 - Use 2.4GHz WiFi only (ESP32 doesn't support 5GHz)
 - Replace IP address with your server's IP
-- Keep `bird_system.bin` as the filename (server compatibility)
+- Keep `echoes.bin` as the filename (server compatibility)
 
 #### `partitions.csv` - Partition Table
 
@@ -131,7 +131,7 @@ ota_data,   data, ota,     ,        0x2000,
 . ~/esp/esp-idf-v5.4/export.sh
 
 # 2. Navigate to project
-cd ~/2026/echoes/20260216/echoes
+cd ~/echoes
 
 # 3. Build
 idf.py build
@@ -199,7 +199,7 @@ Then create these files:
 echo "1.0.0" > firmware/version.txt
 
 # Copy firmware binary
-cp ~/2026/echoes/20260216/echoes/build/echoes.bin firmware/bird_system.bin
+cp ~/echoes.bin firmware/echoes.bin
 ```
 
 ### Find Your Server IP
@@ -251,7 +251,7 @@ nano main/echoes.c
 
 3. **Copy binary**:
    ```bash
-   cp build/echoes.bin ~/firmware_server/firmware/bird_system.bin
+   cp build/echoes.bin ~/firmware_server/firmware/echoes.bin
    ```
 
 4. **Update version file**:
@@ -367,7 +367,7 @@ idf.py monitor
 **Solutions:**
 1. Check binary exists:
    ```bash
-   ls -lh ~/firmware_server/firmware/bird_system.bin
+   ls -lh ~/firmware_server/firmware/echoes.bin
    ```
 2. Verify file size < 1MB:
    ```bash
@@ -447,7 +447,7 @@ For production, use HTTPS:
 extern const uint8_t server_cert_pem_start[] asm("_binary_server_cert_pem_start");
 
 esp_http_client_config_t config = {
-    .url = "https://yourserver.com/firmware/bird_system.bin",
+    .url = "https://yourserver.com/firmware/echoes.bin",
     .cert_pem = (char *)server_cert_pem_start,
 };
 ```

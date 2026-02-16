@@ -1,0 +1,23 @@
+[Unit]
+Description=Echoes Firmware Update Server
+After=network.target
+
+[Service]
+Type=simple
+User=%REPLACE_USER%
+WorkingDirectory=%REPLACE_DIR%
+ExecStart=/usr/bin/python3 %REPLACE_DIR%/firmware_server.py
+Restart=always
+RestartSec=10
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=echoes-firmware
+
+[Install]
+WantedBy=multi-user.target

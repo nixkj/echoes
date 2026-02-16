@@ -22,9 +22,9 @@
 #define WIFI_TIMEOUT_MS     20000  // 20 second timeout
 
 /* OTA Configuration */
-#define FIRMWARE_VERSION    "1.0.0"
-#define OTA_URL             "http://192.168.101.2/firmware/bird_system.bin"
-#define VERSION_URL         "http://192.168.101.2/firmware/version.txt"
+#define FIRMWARE_VERSION    "1.1.0"
+#define OTA_URL             "http://192.168.101.2:8000/firmware/echoes.bin"
+#define VERSION_URL         "http://192.168.101.2:8000/firmware/version.txt"
 
 /* Update check settings */
 #define OTA_CHECK_INTERVAL_MS    (24 * 60 * 60 * 1000)  // Check once per day
