@@ -280,6 +280,7 @@ Usage: ./build.sh [command] [options]
 
 Commands:
   build [clean]     Build firmware (optional: clean build)
+  clean             Remove edit backups and build directory
   flash             Flash firmware via USB
   erase             Erase flash completely
   monitor           Open serial monitor
@@ -291,7 +292,7 @@ Commands:
 
 Examples:
   ./build.sh build              # Build firmware
-  ./build.sh clean              # Remove edit backups and build directory
+  ./build.sh clean              # Tidy up edit files and build dir
   ./build.sh build clean        # Clean build
   ./build.sh flash              # Flash via USB
   ./build.sh erase              # Erase flash
@@ -328,7 +329,7 @@ main() {
             ;;
         clean)
             find . -type f \( -name '*~' -o -name '.*.un~' \) -delete
-	    rm -rf build
+	    rm -rf build sdkconfig
             ;;
         flash)
             check_idf

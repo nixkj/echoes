@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
+#include "esp_ota_ops.h"
 
 #include "echoes.h"
 #include "synthesis.h"
@@ -23,6 +24,25 @@
 #include "esp_check.h"
 
 static const char *TAG = "MAIN";
+
+// Task for delayed firmware update validation
+void ota_validation_task(void *param)
+{
+    // Wait for system to run successfully for 2 minutes
+    ESP_LOGI(TAG, "OTA validation: Waiting 2 minutes before marking valid...");
+    vTaskDelay(pdMS_TO_TICKS(120000));  // 2 minutes
+    
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t ota_state;
+    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
+        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+            ESP_LOGI(TAG, "System stable for 2 minutes - marking firmware as valid");
+            esp_ota_mark_app_valid_cancel_rollback();
+        }
+    }
+    
+    vTaskDelete(NULL);  // Task done
+}
 
 void app_main(void)
 {
@@ -90,4 +110,7 @@ void app_main(void)
     set_led(BRIGHT_FULL, 0);
     vTaskDelay(pdMS_TO_TICKS(500));
     set_led(0, 0);
+
+    // Start task that will validate firmware after delay
+    xTaskCreate(ota_validation_task, "ota_validate", 2048, NULL, 2, NULL);
 }
