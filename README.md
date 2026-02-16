@@ -72,7 +72,9 @@ echoes/
 ├── CMakeLists.txt              # Project build config
 ├── partitions.csv              # OTA partition table
 ├── sdkconfig                   # SDK configuration
-├── firmware_server.py          # OTA update server
+├── scripts
+    └── firmware_server
+        └── firmware_server.py  # OTA update server
 ├── build.sh                    # Build/deploy script
 └── main/
     ├── CMakeLists.txt          # Component config
