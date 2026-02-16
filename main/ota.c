@@ -29,6 +29,13 @@
 
 static const char *TAG = "OTA";
 
+/* Structure to hold received HTTP data */
+typedef struct {
+    char *buffer;
+    int buffer_size;
+    int data_len;
+} http_receive_data_t;
+
 /* FreeRTOS event group for WiFi events */
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
@@ -204,6 +211,49 @@ static esp_err_t ota_http_event_handler(esp_http_client_event_t *evt)
 }
 
 /**
+ * @brief HTTP event handler that captures response data
+ */
+static esp_err_t version_http_event_handler(esp_http_client_event_t *evt)
+{
+    http_receive_data_t *recv_data = (http_receive_data_t *)evt->user_data;
+    
+    switch (evt->event_id) {
+    case HTTP_EVENT_ERROR:
+        ESP_LOGE(TAG, "HTTP_EVENT_ERROR");
+        break;
+    case HTTP_EVENT_ON_CONNECTED:
+        ESP_LOGD(TAG, "HTTP_EVENT_ON_CONNECTED");
+        break;
+    case HTTP_EVENT_HEADER_SENT:
+        ESP_LOGD(TAG, "HTTP_EVENT_HEADER_SENT");
+        break;
+    case HTTP_EVENT_ON_HEADER:
+        ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADER, key=%s, value=%s", 
+                 evt->header_key, evt->header_value);
+        break;
+    case HTTP_EVENT_ON_DATA:
+        ESP_LOGD(TAG, "HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
+        // Copy data to buffer
+        if (recv_data && evt->data_len > 0 && 
+            (recv_data->data_len + evt->data_len) < recv_data->buffer_size) {
+            memcpy(recv_data->buffer + recv_data->data_len, evt->data, evt->data_len);
+            recv_data->data_len += evt->data_len;
+            recv_data->buffer[recv_data->data_len] = '\0';
+        }
+        break;
+    case HTTP_EVENT_ON_FINISH:
+        ESP_LOGD(TAG, "HTTP_EVENT_ON_FINISH");
+        break;
+    case HTTP_EVENT_DISCONNECTED:
+        ESP_LOGD(TAG, "HTTP_EVENT_DISCONNECTED");
+        break;
+    default:
+        break;
+    }
+    return ESP_OK;
+}
+
+/**
  * @brief Fetch version string from server
  * @param version_buffer Buffer to store version string
  * @param buffer_size Size of buffer
@@ -211,9 +261,17 @@ static esp_err_t ota_http_event_handler(esp_http_client_event_t *evt)
  */
 static bool fetch_version_string(char *version_buffer, size_t buffer_size)
 {
+    // Prepare receive data structure
+    http_receive_data_t recv_data = {
+        .buffer = version_buffer,
+        .buffer_size = buffer_size,
+        .data_len = 0
+    };
+    
     esp_http_client_config_t config = {
         .url = VERSION_URL,
-        .event_handler = ota_http_event_handler,
+        .event_handler = version_http_event_handler,  // Use new handler
+        .user_data = &recv_data,                       // Pass our buffer
         .timeout_ms = 5000,
     };
     
@@ -226,28 +284,29 @@ static bool fetch_version_string(char *version_buffer, size_t buffer_size)
     esp_err_t err = esp_http_client_perform(client);
     
     if (err == ESP_OK) {
-        int content_length = esp_http_client_get_content_length(client);
         int status_code = esp_http_client_get_status_code(client);
         
-        ESP_LOGI(TAG, "HTTP GET Status = %d, content_length = %d", status_code, content_length);
+        ESP_LOGI(TAG, "HTTP GET Status = %d, received %d bytes", 
+                 status_code, recv_data.data_len);
         
-        if (status_code == 200 && content_length > 0 && content_length < buffer_size) {
-            int read_len = esp_http_client_read(client, version_buffer, content_length);
-            if (read_len > 0) {
-                version_buffer[read_len] = '\0';
-                
-                /* Remove trailing whitespace/newlines */
-                for (int i = read_len - 1; i >= 0; i--) {
-                    if (version_buffer[i] == '\n' || version_buffer[i] == '\r' || version_buffer[i] == ' ') {
-                        version_buffer[i] = '\0';
-                    } else {
-                        break;
-                    }
+        if (status_code == 200 && recv_data.data_len > 0) {
+            // Data is already in version_buffer via event handler
+            // Remove trailing whitespace/newlines
+            for (int i = recv_data.data_len - 1; i >= 0; i--) {
+                if (version_buffer[i] == '\n' || version_buffer[i] == '\r' || 
+                    version_buffer[i] == ' ' || version_buffer[i] == '\t') {
+                    version_buffer[i] = '\0';
+                } else {
+                    break;
                 }
-                
-                esp_http_client_cleanup(client);
-                return true;
             }
+            
+            ESP_LOGI(TAG, "Fetched version: %s", version_buffer);
+            esp_http_client_cleanup(client);
+            return true;
+        } else {
+            ESP_LOGE(TAG, "Invalid response: status=%d, data_len=%d", 
+                     status_code, recv_data.data_len);
         }
     } else {
         ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
