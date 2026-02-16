@@ -49,6 +49,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 print_info "Current user: $CURRENT_USER"
 print_info "Script directory: $SCRIPT_DIR"
+print_info "Firmware will be served from: $HOME/firmware_server/firmware/"
 
 # Check if firmware_server.py exists
 if [ ! -f "$SCRIPT_DIR/firmware_server.py" ]; then

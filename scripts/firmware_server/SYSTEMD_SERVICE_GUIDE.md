@@ -7,6 +7,13 @@ This guide shows you how to run the firmware update server as a Linux system ser
 
 ## Quick Install
 
+### Important: Firmware Directory Location
+
+The firmware server uses `$HOME/firmware_server/firmware/` as the firmware directory. This means:
+- Firmware files are stored in `~/firmware_server/firmware/`
+- This matches what the `build.sh deploy` command expects
+- The directory is created automatically on first run
+
 ### Automatic Installation (Recommended)
 
 ```bash
@@ -543,8 +550,10 @@ sudo systemctl is-enabled echoes-firmware
 - Logs are stored in systemd journal
 - Server starts automatically after system reboot
 - Service restarts automatically if it crashes
+- **Firmware directory:** `$HOME/firmware_server/firmware/`
 - Working directory is set to your project directory
 - Python 3 must be installed at `/usr/bin/python3`
+- The `build.sh deploy` command copies files to the correct location
 
 For more information on systemd services:
 ```bash
