@@ -59,19 +59,9 @@ void app_main(void)
     /* Initialize system hardware (including light sensor detection) */
     ESP_LOGI(TAG, "Initializing system...");
     system_init();
-    
-    /* Small delay to ensure all hardware is stable before sampling */
-    vTaskDelay(pdMS_TO_TICKS(500));
-    
-    /* Perform startup sleep and light sensor sampling */
-    ESP_LOGI(TAG, "Starting random sleep period with light sampling...");
+
+    /* Capture any errors on startup */
     startup_report_t startup_report;
-    esp_err_t startup_err = startup_sleep_and_sample(&startup_report);
-    
-    if (startup_err != ESP_OK) {
-        ESP_LOGW(TAG, "Startup sampling had issues: %s", esp_err_to_name(startup_err));
-        // Note: startup_report will already have error information filled in
-    }
     
     /* Initialize WiFi and connect */
     ESP_LOGI(TAG, "Connecting to WiFi...");
@@ -80,36 +70,23 @@ void app_main(void)
     if (wifi_connected) {
         ESP_LOGI(TAG, "WiFi connected successfully");
         
-        /* Send startup report */
-        ESP_LOGI(TAG, "Sending startup report...");
-        esp_err_t report_err = startup_send_report(&startup_report);
-        
-        if (report_err == ESP_OK) {
-            ESP_LOGI(TAG, "Startup report sent successfully");
-            // Brief white LED flash to indicate successful report
-            set_led(BRIGHT_MID, 0);
-            vTaskDelay(pdMS_TO_TICKS(200));
-            set_led(0, 0);
-        } else {
-            ESP_LOGW(TAG, "Failed to send startup report: %s", esp_err_to_name(report_err));
-            // Brief blue LED flash to indicate report failure
-            set_led(0, BRIGHT_MID);
-            vTaskDelay(pdMS_TO_TICKS(200));
-            set_led(0, 0);
-        }
-        
         /* Check for firmware updates */
         ESP_LOGI(TAG, "Checking for firmware updates...");
         bool updated = ota_check_and_update();
         
-        if (updated) {
-            /* Device will restart after update */
-            ESP_LOGI(TAG, "Update completed, device restarting...");
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        } else {
-            ESP_LOGI(TAG, "No update needed, continuing with normal operation");
-        }
-        
+	if (updated) {
+	    ESP_LOGI(TAG, "Update completed, device restarting...");
+	    vTaskDelay(pdMS_TO_TICKS(1000));
+	} else {
+	    // Better message
+	    const ota_state_t *ota_state = ota_get_state();
+	    if (ota_state->ota_status == OTA_STATUS_FAILED) {
+		ESP_LOGW(TAG, "Update available but failed - continuing");
+	    } else {
+		ESP_LOGI(TAG, "No update needed");
+	    }
+	}
+
         /* Start periodic OTA check task (checks every 24 hours) */
         // xTaskCreate(ota_task, "ota_task", 8192, NULL, 3, NULL);
         
@@ -133,6 +110,18 @@ void app_main(void)
         }
     }
 
+    /* Small delay to ensure all hardware is stable before sampling */
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    /* Perform startup sleep and light sensor sampling */
+    ESP_LOGI(TAG, "Starting random sleep period with light sampling...");
+    esp_err_t startup_err = startup_sleep_and_sample(&startup_report);
+    
+    if (startup_err != ESP_OK) {
+        ESP_LOGW(TAG, "Startup sampling had issues: %s", esp_err_to_name(startup_err));
+        // Note: startup_report will already have error information filled in
+    }
+
     // Initialize audio hardware
     ESP_LOGI(TAG, "Initializing audio hardware...");
     ESP_ERROR_CHECK(i2s_microphone_init());
@@ -145,6 +134,24 @@ void app_main(void)
         ESP_ERROR_CHECK(i2s_speaker_init());
     } else {
         ESP_LOGI(TAG, "Minimal hardware detected - speaker disabled, LED VU mode");
+    }
+
+    /* Send startup report */
+    ESP_LOGI(TAG, "Sending startup report...");
+    esp_err_t report_err = startup_send_report(&startup_report);
+    
+    if (report_err == ESP_OK) {
+        ESP_LOGI(TAG, "Startup report sent successfully");
+        // Brief white LED flash to indicate successful report
+        set_led(BRIGHT_MID, 0);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        set_led(0, 0);
+    } else {
+        ESP_LOGW(TAG, "Failed to send startup report: %s", esp_err_to_name(report_err));
+        // Brief blue LED flash to indicate report failure
+        set_led(0, BRIGHT_MID);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        set_led(0, 0);
     }
     
     /* Start detection task */
