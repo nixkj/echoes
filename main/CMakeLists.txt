@@ -6,6 +6,7 @@ idf_component_register(
         "echoes.c"
         "synthesis.c"
         "ota.c"
+	"startup.c"
     INCLUDE_DIRS 
         "."
     REQUIRES 

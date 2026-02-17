@@ -196,7 +196,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run on default port 8000 with logs in ./logs
+  # Run on default port 8001 with logs in ./logs
   python3 startup_server.py
   
   # Run on custom port with custom log directory
@@ -210,8 +210,8 @@ Examples:
     parser.add_argument(
         '--port',
         type=int,
-        default=8000,
-        help='Port to listen on (default: 8000)'
+        default=8001,
+        help='Port to listen on (default: 8001)'
     )
     
     parser.add_argument(
