@@ -408,25 +408,25 @@ static float calculate_vu_level(const int16_t *buffer, size_t num_samples)
     }
     float rms = sqrtf(sum_squares / num_samples);
     
-    // Scale to reasonable range
-    float level = rms * 20.0f;
+    // Scale to reasonable range (reduced sensitivity)
+    float level = rms * 5.0f;  // Much less sensitive than before (was 20.0f)
     
-    // Digital/stepped output levels with dead zone
-    if (level < 0.05f) {
-        // Dead zone - LED off for quiet/silence
+    // Digital/stepped output levels with wider dead zone
+    if (level < 0.15f) {
+        // Dead zone - LED off for quiet/silence (wider threshold)
         return 0.0f;
-    } else if (level < 0.15f) {
-        // Level 1 - Low
-        return 0.15f;
     } else if (level < 0.30f) {
-        // Level 2 - Medium-low
-        return 0.30f;
+        // Level 1 - Low
+        return 0.20f;
     } else if (level < 0.50f) {
-        // Level 3 - Medium
-        return 0.50f;
+        // Level 2 - Medium-low
+        return 0.40f;
     } else if (level < 0.70f) {
+        // Level 3 - Medium
+        return 0.60f;
+    } else if (level < 0.90f) {
         // Level 4 - Medium-high
-        return 0.70f;
+        return 0.80f;
     } else {
         // Level 5 - High (max)
         return VU_MAX_BRIGHTNESS;
