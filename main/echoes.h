@@ -61,24 +61,27 @@
 /* VU Meter */
 #define VU_MAX_BRIGHTNESS   0.75f        // Maximum LED brightness during playback (0.0 to 1.0)
 
-/* Light sensor polling (lux_based_birds_task)
+/* Lux-to-LED brightness mapping
  *
- * LUX_POLL_INTERVAL_MS   — how often the sensor is read.
- *   BH1750 measurement time is 120 ms typ / 180 ms max in continuous mode,
- *   so 100 ms is the practical floor for fresh readings.
- *   ALS-PT19 (analog) has no minimum — 100 ms is fine.
+ * The white LED ambient brightness is scaled linearly by the local light
+ * sensor reading between LUX_LED_MIN and LUX_LED_MAX:
  *
- * LUX_CHANGE_THRESHOLD   — minimum change (lux) to update the bird mapper
- *   and Markov chain.  Keeps CPU work near zero when the room is stable.
- *   In a dark indoor room 1.0 lux is sensitive enough to catch a phone screen.
+ *   lux <= LUX_LED_MIN  →  LED brightness = LUX_LED_BRIGHTNESS_FLOOR
+ *   lux >= LUX_LED_MAX  →  LED brightness = LUX_LED_BRIGHTNESS_CEIL
+ *   in between          →  linear interpolation
  *
- * LUX_FLASH_THRESHOLD    — larger jump that triggers an immediate bird call
- *   response (torch / phone flash / lamp switching on).
- *   Tuned for a dark room: a phone torch at 1 m typically adds 50–200 lux.
+ * This scale factor is then applied as a ceiling on ALL LED output —
+ * idle glow, VU meter during playback, and the minimal-mode VU meter.
+ * The LED is never fully off in darkness (FLOOR > 0) so the installation
+ * has a gentle presence even in a completely dark room.
+ *
+ * Tune LUX_LED_MAX for your room: in a dark indoor space 50–100 lux
+ * (a phone screen at arm's length) is a reasonable full-brightness point.
  */
-#define LUX_POLL_INTERVAL_MS    100     // ms between sensor reads
-#define LUX_CHANGE_THRESHOLD    1.0f    // lux — minimum change to act on
-#define LUX_FLASH_THRESHOLD     30.0f   // lux — jump that triggers instant response
+#define LUX_LED_MIN             0.0f    // lux — LED at floor brightness
+#define LUX_LED_MAX             80.0f   // lux — LED at ceiling brightness
+#define LUX_LED_BRIGHTNESS_FLOOR  0.04f // always-on dim glow in darkness
+#define LUX_LED_BRIGHTNESS_CEIL   1.0f  // maximum LED brightness at LUX_LED_MAX
 
 /* GPIO Pins */
 #define PIN_LED_WHITE       13
