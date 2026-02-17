@@ -14,13 +14,14 @@
 /sdkconfig.backup
 
 # Editor temporary files
-*~         # files ending with ~
-*.un~      # any file ending with .un~
-*.swp      # Vim swap files
-*.swo      # Vim swap alternative
-*.bak      # generic backup
-*.tmp      # generic temporary
-*.orig     # merge conflict backups
+*~
+.*~
+*.un~
+*.swp
+*.swo
+*.bak
+*.tmp
+*.orig
 
 # Python caches
 __pycache__/
