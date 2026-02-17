@@ -18,7 +18,7 @@
 #define NODE_TYPE               "echoes-v1"
 #define STARTUP_SLEEP_MIN_MS    0
 #define STARTUP_SLEEP_MAX_MS    5000
-#define STARTUP_HTTP_TIMEOUT_MS 3000  // 3 second timeout (was 5 seconds)
+#define STARTUP_HTTP_TIMEOUT_MS 5000  // 3 second timeout (was 5 seconds)
 
 /* ========================================================================
  * TYPE DEFINITIONS
