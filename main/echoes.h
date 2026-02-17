@@ -138,6 +138,14 @@ typedef struct {
     detection_state_t detection;
 } system_state_t;
 
+/**
+ * @brief Hardware configuration types
+ */
+typedef enum {
+    HW_CONFIG_FULL,      // BH1750 + Audio amplifier (full bird call system)
+    HW_CONFIG_MINIMAL    // Analog sensor only (LED VU meter only)
+} hardware_config_t;
+
 /* ========================================================================
  * FUNCTION DECLARATIONS
  * ======================================================================== */
@@ -171,5 +179,9 @@ void play_bird_call(const char *bird_name, const audio_buffer_t *audio_buffer);
 
 /* Lux-based bird selection */
 void lux_based_birds_task(void *param);
+
+/* Hardware Detection */
+hardware_config_t get_hardware_config(void);
+bool has_audio_output(void);
 
 #endif /* SA_BIRD_SYSTEM_H */

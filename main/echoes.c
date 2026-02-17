@@ -26,6 +26,9 @@ static system_state_t g_system_state = {0};
 static bird_call_mapper_t g_bird_mapper = {0};
 static audio_buffer_t g_audio_buffer = {0};  // Static buffer for bird calls
 
+/* Global hardware configuration */
+static hardware_config_t g_hw_config = HW_CONFIG_FULL;
+
 /* Goertzel coefficients (precomputed) */
 static float g_coeff_whistle;
 static float g_coeff_voice;
@@ -359,6 +362,57 @@ float get_lux_level(void)
 }
 
 /* ========================================================================
+ * HARDWARE DETECTION
+ * ======================================================================== */
+
+/**
+ * @brief Detect which hardware configuration is present
+ */
+static hardware_config_t detect_hardware_config(void)
+{
+    // BH1750 presence determines hardware type
+    if (g_system_state.light_sensor_type == LIGHT_SENSOR_BH1750) {
+        ESP_LOGI(TAG, "Hardware detected: FULL (BH1750 + Audio)");
+        return HW_CONFIG_FULL;
+    } else {
+        ESP_LOGI(TAG, "Hardware detected: MINIMAL (Analog sensor, LED VU only)");
+        return HW_CONFIG_MINIMAL;
+    }
+}
+
+/**
+ * @brief Calculate VU meter level from audio buffer
+ */
+static float calculate_vu_level(const int16_t *buffer, size_t num_samples)
+{
+    // Calculate RMS (Root Mean Square) of audio signal
+    float sum_squares = 0.0f;
+    for (size_t i = 0; i < num_samples; i++) {
+        float sample = (float)buffer[i] / 32768.0f;  // Normalize to -1.0 to 1.0
+        sum_squares += sample * sample;
+    }
+    float rms = sqrtf(sum_squares / num_samples);
+    
+    // Scale to LED brightness (with amplification)
+    float brightness = rms * 20.0f;  // Amplify for visibility
+    
+    // Clamp to 0.0 - VU_MAX_BRIGHTNESS
+    if (brightness > VU_MAX_BRIGHTNESS) {
+        brightness = VU_MAX_BRIGHTNESS;
+    }
+    
+    return brightness;
+}
+
+/**
+ * @brief Smooth VU meter updates (prevents flickering)
+ */
+static float smooth_vu_level(float current, float target, float smooth_factor)
+{
+    return current * smooth_factor + target * (1.0f - smooth_factor);
+}
+
+/* ========================================================================
  * DETECTION TASK
  * ======================================================================== */
 
@@ -373,7 +427,19 @@ void audio_detection_task(void *param) {
     detection_state_t *state = &g_system_state.detection;
     set_led(BRIGHT_OFF, BRIGHT_OFF);
     
+    // Detect hardware configuration
+    g_hw_config = detect_hardware_config();
+    
+    float vu_level = 0.0f;  // For VU meter smoothing
+    const float VU_SMOOTH = 0.85f;  // Smoothing factor (higher = smoother)
+    
     ESP_LOGI(TAG, "Audio detection task started");
+    
+    if (g_hw_config == HW_CONFIG_FULL) {
+        ESP_LOGI(TAG, "🎤 Listening for whistles, voice, and claps...");
+    } else {
+        ESP_LOGI(TAG, "🎤 LED VU meter mode active");
+    }
     
     while (1) {
         size_t bytes_read = 0;
@@ -396,84 +462,109 @@ void audio_detection_task(void *param) {
         // Apply gain
         apply_gain_inplace(buffer, num_samples, GAIN);
         
-        // Compute frequencies
-        float mag_w, mag_v;
-        compute_goertzel(buffer, num_samples, &mag_w, &mag_v);
-        
-        // Update adaptive thresholds
-        state->running_avg_whistle = ALPHA * state->running_avg_whistle + (1.0f - ALPHA) * mag_w;
-        state->running_avg_voice = ALPHA * state->running_avg_voice + (1.0f - ALPHA) * mag_v;
-        
-        float thresh_w = state->running_avg_whistle * WHISTLE_MULTIPLIER;
-        float thresh_v = state->running_avg_voice * VOICE_MULTIPLIER;
-        float thresh_clap = fmaxf(thresh_w * CLAP_MULTIPLIER, thresh_v * 2.0f);
-        
-        // Handle debounce
-        if (state->debounce_counter > 0) {
-            state->debounce_counter--;
-            state->whistle_count = 0;
-            state->voice_count = 0;
-            state->clap_count = 0;
-        }
-        else {
-            // Check for clap (broadband impulse)
-            if (mag_w > thresh_clap && mag_v > thresh_v * 1.5f) {
-                state->clap_count++;
-                state->whistle_count = state->voice_count = 0;
-                
-                if (state->clap_count >= CLAP_CONFIRM) {
-                    ESP_LOGI(TAG, "👏 CLAP! (w:%.0f, v:%.0f)", mag_w, mag_v);
-                    
-                    // Generate and play bird call using static buffer
-                    bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_CLAP);
-                    bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
-                    play_bird_call(bird.display_name, &g_audio_buffer);
-                    
-                    state->clap_count = 0;
-                    state->debounce_counter = DEBOUNCE_BUFFERS;
-                }
+        // Branch based on hardware configuration
+        if (g_hw_config == HW_CONFIG_FULL) {
+            /* ============================================================
+             * FULL SYSTEM: Sound detection and bird call playback
+             * ============================================================ */
+            
+            // Compute frequencies
+            float mag_w, mag_v;
+            compute_goertzel(buffer, num_samples, &mag_w, &mag_v);
+            
+            // Update adaptive thresholds
+            state->running_avg_whistle = ALPHA * state->running_avg_whistle + (1.0f - ALPHA) * mag_w;
+            state->running_avg_voice = ALPHA * state->running_avg_voice + (1.0f - ALPHA) * mag_v;
+            
+            float thresh_w = state->running_avg_whistle * WHISTLE_MULTIPLIER;
+            float thresh_v = state->running_avg_voice * VOICE_MULTIPLIER;
+            float thresh_clap = fmaxf(thresh_w * CLAP_MULTIPLIER, thresh_v * 2.0f);
+            
+            // Handle debounce
+            if (state->debounce_counter > 0) {
+                state->debounce_counter--;
+                state->whistle_count = 0;
+                state->voice_count = 0;
+                state->clap_count = 0;
             }
-            // Check for whistle (high frequency, narrow band)
-            else if (mag_w > thresh_w && (mag_w / (mag_v + 1.0f)) > 3.0f) {
-                state->whistle_count++;
-                state->clap_count = state->voice_count = 0;
-                
-                if (state->whistle_count >= WHISTLE_CONFIRM) {
-                    ESP_LOGI(TAG, "🎵 WHISTLE! (w:%.0f, v:%.0f)", mag_w, mag_v);
-                    
-                    // Generate and play bird call using static buffer
-                    bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_WHISTLE);
-                    bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
-                    play_bird_call(bird.display_name, &g_audio_buffer);
-                    
-                    state->whistle_count = 0;
-                    state->debounce_counter = DEBOUNCE_BUFFERS;
-                }
-            }
-            // Check for voice (low frequency)
-            else if (mag_v > thresh_v) {
-                state->voice_count++;
-                state->whistle_count = state->clap_count = 0;
-                
-                if (state->voice_count >= VOICE_CONFIRM) {
-                    ESP_LOGI(TAG, "🗣️ VOICE! (w:%.0f, v:%.0f)", mag_w, mag_v);
-                    
-                    // Generate and play bird call using static buffer
-                    bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_VOICE);
-                    bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
-                    play_bird_call(bird.display_name, &g_audio_buffer);
-                    
-                    state->voice_count = 0;
-                    state->debounce_counter = DEBOUNCE_BUFFERS;
-                }
-            }
-            // No detection
             else {
-                state->whistle_count = state->voice_count = state->clap_count = 0;
+                // Check for clap (broadband impulse)
+                if (mag_w > thresh_clap && mag_v > thresh_v * 1.5f) {
+                    state->clap_count++;
+                    state->whistle_count = state->voice_count = 0;
+                    
+                    if (state->clap_count >= CLAP_CONFIRM) {
+                        ESP_LOGI(TAG, "👏 CLAP! (w:%.0f, v:%.0f)", mag_w, mag_v);
+                        
+                        // Generate and play bird call using static buffer
+                        bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_CLAP);
+                        bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
+                        play_bird_call(bird.display_name, &g_audio_buffer);
+                        
+                        state->clap_count = 0;
+                        state->debounce_counter = DEBOUNCE_BUFFERS;
+                    }
+                }
+                // Check for whistle (high frequency, narrow band)
+                else if (mag_w > thresh_w && (mag_w / (mag_v + 1.0f)) > 3.0f) {
+                    state->whistle_count++;
+                    state->clap_count = state->voice_count = 0;
+                    
+                    if (state->whistle_count >= WHISTLE_CONFIRM) {
+                        ESP_LOGI(TAG, "🎵 WHISTLE! (w:%.0f, v:%.0f)", mag_w, mag_v);
+                        
+                        // Generate and play bird call using static buffer
+                        bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_WHISTLE);
+                        bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
+                        play_bird_call(bird.display_name, &g_audio_buffer);
+                        
+                        state->whistle_count = 0;
+                        state->debounce_counter = DEBOUNCE_BUFFERS;
+                    }
+                }
+                // Check for voice (low frequency)
+                else if (mag_v > thresh_v) {
+                    state->voice_count++;
+                    state->whistle_count = state->clap_count = 0;
+                    
+                    if (state->voice_count >= VOICE_CONFIRM) {
+                        ESP_LOGI(TAG, "🗣️ VOICE! (w:%.0f, v:%.0f)", mag_w, mag_v);
+                        
+                        // Generate and play bird call using static buffer
+                        bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_VOICE);
+                        bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
+                        play_bird_call(bird.display_name, &g_audio_buffer);
+                        
+                        state->voice_count = 0;
+                        state->debounce_counter = DEBOUNCE_BUFFERS;
+                    }
+                }
+                // No detection
+                else {
+                    state->whistle_count = state->voice_count = state->clap_count = 0;
+                }
             }
+            
+            vTaskDelay(pdMS_TO_TICKS(4));
+            
+        } else {
+            /* ============================================================
+             * MINIMAL SYSTEM: LED VU meter only
+             * ============================================================ */
+            
+            // Calculate VU level from audio buffer
+            float target_vu = calculate_vu_level(buffer, num_samples);
+            
+            // Smooth the VU level to prevent flickering
+            vu_level = smooth_vu_level(vu_level, target_vu, VU_SMOOTH);
+            
+            // Update white LED to show audio level
+            // Blue LED stays off in minimal mode
+            set_led(vu_level, 0.0f);
+            
+            // Small delay
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
-        
-        vTaskDelay(pdMS_TO_TICKS(4));
     }
     
     free(buffer);
@@ -589,3 +680,24 @@ void lux_based_birds_task(void *param) {
     
     vTaskDelete(NULL);
 }
+
+/* ========================================================================
+ * HARDWARE CONFIGURATION HELPERS
+ * ======================================================================== */
+
+/**
+ * @brief Check if audio output (speaker) is available
+ */
+bool has_audio_output(void)
+{
+    return (g_hw_config == HW_CONFIG_FULL);
+}
+
+/**
+ * @brief Get hardware configuration
+ */
+hardware_config_t get_hardware_config(void)
+{
+    return g_hw_config;
+}
+
