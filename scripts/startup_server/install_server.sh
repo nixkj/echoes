@@ -114,6 +114,6 @@ echo "  Restart service:      sudo systemctl restart $SERVICE_NAME"
 echo "  Stop service:         sudo systemctl stop $SERVICE_NAME"
 echo "  Service status:       sudo systemctl status $SERVICE_NAME"
 echo
-echo "The server is now listening on port 8000"
-echo "ESP32 devices should send reports to: http://YOUR_SERVER_IP:8000/startup"
+echo "The server is now listening on port 8001"
+echo "ESP32 devices should send reports to: http://YOUR_SERVER_IP:8001/startup"
 echo

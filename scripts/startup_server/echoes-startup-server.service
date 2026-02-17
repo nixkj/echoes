@@ -7,7 +7,7 @@ Type=simple
 User=echoes
 Group=echoes
 WorkingDirectory=/opt/echoes
-ExecStart=/usr/bin/python3 /opt/echoes/startup_server.py --port 8000 --logdir /var/log/echoes
+ExecStart=/usr/bin/python3 /opt/echoes/startup_server.py --port 8001 --logdir /var/log/echoes
 Restart=always
 RestartSec=10
 
