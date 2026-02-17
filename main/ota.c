@@ -334,54 +334,129 @@ static int compare_versions(const char *v1, const char *v2)
     return v1_patch - v2_patch;
 }
 
+/**
+ * Alternative OTA implementation using basic esp_http_client
+ * Replace the ota_perform_update() function (lines 332-391) with this version
+ */
+
 bool ota_perform_update(const char *url)
 {
     ESP_LOGI(TAG, "Starting OTA update from: %s", url);
     s_ota_state.ota_status = OTA_STATUS_DOWNLOADING;
     s_ota_state.download_progress_percent = 0;
-    
+
     /* Blink blue LED during update */
     set_led(0, BRIGHT_MID);
-    
-    // Configure HTTP client for plain HTTP with proper settings
+
+    esp_err_t err;
+
+    /* Initialize OTA */
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (update_partition == NULL) {
+        ESP_LOGE(TAG, "No OTA partition found");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Writing to partition subtype %d at offset 0x%lx",
+             update_partition->subtype, update_partition->address);
+
+    esp_ota_handle_t ota_handle;
+    err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    /* Configure HTTP client - simplified for plain HTTP */
     esp_http_client_config_t config = {
         .url = url,
-        .event_handler = ota_http_event_handler,
         .timeout_ms = 30000,
-        .buffer_size = OTA_BUFFER_SIZE,
-        .keep_alive_enable = false,
-        // CRITICAL: For HTTP (not HTTPS), we must disable cert verification
-        .skip_cert_common_name_check = true,
-        .use_global_ca_store = false,
-        .crt_bundle_attach = NULL,
+        .buffer_size = 4096,
     };
 
-    // Configure OTA with partial download support
-    esp_https_ota_config_t ota_config = {
-        .http_config = &config,
-        .partial_http_download = false,  // Download entire image at once
-        .max_http_request_size = 0,      // No limit on request size
-    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        ESP_LOGE(TAG, "Failed to initialize HTTP client");
+        esp_ota_abort(ota_handle);
+        return false;
+    }
 
+    err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open HTTP connection: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        esp_ota_abort(ota_handle);
+        return false;
+    }
+
+    int content_length = esp_http_client_fetch_headers(client);
+    int status_code = esp_http_client_get_status_code(client);
+
+    if (status_code != 200) {
+        ESP_LOGE(TAG, "HTTP GET failed, status = %d", status_code);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        esp_ota_abort(ota_handle);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "HTTP GET Status = %d, content_length = %d", status_code, content_length);
     ESP_LOGI(TAG, "Starting download...");
-    esp_err_t ret = esp_https_ota(&ota_config);
-    
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "OTA update successful! Restarting...");
-        s_ota_state.ota_status = OTA_STATUS_SUCCESS;
-        s_ota_state.download_progress_percent = 100;
-        
-        /* Indicate success with white LED */
-        set_led(BRIGHT_FULL, 0);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        
-        /* Restart ESP32 */
-        esp_restart();
-        return true;
-    } else {
-        ESP_LOGE(TAG, "OTA update failed: %s (0x%x)", esp_err_to_name(ret), ret);
-        s_ota_state.ota_status = OTA_STATUS_FAILED;
-        
+
+    /* Download and write firmware */
+    int binary_file_length = 0;
+    char *buffer = malloc(4096);
+    if (buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate buffer");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        esp_ota_abort(ota_handle);
+        return false;
+    }
+
+    while (1) {
+        int data_read = esp_http_client_read(client, buffer, 4096);
+        if (data_read < 0) {
+            ESP_LOGE(TAG, "Error: SSL data read error");
+            break;
+        } else if (data_read > 0) {
+            err = esp_ota_write(ota_handle, (const void *)buffer, data_read);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(err));
+                break;
+            }
+            binary_file_length += data_read;
+
+            /* Update progress */
+            if (content_length > 0) {
+                s_ota_state.download_progress_percent = (binary_file_length * 100) / content_length;
+            }
+
+            /* Blink LED to show activity */
+            if ((binary_file_length % 40960) == 0) {
+                set_led(0, BRIGHT_FULL);
+                vTaskDelay(pdMS_TO_TICKS(10));
+                set_led(0, BRIGHT_MID);
+            }
+        } else if (data_read == 0) {
+            /* Connection closed */
+            if (esp_http_client_is_complete_data_received(client)) {
+                ESP_LOGI(TAG, "Connection closed, all data received");
+                break;
+            }
+        }
+    }
+
+    free(buffer);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    ESP_LOGI(TAG, "Total binary data length: %d", binary_file_length);
+
+    if (binary_file_length == 0 || err != ESP_OK) {
+        ESP_LOGE(TAG, "Download failed");
+        esp_ota_abort(ota_handle);
+
         /* Indicate failure with rapid blue blink */
         for (int i = 0; i < 5; i++) {
             set_led(0, BRIGHT_FULL);
@@ -389,9 +464,48 @@ bool ota_perform_update(const char *url)
             set_led(0, 0);
             vTaskDelay(pdMS_TO_TICKS(100));
         }
-        
+
         return false;
     }
+
+    /* Finalize OTA */
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_OTA_VALIDATE_FAILED) {
+            ESP_LOGE(TAG, "Image validation failed, image is corrupted");
+        } else {
+            ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
+        }
+
+        /* Indicate failure with rapid blue blink */
+        for (int i = 0; i < 5; i++) {
+            set_led(0, BRIGHT_FULL);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            set_led(0, 0);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+
+        return false;
+    }
+
+    /* Set boot partition */
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    ESP_LOGI(TAG, "OTA update successful! Restarting...");
+    s_ota_state.ota_status = OTA_STATUS_SUCCESS;
+    s_ota_state.download_progress_percent = 100;
+
+    /* Indicate success with white LED */
+    set_led(BRIGHT_FULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    /* Restart ESP32 */
+    esp_restart();
+    return true;
 }
 
 bool ota_check_and_update(void)
