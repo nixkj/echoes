@@ -53,12 +53,15 @@ void app_main(void)
     ESP_LOGI(TAG, "Firmware Version: %s", FIRMWARE_VERSION);
     ESP_LOGI(TAG, "========================================");
     
-    /* Initialize LEDs first (needed for status feedback) */
+    /* Initialize LEDs FIRST (needed for ALL status feedback including OTA) */
     led_init();
     
-    /* Initialize system hardware (including light sensor) */
+    /* Initialize system hardware (including light sensor detection) */
     ESP_LOGI(TAG, "Initializing system...");
     system_init();
+    
+    /* Small delay to ensure all hardware is stable before sampling */
+    vTaskDelay(pdMS_TO_TICKS(500));
     
     /* Perform startup sleep and light sensor sampling */
     ESP_LOGI(TAG, "Starting random sleep period with light sampling...");

@@ -349,6 +349,7 @@ bool ota_perform_update(const char *url)
         .event_handler = ota_http_event_handler,
         .timeout_ms = 30000,
         .buffer_size = OTA_BUFFER_SIZE,
+        .skip_cert_common_name_check = true,  // Skip cert check for HTTP (not HTTPS)
     };
 
     esp_https_ota_config_t ota_config = {
