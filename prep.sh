@@ -19,4 +19,6 @@ popd
 
 echo "$MAC" >> ../mac-addresses.txt
 
+idf.py erase-flash
+
 ./build.sh flash
