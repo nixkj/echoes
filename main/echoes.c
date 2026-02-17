@@ -49,6 +49,12 @@ static adc_oneshot_unit_handle_t adc_handle = NULL;
 #endif
 
 /* ========================================================================
+ * FORWARD DECLARATIONS
+ * ======================================================================== */
+
+static hardware_config_t detect_hardware_config(void);
+
+/* ========================================================================
  * INITIALIZATION
  * ======================================================================== */
 
@@ -261,6 +267,12 @@ void system_init(void) {
     g_coeff_whistle = 2.0f * cosf(2.0f * M_PI * WHISTLE_FREQ / SAMPLE_RATE);
     g_coeff_voice = 2.0f * cosf(2.0f * M_PI * VOICE_FREQ / SAMPLE_RATE);
     
+    // Initialize light sensor (this detects BH1750 vs analog)
+    light_sensor_init();
+    
+    // Detect hardware configuration based on light sensor
+    g_hw_config = detect_hardware_config();
+    
     // Initialize bird mapper
     bird_mapper_init(&g_bird_mapper, SAMPLE_RATE);
     
@@ -273,13 +285,16 @@ void system_init(void) {
 
 void set_led(float white_level, float blue_level) {
     uint32_t duty_white = (uint32_t)(65535.0f * white_level);
-    uint32_t duty_blue = (uint32_t)(65535.0f * blue_level);
     
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty_white);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
     
-//    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty_blue);
-//    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+    // Blue LED disabled (uncomment to enable)
+    // uint32_t duty_blue = (uint32_t)(65535.0f * blue_level);
+    // ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty_blue);
+    // ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+    
+    (void)blue_level;  // Suppress unused parameter warning
 }
 
 /* ========================================================================
@@ -381,7 +396,7 @@ static hardware_config_t detect_hardware_config(void)
 }
 
 /**
- * @brief Calculate VU meter level from audio buffer
+ * @brief Calculate VU meter level from audio buffer (digital/stepped version)
  */
 static float calculate_vu_level(const int16_t *buffer, size_t num_samples)
 {
@@ -393,23 +408,51 @@ static float calculate_vu_level(const int16_t *buffer, size_t num_samples)
     }
     float rms = sqrtf(sum_squares / num_samples);
     
-    // Scale to LED brightness (with amplification)
-    float brightness = rms * 20.0f;  // Amplify for visibility
+    // Scale to reasonable range
+    float level = rms * 20.0f;
     
-    // Clamp to 0.0 - VU_MAX_BRIGHTNESS
-    if (brightness > VU_MAX_BRIGHTNESS) {
-        brightness = VU_MAX_BRIGHTNESS;
+    // Digital/stepped output levels with dead zone
+    if (level < 0.05f) {
+        // Dead zone - LED off for quiet/silence
+        return 0.0f;
+    } else if (level < 0.15f) {
+        // Level 1 - Low
+        return 0.15f;
+    } else if (level < 0.30f) {
+        // Level 2 - Medium-low
+        return 0.30f;
+    } else if (level < 0.50f) {
+        // Level 3 - Medium
+        return 0.50f;
+    } else if (level < 0.70f) {
+        // Level 4 - Medium-high
+        return 0.70f;
+    } else {
+        // Level 5 - High (max)
+        return VU_MAX_BRIGHTNESS;
     }
-    
-    return brightness;
 }
 
 /**
- * @brief Smooth VU meter updates (prevents flickering)
+ * @brief Smooth VU meter updates with hysteresis (prevents rapid flickering)
  */
 static float smooth_vu_level(float current, float target, float smooth_factor)
 {
-    return current * smooth_factor + target * (1.0f - smooth_factor);
+    (void)smooth_factor;  // Unused - kept for API compatibility
+    
+    // If target is zero (dead zone), turn off immediately
+    if (target == 0.0f) {
+        return 0.0f;
+    }
+    
+    // If we're off and target is on, turn on immediately
+    if (current == 0.0f && target > 0.0f) {
+        return target;
+    }
+    
+    // For level changes, use fast transitions
+    const float FAST_SMOOTH = 0.3f;  // Fast response for level changes
+    return current * FAST_SMOOTH + target * (1.0f - FAST_SMOOTH);
 }
 
 /* ========================================================================
@@ -427,18 +470,14 @@ void audio_detection_task(void *param) {
     detection_state_t *state = &g_system_state.detection;
     set_led(BRIGHT_OFF, BRIGHT_OFF);
     
-    // Detect hardware configuration
-    g_hw_config = detect_hardware_config();
-    
-    float vu_level = 0.0f;  // For VU meter smoothing
-    const float VU_SMOOTH = 0.85f;  // Smoothing factor (higher = smoother)
+    float vu_level = 0.0f;  // Current VU meter level
     
     ESP_LOGI(TAG, "Audio detection task started");
     
     if (g_hw_config == HW_CONFIG_FULL) {
         ESP_LOGI(TAG, "🎤 Listening for whistles, voice, and claps...");
     } else {
-        ESP_LOGI(TAG, "🎤 LED VU meter mode active");
+        ESP_LOGI(TAG, "🎤 LED VU meter mode active (digital stepped output)");
     }
     
     while (1) {
@@ -552,11 +591,11 @@ void audio_detection_task(void *param) {
              * MINIMAL SYSTEM: LED VU meter only
              * ============================================================ */
             
-            // Calculate VU level from audio buffer
+            // Calculate VU level from audio buffer (digital stepped output)
             float target_vu = calculate_vu_level(buffer, num_samples);
             
-            // Smooth the VU level to prevent flickering
-            vu_level = smooth_vu_level(vu_level, target_vu, VU_SMOOTH);
+            // Apply hysteresis to prevent flickering
+            vu_level = smooth_vu_level(vu_level, target_vu, 0.0f);  // 3rd param unused but kept for compatibility
             
             // Update white LED to show audio level
             // Blue LED stays off in minimal mode

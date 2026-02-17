@@ -97,27 +97,23 @@ void app_main(void)
     led_init();
     ESP_ERROR_CHECK(i2s_microphone_init());
     
-    // Conditionally initialize speaker based on detected hardware
-    // Note: Hardware detection happens in audio_detection_task, so we need to
-    // start it first, then check config after a small delay
-    
-    /* Start detection task first (it detects hardware) */
-    ESP_LOGI(TAG, "Starting Echoes of the Machine...");
-    xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, NULL);
-    
-    // Small delay to let hardware detection run
-    vTaskDelay(pdMS_TO_TICKS(100));
-    
-    // Now check hardware config and conditionally init speaker
+    // Check hardware config (already detected in system_init)
     hardware_config_t hw_config = get_hardware_config();
+    
     if (hw_config == HW_CONFIG_FULL) {
         ESP_LOGI(TAG, "Full hardware detected - initializing speaker");
         ESP_ERROR_CHECK(i2s_speaker_init());
-        
-        /* Start lux-based bird selection task - only for full hardware */
-        // xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
     } else {
         ESP_LOGI(TAG, "Minimal hardware detected - speaker disabled, LED VU mode");
+    }
+    
+    /* Start detection task */
+    ESP_LOGI(TAG, "Starting Echoes of the Machine...");
+    xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, NULL);
+    
+    /* Start lux-based bird selection task - only for full hardware */
+    if (hw_config == HW_CONFIG_FULL) {
+        // xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
     }
     
     ESP_LOGI(TAG, "System started successfully!");
