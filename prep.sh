@@ -19,5 +19,4 @@ popd
 
 echo "$MAC" >> ../mac-addresses.txt
 
-idf.py -p /dev/tty.usbserial-110 erase-flash
-idf.py -p /dev/tty.usbserial-110 flash
+./build.sh flash
