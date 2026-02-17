@@ -61,6 +61,25 @@
 /* VU Meter */
 #define VU_MAX_BRIGHTNESS   0.75f        // Maximum LED brightness during playback (0.0 to 1.0)
 
+/* Light sensor polling (lux_based_birds_task)
+ *
+ * LUX_POLL_INTERVAL_MS   — how often the sensor is read.
+ *   BH1750 measurement time is 120 ms typ / 180 ms max in continuous mode,
+ *   so 100 ms is the practical floor for fresh readings.
+ *   ALS-PT19 (analog) has no minimum — 100 ms is fine.
+ *
+ * LUX_CHANGE_THRESHOLD   — minimum change (lux) to update the bird mapper
+ *   and Markov chain.  Keeps CPU work near zero when the room is stable.
+ *   In a dark indoor room 1.0 lux is sensitive enough to catch a phone screen.
+ *
+ * LUX_FLASH_THRESHOLD    — larger jump that triggers an immediate bird call
+ *   response (torch / phone flash / lamp switching on).
+ *   Tuned for a dark room: a phone torch at 1 m typically adds 50–200 lux.
+ */
+#define LUX_POLL_INTERVAL_MS    100     // ms between sensor reads
+#define LUX_CHANGE_THRESHOLD    1.0f    // lux — minimum change to act on
+#define LUX_FLASH_THRESHOLD     30.0f   // lux — jump that triggers instant response
+
 /* GPIO Pins */
 #define PIN_LED_WHITE       13
 #define PIN_LED_BLUE        2

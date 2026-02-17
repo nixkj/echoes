@@ -32,8 +32,10 @@
 /**
  * Minimum lux change (absolute) that triggers a broadcast.
  * Prevents flooding the network with tiny sensor fluctuations.
+ * Lowered to 5 lux for dark indoor installations where phone screens
+ * and torches create changes in the 5–200 lux range.
  */
-#define ESPNOW_LUX_THRESHOLD    20.0f
+#define ESPNOW_LUX_THRESHOLD    5.0f
 
 /**
  * How long (ms) a remote event influences local bird selection before
