@@ -1,8 +1,9 @@
 /**
  * @file main.c
- * @brief Main application entry point with OTA support
+ * @brief Main application entry point with OTA support and startup reporting
  * 
- * Initializes WiFi, checks for firmware updates, then starts Echoes of the Machine
+ * Initializes WiFi, sends startup report, checks for firmware updates, 
+ * then starts Echoes of the Machine
  */
 
 #include "freertos/FreeRTOS.h"
@@ -14,6 +15,7 @@
 #include "echoes.h"
 #include "synthesis.h"
 #include "ota.h"
+#include "startup.h"
 
 // ESP32-specific includes
 #include "driver/i2s_std.h"
@@ -54,14 +56,44 @@ void app_main(void)
     /* Initialize LEDs first (needed for status feedback) */
     led_init();
     
-    /* Initialize system hardware */
+    /* Initialize system hardware (including light sensor) */
     ESP_LOGI(TAG, "Initializing system...");
     system_init();
     
+    /* Perform startup sleep and light sensor sampling */
+    ESP_LOGI(TAG, "Starting random sleep period with light sampling...");
+    startup_report_t startup_report;
+    esp_err_t startup_err = startup_sleep_and_sample(&startup_report);
+    
+    if (startup_err != ESP_OK) {
+        ESP_LOGW(TAG, "Startup sampling had issues: %s", esp_err_to_name(startup_err));
+        // Note: startup_report will already have error information filled in
+    }
+    
     /* Initialize WiFi and connect */
     ESP_LOGI(TAG, "Connecting to WiFi...");
-    if (wifi_init_and_connect()) {
+    bool wifi_connected = wifi_init_and_connect();
+    
+    if (wifi_connected) {
         ESP_LOGI(TAG, "WiFi connected successfully");
+        
+        /* Send startup report */
+        ESP_LOGI(TAG, "Sending startup report...");
+        esp_err_t report_err = startup_send_report(&startup_report);
+        
+        if (report_err == ESP_OK) {
+            ESP_LOGI(TAG, "Startup report sent successfully");
+            // Brief white LED flash to indicate successful report
+            set_led(BRIGHT_MID, 0);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            set_led(0, 0);
+        } else {
+            ESP_LOGW(TAG, "Failed to send startup report: %s", esp_err_to_name(report_err));
+            // Brief blue LED flash to indicate report failure
+            set_led(0, BRIGHT_MID);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            set_led(0, 0);
+        }
         
         /* Check for firmware updates */
         ESP_LOGI(TAG, "Checking for firmware updates...");
@@ -78,14 +110,17 @@ void app_main(void)
         /* Start periodic OTA check task (checks every 24 hours) */
         // xTaskCreate(ota_task, "ota_task", 8192, NULL, 3, NULL);
         
-        /* Optional: Disconnect WiFi to save power if not needed for operation */
-        /* Uncomment the line below if you want to disconnect after initial check */
-        // wifi_disconnect();
-	/* Alternative: */
-	esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // Light sleep
+        /* Optional: Set WiFi to light sleep mode to save power */
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // Light sleep
         
     } else {
-        ESP_LOGI(TAG, "WiFi connection failed - continuing without OTA");
+        ESP_LOGI(TAG, "WiFi connection failed - continuing without OTA and startup report");
+        
+        /* Add error to report for logging purposes */
+        startup_report.has_errors = true;
+        snprintf(startup_report.error_message, sizeof(startup_report.error_message),
+                 "WiFi connection failed");
+        
         /* Flash blue LED to indicate no WiFi */
         for (int i = 0; i < 3; i++) {
             set_led(0, BRIGHT_FULL);
@@ -119,6 +154,18 @@ void app_main(void)
     }
     
     ESP_LOGI(TAG, "System started successfully!");
+    
+    /* Log final startup summary */
+    ESP_LOGI(TAG, "Startup Summary:");
+    ESP_LOGI(TAG, "  MAC: %s", startup_report.mac_address);
+    ESP_LOGI(TAG, "  Node Type: %s", startup_report.node_type);
+    ESP_LOGI(TAG, "  Sleep Duration: %lu ms", startup_report.sleep_duration_ms);
+    ESP_LOGI(TAG, "  Avg Light Level: %.2f lux (%lu samples)",
+             startup_report.avg_light_level, startup_report.light_samples);
+    ESP_LOGI(TAG, "  Errors: %s", startup_report.has_errors ? "YES" : "NO");
+    if (startup_report.has_errors) {
+        ESP_LOGI(TAG, "  Error Message: %s", startup_report.error_message);
+    }
     
     /* Indicate system ready with white LED pulse */
     set_led(BRIGHT_FULL, 0);
