@@ -14,7 +14,7 @@
  * CONFIGURATION
  * ======================================================================== */
 
-#define STARTUP_URL      "http://192.168.101.2:8001/startup"
+#define STARTUP_REPORT_URL      "http://192.168.101.2:8001/startup"
 #define NODE_TYPE               "echoes-v1"
 #define STARTUP_SLEEP_MIN_MS    0
 #define STARTUP_SLEEP_MAX_MS    5000
