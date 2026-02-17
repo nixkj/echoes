@@ -51,6 +51,9 @@ void app_main(void)
     ESP_LOGI(TAG, "Firmware Version: %s", FIRMWARE_VERSION);
     ESP_LOGI(TAG, "========================================");
     
+    /* Initialize LEDs first (needed for status feedback) */
+    led_init();
+    
     /* Initialize system hardware */
     ESP_LOGI(TAG, "Initializing system...");
     system_init();
@@ -92,9 +95,8 @@ void app_main(void)
         }
     }
 
-    // Initialize hardware
+    // Initialize audio hardware
     ESP_LOGI(TAG, "Initializing audio hardware...");
-    led_init();
     ESP_ERROR_CHECK(i2s_microphone_init());
     
     // Check hardware config (already detected in system_init)
