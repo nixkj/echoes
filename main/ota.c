@@ -270,8 +270,8 @@ static bool fetch_version_string(char *version_buffer, size_t buffer_size)
     
     esp_http_client_config_t config = {
         .url = VERSION_URL,
-        .event_handler = version_http_event_handler,  // Use new handler
-        .user_data = &recv_data,                       // Pass our buffer
+        .event_handler = version_http_event_handler,
+        .user_data = &recv_data,
         .timeout_ms = 5000,
     };
     
@@ -290,7 +290,6 @@ static bool fetch_version_string(char *version_buffer, size_t buffer_size)
                  status_code, recv_data.data_len);
         
         if (status_code == 200 && recv_data.data_len > 0) {
-            // Data is already in version_buffer via event handler
             // Remove trailing whitespace/newlines
             for (int i = recv_data.data_len - 1; i >= 0; i--) {
                 if (version_buffer[i] == '\n' || version_buffer[i] == '\r' || 
@@ -344,18 +343,22 @@ bool ota_perform_update(const char *url)
     /* Blink blue LED during update */
     set_led(0, BRIGHT_MID);
     
+    // Configure HTTP client for plain HTTP (not HTTPS)
     esp_http_client_config_t config = {
         .url = url,
         .event_handler = ota_http_event_handler,
         .timeout_ms = 30000,
         .buffer_size = OTA_BUFFER_SIZE,
-        .skip_cert_common_name_check = true,  // Skip cert check for HTTP (not HTTPS)
+        .keep_alive_enable = true,
     };
 
+    // Use the basic OTA config - skip_cert_common_name_check isn't needed for HTTP
     esp_https_ota_config_t ota_config = {
         .http_config = &config,
+        .http_client_init_cb = NULL,  // No additional init needed
     };
 
+    ESP_LOGI(TAG, "Starting download...");
     esp_err_t ret = esp_https_ota(&ota_config);
     
     if (ret == ESP_OK) {
@@ -371,7 +374,7 @@ bool ota_perform_update(const char *url)
         esp_restart();
         return true;
     } else {
-        ESP_LOGE(TAG, "OTA update failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "OTA update failed: %s (0x%x)", esp_err_to_name(ret), ret);
         s_ota_state.ota_status = OTA_STATUS_FAILED;
         
         /* Indicate failure with rapid blue blink */
