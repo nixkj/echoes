@@ -124,10 +124,14 @@ void app_main(void)
 
     /* Small delay to ensure all hardware is stable before sampling */
     vTaskDelay(pdMS_TO_TICKS(500));
-    
+
+    // Hardware config already detected in system_init — fetch it now so
+    // startup_sleep_and_sample can embed the correct node_type in the report.
+    hardware_config_t hw_config = get_hardware_config();
+
     /* Perform startup sleep and light sensor sampling */
     ESP_LOGI(TAG, "Starting random sleep period with light sampling...");
-    esp_err_t startup_err = startup_sleep_and_sample(&startup_report);
+    esp_err_t startup_err = startup_sleep_and_sample(&startup_report, hw_config);
     
     if (startup_err != ESP_OK) {
         ESP_LOGW(TAG, "Startup sampling had issues: %s", esp_err_to_name(startup_err));
@@ -137,9 +141,6 @@ void app_main(void)
     // Initialize audio hardware
     ESP_LOGI(TAG, "Initializing audio hardware...");
     ESP_ERROR_CHECK(i2s_microphone_init());
-    
-    // Check hardware config (already detected in system_init)
-    hardware_config_t hw_config = get_hardware_config();
     
     if (hw_config == HW_CONFIG_FULL) {
         ESP_LOGI(TAG, "Full hardware detected - initializing speaker");
@@ -170,7 +171,7 @@ void app_main(void)
     if (wifi_connected) {
         /* g_bird_mapper is an internal symbol in echoes.c; we expose it via
          * a getter so we can pass it to the mesh layer. */
-        espnow_mesh_init(get_bird_mapper(), get_markov());
+        espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
     }
 
     /* Start detection task */

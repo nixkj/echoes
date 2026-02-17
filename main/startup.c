@@ -55,7 +55,7 @@ static uint32_t generate_random_sleep_duration(void)
  * MAIN FUNCTIONS
  * ======================================================================== */
 
-esp_err_t startup_sleep_and_sample(startup_report_t *report)
+esp_err_t startup_sleep_and_sample(startup_report_t *report, hardware_config_t hw_config)
 {
     if (!report) {
         return ESP_ERR_INVALID_ARG;
@@ -63,7 +63,19 @@ esp_err_t startup_sleep_and_sample(startup_report_t *report)
     
     // Initialize report structure
     memset(report, 0, sizeof(startup_report_t));
-    strncpy(report->node_type, NODE_TYPE, sizeof(report->node_type) - 1);
+    /* Derive node_type from detected hardware rather than a compile-time string */
+    switch (hw_config) {
+        case HW_CONFIG_FULL:
+            strncpy(report->node_type, "echoes-full", sizeof(report->node_type) - 1);
+            break;
+        case HW_CONFIG_MINIMAL:
+            strncpy(report->node_type, "echoes-minimal", sizeof(report->node_type) - 1);
+            break;
+        default:
+            strncpy(report->node_type, "echoes-unknown", sizeof(report->node_type) - 1);
+            break;
+    }
+    report->node_type[sizeof(report->node_type) - 1] = '\0';  /* guarantee NUL */
     
     // Get MAC address
     esp_err_t ret = startup_get_mac_address(report->mac_address);

@@ -9,13 +9,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "echoes.h"
 
 /* ========================================================================
  * CONFIGURATION
  * ======================================================================== */
 
 #define STARTUP_REPORT_URL      "http://192.168.101.2:8001/startup"
-#define NODE_TYPE               "echoes-v1"
 #define STARTUP_SLEEP_MIN_MS    0
 #define STARTUP_SLEEP_MAX_MS    5000
 #define STARTUP_HTTP_TIMEOUT_MS 5000  // 3 second timeout (was 5 seconds)
@@ -46,10 +46,11 @@ typedef struct {
  * - Samples light sensor during sleep period
  * - Collects system information (MAC, node type, errors)
  * 
- * @param report Pointer to startup_report_t structure to fill
+ * @param report     Pointer to startup_report_t structure to fill
+ * @param hw_config  Hardware configuration, used to set node_type string
  * @return ESP_OK on success, error code otherwise
  */
-esp_err_t startup_sleep_and_sample(startup_report_t *report);
+esp_err_t startup_sleep_and_sample(startup_report_t *report, hardware_config_t hw_config);
 
 /**
  * @brief Send startup report to server via HTTP POST
