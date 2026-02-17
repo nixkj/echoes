@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include "echoes.h"       // detection_type_t, bird_call_mapper_t
 #include "synthesis.h"    // bird_call_mapper_t
+#include "markov.h"
 
 /* ========================================================================
  * CONFIGURATION
@@ -79,7 +80,7 @@ typedef struct __attribute__((packed)) {
  *                messages can update bird selection immediately.
  * @return true on success
  */
-bool espnow_mesh_init(bird_call_mapper_t *mapper);
+bool espnow_mesh_init(bird_call_mapper_t *mapper, markov_chain_t *mc);
 
 /**
  * @brief Broadcast a sound-detection event to all peers.
@@ -107,5 +108,10 @@ void espnow_mesh_broadcast_light(float lux);
  * smoothly returns to its own light-level-based selection.
  */
 void espnow_mesh_tick(void);
+
+/**
+ * @brief Get pointer to the markov chain managed by the mesh layer.
+ */
+markov_chain_t *espnow_mesh_get_markov(void);
 
 #endif /* ESPNOW_MESH_H */

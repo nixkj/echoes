@@ -6,6 +6,7 @@
 #include "echoes.h"
 #include "synthesis.h"
 #include "espnow_mesh.h"
+#include "markov.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -25,6 +26,7 @@ static const char *TAG = "ECHOES";
 /* Global system state */
 static system_state_t g_system_state = {0};
 static bird_call_mapper_t g_bird_mapper = {0};
+static markov_chain_t g_markov = {0};
 static audio_buffer_t g_audio_buffer = {0};  // Static buffer for bird calls
 
 /* Global hardware configuration */
@@ -276,6 +278,9 @@ void system_init(void) {
     
     // Initialize bird mapper
     bird_mapper_init(&g_bird_mapper, SAMPLE_RATE);
+
+    // Initialize Markov chain (NVS must already be initialised by app_main)
+    markov_init(&g_markov, &g_bird_mapper);
     
     ESP_LOGI(TAG, "System initialized");
 }
@@ -536,6 +541,7 @@ void audio_detection_task(void *param) {
                     if (state->clap_count >= CLAP_CONFIRM) {
                         ESP_LOGI(TAG, "👏 CLAP! (w:%.0f, v:%.0f)", mag_w, mag_v);
                         espnow_mesh_broadcast_sound(DETECTION_CLAP);
+                        markov_on_event(&g_markov, DETECTION_CLAP, get_lux_level());
                         
                         // Generate and play bird call using static buffer
                         bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_CLAP);
@@ -554,6 +560,7 @@ void audio_detection_task(void *param) {
                     if (state->whistle_count >= WHISTLE_CONFIRM) {
                         ESP_LOGI(TAG, "🎵 WHISTLE! (w:%.0f, v:%.0f)", mag_w, mag_v);
                         espnow_mesh_broadcast_sound(DETECTION_WHISTLE);
+                        markov_on_event(&g_markov, DETECTION_WHISTLE, get_lux_level());
                         
                         // Generate and play bird call using static buffer
                         bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_WHISTLE);
@@ -572,6 +579,7 @@ void audio_detection_task(void *param) {
                     if (state->voice_count >= VOICE_CONFIRM) {
                         ESP_LOGI(TAG, "🗣️ VOICE! (w:%.0f, v:%.0f)", mag_w, mag_v);
                         espnow_mesh_broadcast_sound(DETECTION_VOICE);
+                        markov_on_event(&g_markov, DETECTION_VOICE, get_lux_level());
                         
                         // Generate and play bird call using static buffer
                         bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_VOICE);
@@ -707,8 +715,12 @@ void lux_based_birds_task(void *param) {
         float lux = get_lux_level();
         
         if (lux >= 0) {
-            /* Update local mapper immediately */
-            bird_mapper_update_for_lux(&g_bird_mapper, lux);
+            /* Notify chain of lux change */
+            markov_set_lux(&g_markov, lux);
+
+            /* Apply Markov lux bias before updating mapper */
+            float markov_bias = markov_get_lux_bias(&g_markov);
+            bird_mapper_update_for_lux(&g_bird_mapper, lux + markov_bias);
 
             /* Broadcast so neighbours can react */
             espnow_mesh_broadcast_light(lux);
@@ -738,6 +750,11 @@ void lux_based_birds_task(void *param) {
 bird_call_mapper_t *get_bird_mapper(void)
 {
     return &g_bird_mapper;
+}
+
+markov_chain_t *get_markov(void)
+{
+    return &g_markov;
 }
 
 /**

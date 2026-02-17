@@ -17,6 +17,7 @@
 #include "ota.h"
 #include "startup.h"
 #include "espnow_mesh.h"
+#include "markov.h"
 
 // ESP32-specific includes
 #include "driver/i2s_std.h"
@@ -25,6 +26,7 @@
 #include "esp_adc/adc_oneshot.h"
 #include "driver/ledc.h"
 #include "esp_check.h"
+#include "nvs_flash.h"
 
 static const char *TAG = "MAIN";
 
@@ -32,7 +34,7 @@ static const char *TAG = "MAIN";
 void ota_validation_task(void *param)
 {
     // Wait for system to run successfully for 2 minutes
-    ESP_LOGI(TAG, "OTA validation (in case there was an update): Waiting 2 minutes before marking valid...");
+    ESP_LOGI(TAG, "OTA validation: Waiting 2 minutes before marking valid...");
     vTaskDelay(pdMS_TO_TICKS(120000));  // 2 minutes
     
     const esp_partition_t *running = esp_ota_get_running_partition();
@@ -54,6 +56,15 @@ void app_main(void)
     ESP_LOGI(TAG, "Firmware Version: %s", FIRMWARE_VERSION);
     ESP_LOGI(TAG, "========================================");
     
+    /* Initialise NVS flash (required by Markov chain persistence) */
+    esp_err_t nvs_ret = nvs_flash_init();
+    if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+        nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS partition issue — erasing and reinitialising");
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+
     /* Initialize LEDs FIRST (needed for ALL status feedback including OTA) */
     led_init();
     
@@ -159,7 +170,7 @@ void app_main(void)
     if (wifi_connected) {
         /* g_bird_mapper is an internal symbol in echoes.c; we expose it via
          * a getter so we can pass it to the mesh layer. */
-        espnow_mesh_init(get_bird_mapper());
+        espnow_mesh_init(get_bird_mapper(), get_markov());
     }
 
     /* Start detection task */

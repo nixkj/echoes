@@ -5,6 +5,7 @@
 
 #include "startup.h"
 #include "echoes.h"
+#include "ota.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -180,6 +181,7 @@ esp_err_t startup_send_report(const startup_report_t *report)
     int len = snprintf(post_data, sizeof(post_data),
         "{"
         "\"mac\":\"%s\","
+        "\"firmware\":\"%s\","
         "\"node_type\":\"%s\","
         "\"avg_light\":%.2f,"
         "\"light_samples\":%lu,"
@@ -188,6 +190,7 @@ esp_err_t startup_send_report(const startup_report_t *report)
         "\"error_message\":\"%s\""
         "}",
         report->mac_address,
+	FIRMWARE_VERSION,
         report->node_type,
         report->avg_light_level,
         report->light_samples,

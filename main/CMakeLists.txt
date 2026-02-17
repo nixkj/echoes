@@ -8,6 +8,7 @@ idf_component_register(
         "ota.c"
 	"startup.c"
 	"espnow_mesh.c"
+	"markov.c"
     INCLUDE_DIRS 
         "."
     REQUIRES 

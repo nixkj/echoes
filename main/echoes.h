@@ -196,4 +196,11 @@ bool has_audio_output(void);
 /* Bird mapper access (for ESP-NOW mesh initialisation) */
 bird_call_mapper_t *get_bird_mapper(void);
 
+/* Markov chain access.
+ * Forward declaration only — markov.h includes echoes.h, so we cannot
+ * include markov.h here without a circular dependency.  A pointer
+ * declaration needs only the tag, not the full struct definition.    */
+typedef struct markov_chain_t markov_chain_t;
+markov_chain_t *get_markov(void);
+
 #endif /* SA_BIRD_SYSTEM_H */

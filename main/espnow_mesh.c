@@ -21,6 +21,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "markov.h"
 #include <string.h>
 #include <math.h>
 
@@ -35,6 +36,7 @@ static const uint8_t BROADCAST_MAC[ESP_NOW_ETH_ALEN] =
  * ======================================================================== */
 
 static bird_call_mapper_t *s_mapper          = NULL;
+static markov_chain_t     *s_markov          = NULL;
 static QueueHandle_t       s_rx_queue        = NULL;
 
 /* Last lux value we broadcast — used to suppress redundant transmissions */
@@ -139,6 +141,9 @@ static void espnow_rx_task(void *param)
                 float effective = blend_lux(s_local_lux, s_remote_lux);
                 if (s_mapper) bird_mapper_update_for_lux(s_mapper, effective);
 
+                /* Teach the Markov chain about this remote event */
+                if (s_markov) markov_on_event(s_markov, (detection_type_t)msg.detection, s_local_lux);
+
                 ESP_LOGI(TAG, "Remote sound (%d) → effective lux %.0f",
                          msg.detection, effective);
                 break;
@@ -155,6 +160,15 @@ static void espnow_rx_task(void *param)
                 float effective = blend_lux(s_local_lux, s_remote_lux);
                 if (s_mapper) bird_mapper_update_for_lux(s_mapper, effective);
 
+                /* Update chain with remote light info (IDLE event at remote lux) */
+                if (s_markov) markov_on_event(s_markov, DETECTION_NONE, msg.lux);
+
+                /* Also apply Markov lux bias to local mapper */
+                if (s_markov && s_mapper) {
+                    float bias = markov_get_lux_bias(s_markov);
+                    bird_mapper_update_for_lux(s_mapper, effective + bias);
+                }
+
                 ESP_LOGI(TAG, "Remote lux %.1f → effective lux %.0f",
                          msg.lux, effective);
                 break;
@@ -165,8 +179,9 @@ static void espnow_rx_task(void *param)
             }
         }
 
-        /* TTL expiry check — also runs when queue times out */
+        /* TTL expiry check and Markov autonomous call check */
         espnow_mesh_tick();
+        if (s_markov) markov_tick(s_markov);
     }
 }
 
@@ -174,8 +189,9 @@ static void espnow_rx_task(void *param)
  * PUBLIC API
  * ======================================================================== */
 
-bool espnow_mesh_init(bird_call_mapper_t *mapper)
+bool espnow_mesh_init(bird_call_mapper_t *mapper, markov_chain_t *mc)
 {
+    s_markov = mc;
     s_mapper = mapper;
 
     /* Create receive queue (holds up to 8 messages) */
@@ -255,6 +271,9 @@ void espnow_mesh_broadcast_light(float lux)
     s_local_lux   = lux;
     s_last_tx_lux = lux;
 
+    /* Teach the chain our own lux transition */
+    if (s_markov) markov_set_lux(s_markov, lux);
+
     espnow_msg_t msg = {
         .magic     = ESPNOW_MAGIC,
         .msg_type  = (uint8_t)ESPNOW_MSG_LIGHT,
@@ -273,6 +292,11 @@ void espnow_mesh_broadcast_light(float lux)
     }
 }
 
+markov_chain_t *espnow_mesh_get_markov(void)
+{
+    return s_markov;
+}
+
 void espnow_mesh_tick(void)
 {
     if (s_remote_lux < 0.0f) return;   /* No remote influence active */
@@ -284,9 +308,10 @@ void espnow_mesh_tick(void)
         ESP_LOGI(TAG, "Remote event TTL expired — reverting to local lux %.1f",
                  s_local_lux);
         s_remote_lux = -1.0f;
-        /* Restore local lux-based selection */
+        /* Restore local lux-based selection with Markov bias */
         if (s_mapper && s_local_lux >= 0.0f) {
-            bird_mapper_update_for_lux(s_mapper, s_local_lux);
+            float bias = s_markov ? markov_get_lux_bias(s_markov) : 0.0f;
+            bird_mapper_update_for_lux(s_mapper, s_local_lux + bias);
         }
     }
 }
