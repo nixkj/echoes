@@ -129,23 +129,6 @@ size_t generate_silence(bird_synthesizer_t *synth, int16_t *buffer, size_t offse
  * BIRD CALL GENERATORS (append to buffer)
  * ======================================================================== */
 
-size_t generate_hadada_ibis(bird_synthesizer_t *synth, audio_buffer_t *out) {
-    size_t pos = 0;
-    
-    // 'haa-haa-haa-de-dah'
-    pos += generate_harsh(synth, out->buffer, pos, 1400, 180, 4, 0.38f);
-    pos += generate_silence(synth, out->buffer, pos, 80);
-    pos += generate_harsh(synth, out->buffer, pos, 1300, 170, 4, 0.38f);
-    pos += generate_silence(synth, out->buffer, pos, 80);
-    pos += generate_harsh(synth, out->buffer, pos, 1250, 160, 4, 0.38f);
-    pos += generate_silence(synth, out->buffer, pos, 70);
-    pos += generate_harsh(synth, out->buffer, pos, 1200, 140, 4, 0.40f);
-    pos += generate_silence(synth, out->buffer, pos, 60);
-    pos += generate_harsh(synth, out->buffer, pos, 1000, 180, 4, 0.40f);
-    
-    out->num_samples = pos;
-    return pos;
-}
 
 size_t generate_piet_my_vrou(bird_synthesizer_t *synth, audio_buffer_t *out) {
     size_t pos = 0;
@@ -194,17 +177,6 @@ size_t generate_southern_boubou(bird_synthesizer_t *synth, audio_buffer_t *out) 
     return pos;
 }
 
-size_t generate_pied_crow(bird_synthesizer_t *synth, audio_buffer_t *out) {
-    size_t pos = 0;
-    
-    for (int i = 0; i < 3; i++) {
-        pos += generate_harsh(synth, out->buffer, pos, 950, 280, 5, 0.36f);
-        pos += generate_silence(synth, out->buffer, pos, 350);
-    }
-    
-    out->num_samples = pos;
-    return pos;
-}
 
 size_t generate_red_eyed_dove(bird_synthesizer_t *synth, audio_buffer_t *out) {
     size_t pos = 0;
@@ -304,24 +276,27 @@ size_t generate_southern_masked_weaver(bird_synthesizer_t *synth, audio_buffer_t
 void bird_mapper_init(bird_call_mapper_t *mapper, uint32_t sample_rate) {
     mapper->synth.sample_rate = sample_rate;
     mapper->synth.chunk_size = CHUNK_SIZE;
-    
-    // Initialize default bird lists
-    mapper->whistle_birds[0] = (bird_info_t){"piet_my_vrou", "Red-chested Cuckoo"};
+
+    /* Default (neutral) lists — overridden by bird_mapper_update_for_lux() */
+
+    /* Whistle -> melodic, active birds */
+    mapper->whistle_birds[0] = (bird_info_t){"piet_my_vrou",   "Red-chested Cuckoo"};
     mapper->whistle_birds[1] = (bird_info_t){"cape_robin_chat", "Cape Robin-Chat"};
     mapper->whistle_birds[2] = (bird_info_t){"glossy_starling", "Glossy Starling"};
-    mapper->whistle_birds[3] = (bird_info_t){"cape_canary", "Cape Canary"};
+    mapper->whistle_birds[3] = (bird_info_t){"cape_canary",     "Cape Canary"};
     mapper->num_whistle_birds = 4;
-    
-    mapper->voice_birds[0] = (bird_info_t){"red_eyed_dove", "Red-eyed Dove"};
-    mapper->voice_birds[1] = (bird_info_t){"southern_boubou", "Southern Boubou"};
-    mapper->voice_birds[2] = (bird_info_t){"spotted_eagle_owl", "Eagle-Owl"};
+
+    /* Voice -> gentle, mid-range birds */
+    mapper->voice_birds[0] = (bird_info_t){"red_eyed_dove",    "Red-eyed Dove"};
+    mapper->voice_birds[1] = (bird_info_t){"southern_boubou",  "Southern Boubou"};
+    mapper->voice_birds[2] = (bird_info_t){"spotted_eagle_owl","Eagle-Owl"};
     mapper->num_voice_birds = 3;
-    
-    mapper->clap_birds[0] = (bird_info_t){"hadada_ibis", "Hadada Ibis"};
-    mapper->clap_birds[1] = (bird_info_t){"pied_crow", "Pied Crow"};
-    mapper->clap_birds[2] = (bird_info_t){"fork_tailed_drongo", "Drongo"};
-    mapper->clap_birds[3] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
-    mapper->num_clap_birds = 4;
+
+    /* Clap -> energetic birds (no hadada or pied crow) */
+    mapper->clap_birds[0] = (bird_info_t){"fork_tailed_drongo",    "Drongo"};
+    mapper->clap_birds[1] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
+    mapper->clap_birds[2] = (bird_info_t){"cape_canary",            "Cape Canary"};
+    mapper->num_clap_birds = 3;
 }
 
 bird_info_t bird_mapper_get_bird(bird_call_mapper_t *mapper,
@@ -362,17 +337,15 @@ size_t bird_mapper_generate_call(bird_call_mapper_t *mapper,
         const char *name;
         gen_func_t func;
     } bird_funcs[] = {
-        {"hadada_ibis", generate_hadada_ibis},
-        {"piet_my_vrou", generate_piet_my_vrou},
-        {"cape_robin_chat", generate_cape_robin_chat},
-        {"southern_boubou", generate_southern_boubou},
-        {"pied_crow", generate_pied_crow},
-        {"red_eyed_dove", generate_red_eyed_dove},
-        {"glossy_starling", generate_glossy_starling},
-        {"spotted_eagle_owl", generate_spotted_eagle_owl},
-        {"fork_tailed_drongo", generate_fork_tailed_drongo},
-        {"cape_canary", generate_cape_canary},
-        {"southern_masked_weaver", generate_southern_masked_weaver},
+        {"piet_my_vrou",          generate_piet_my_vrou},
+        {"cape_robin_chat",       generate_cape_robin_chat},
+        {"southern_boubou",       generate_southern_boubou},
+        {"red_eyed_dove",         generate_red_eyed_dove},
+        {"glossy_starling",       generate_glossy_starling},
+        {"spotted_eagle_owl",     generate_spotted_eagle_owl},
+        {"fork_tailed_drongo",    generate_fork_tailed_drongo},
+        {"cape_canary",           generate_cape_canary},
+        {"southern_masked_weaver",generate_southern_masked_weaver},
     };
     
     for (int i = 0; i < sizeof(bird_funcs) / sizeof(bird_funcs[0]); i++) {
@@ -385,54 +358,75 @@ size_t bird_mapper_generate_call(bird_call_mapper_t *mapper,
 }
 
 void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
-    if (lux < 10) {  // Night
-        mapper->clap_birds[0] = (bird_info_t){"spotted_eagle_owl", "Spotted Eagle-Owl"};
-        mapper->num_clap_birds = 1;
-        
-        mapper->voice_birds[0] = (bird_info_t){"spotted_eagle_owl", "Eagle-Owl"};
-        mapper->num_voice_birds = 1;
-    }
-    else if (lux < 100) {  // Dawn/Dusk
-        mapper->clap_birds[0] = (bird_info_t){"red_eyed_dove", "Red-eyed Dove"};
-        mapper->clap_birds[1] = (bird_info_t){"spotted_eagle_owl", "Spotted Eagle-Owl"};
-        mapper->clap_birds[2] = (bird_info_t){"hadada_ibis", "Hadada Ibis"};
-        mapper->num_clap_birds = 3;
-        
-        mapper->voice_birds[0] = (bird_info_t){"red_eyed_dove", "Red-eyed Dove"};
-        mapper->voice_birds[1] = (bird_info_t){"spotted_eagle_owl", "Eagle-Owl"};
-        mapper->num_voice_birds = 2;
-    }
-    else if (lux < 500) {  // Overcast
-        mapper->clap_birds[0] = (bird_info_t){"hadada_ibis", "Hadada Ibis"};
-        mapper->clap_birds[1] = (bird_info_t){"pied_crow", "Pied Crow"};
-        mapper->clap_birds[2] = (bird_info_t){"red_eyed_dove", "Red-eyed Dove"};
-        mapper->clap_birds[3] = (bird_info_t){"fork_tailed_drongo", "Drongo"};
-        mapper->num_clap_birds = 4;
-        
-        mapper->voice_birds[0] = (bird_info_t){"red_eyed_dove", "Red-eyed Dove"};
-        mapper->voice_birds[1] = (bird_info_t){"southern_boubou", "Southern Boubou"};
-        mapper->num_voice_birds = 2;
-        
-        mapper->whistle_birds[0] = (bird_info_t){"piet_my_vrou", "Red-chested Cuckoo"};
-        mapper->whistle_birds[1] = (bird_info_t){"cape_robin_chat", "Cape Robin-Chat"};
+    /*
+     * Light-level mood mapping (no hadada ibis, no pied crow):
+     *
+     *  < 10 lux  : Night     — soft, mellow only (owl, dove)
+     *  < 100 lux : Dawn/Dusk — gentle chorus (dove, boubou, robin)
+     *  < 500 lux : Overcast  — moderate variety
+     *  >= 500 lux: Sunny     — full lively set (canary, starling, drongo, weaver)
+     */
+    if (lux < 10.0f) {
+        /* Night: very mellow — owl for all categories */
+        mapper->whistle_birds[0] = (bird_info_t){"red_eyed_dove",    "Red-eyed Dove"};
+        mapper->whistle_birds[1] = (bird_info_t){"southern_boubou",  "Southern Boubou"};
         mapper->num_whistle_birds = 2;
+
+        mapper->voice_birds[0] = (bird_info_t){"spotted_eagle_owl", "Eagle-Owl"};
+        mapper->voice_birds[1] = (bird_info_t){"red_eyed_dove",     "Red-eyed Dove"};
+        mapper->num_voice_birds = 2;
+
+        mapper->clap_birds[0] = (bird_info_t){"spotted_eagle_owl", "Eagle-Owl"};
+        mapper->num_clap_birds = 1;
     }
-    else {  // Sunny
-        mapper->clap_birds[0] = (bird_info_t){"hadada_ibis", "Hadada Ibis"};
-        mapper->clap_birds[1] = (bird_info_t){"pied_crow", "Pied Crow"};
-        mapper->clap_birds[2] = (bird_info_t){"fork_tailed_drongo", "Drongo"};
-        mapper->clap_birds[3] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
-        mapper->num_clap_birds = 4;
-        
-        mapper->voice_birds[0] = (bird_info_t){"red_eyed_dove", "Red-eyed Dove"};
-        mapper->voice_birds[1] = (bird_info_t){"southern_boubou", "Southern Boubou"};
-        mapper->voice_birds[2] = (bird_info_t){"spotted_eagle_owl", "Eagle-Owl"};
+    else if (lux < 100.0f) {
+        /* Dawn/Dusk: gentle, mellow chorus */
+        mapper->whistle_birds[0] = (bird_info_t){"cape_robin_chat",  "Cape Robin-Chat"};
+        mapper->whistle_birds[1] = (bird_info_t){"red_eyed_dove",    "Red-eyed Dove"};
+        mapper->num_whistle_birds = 2;
+
+        mapper->voice_birds[0] = (bird_info_t){"red_eyed_dove",    "Red-eyed Dove"};
+        mapper->voice_birds[1] = (bird_info_t){"southern_boubou",  "Southern Boubou"};
+        mapper->voice_birds[2] = (bird_info_t){"spotted_eagle_owl","Eagle-Owl"};
         mapper->num_voice_birds = 3;
-        
-        mapper->whistle_birds[0] = (bird_info_t){"piet_my_vrou", "Red-chested Cuckoo"};
+
+        mapper->clap_birds[0] = (bird_info_t){"red_eyed_dove",    "Red-eyed Dove"};
+        mapper->clap_birds[1] = (bird_info_t){"southern_boubou",  "Southern Boubou"};
+        mapper->num_clap_birds = 2;
+    }
+    else if (lux < 500.0f) {
+        /* Overcast: moderate mix, leaning gentle */
+        mapper->whistle_birds[0] = (bird_info_t){"piet_my_vrou",    "Red-chested Cuckoo"};
         mapper->whistle_birds[1] = (bird_info_t){"cape_robin_chat", "Cape Robin-Chat"};
         mapper->whistle_birds[2] = (bird_info_t){"glossy_starling", "Glossy Starling"};
-        mapper->whistle_birds[3] = (bird_info_t){"cape_canary", "Cape Canary"};
+        mapper->num_whistle_birds = 3;
+
+        mapper->voice_birds[0] = (bird_info_t){"red_eyed_dove",    "Red-eyed Dove"};
+        mapper->voice_birds[1] = (bird_info_t){"southern_boubou",  "Southern Boubou"};
+        mapper->num_voice_birds = 2;
+
+        mapper->clap_birds[0] = (bird_info_t){"fork_tailed_drongo",    "Drongo"};
+        mapper->clap_birds[1] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
+        mapper->clap_birds[2] = (bird_info_t){"glossy_starling",        "Glossy Starling"};
+        mapper->num_clap_birds = 3;
+    }
+    else {
+        /* Bright/Sunny: full lively set */
+        mapper->whistle_birds[0] = (bird_info_t){"piet_my_vrou",   "Red-chested Cuckoo"};
+        mapper->whistle_birds[1] = (bird_info_t){"cape_robin_chat", "Cape Robin-Chat"};
+        mapper->whistle_birds[2] = (bird_info_t){"glossy_starling", "Glossy Starling"};
+        mapper->whistle_birds[3] = (bird_info_t){"cape_canary",     "Cape Canary"};
         mapper->num_whistle_birds = 4;
+
+        mapper->voice_birds[0] = (bird_info_t){"red_eyed_dove",    "Red-eyed Dove"};
+        mapper->voice_birds[1] = (bird_info_t){"southern_boubou",  "Southern Boubou"};
+        mapper->voice_birds[2] = (bird_info_t){"spotted_eagle_owl","Eagle-Owl"};
+        mapper->num_voice_birds = 3;
+
+        mapper->clap_birds[0] = (bird_info_t){"fork_tailed_drongo",    "Drongo"};
+        mapper->clap_birds[1] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
+        mapper->clap_birds[2] = (bird_info_t){"cape_canary",            "Cape Canary"};
+        mapper->clap_birds[3] = (bird_info_t){"glossy_starling",        "Glossy Starling"};
+        mapper->num_clap_birds = 4;
     }
 }

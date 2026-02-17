@@ -16,6 +16,7 @@
 #include "synthesis.h"
 #include "ota.h"
 #include "startup.h"
+#include "espnow_mesh.h"
 
 // ESP32-specific includes
 #include "driver/i2s_std.h"
@@ -31,7 +32,7 @@ static const char *TAG = "MAIN";
 void ota_validation_task(void *param)
 {
     // Wait for system to run successfully for 2 minutes
-    ESP_LOGI(TAG, "OTA validation: Waiting 2 minutes before marking valid...");
+    ESP_LOGI(TAG, "OTA validation (in case there was an update): Waiting 2 minutes before marking valid...");
     vTaskDelay(pdMS_TO_TICKS(120000));  // 2 minutes
     
     const esp_partition_t *running = esp_ota_get_running_partition();
@@ -69,7 +70,7 @@ void app_main(void)
     
     if (wifi_connected) {
         ESP_LOGI(TAG, "WiFi connected successfully");
-        
+
         /* Check for firmware updates */
         ESP_LOGI(TAG, "Checking for firmware updates...");
         bool updated = ota_check_and_update();
@@ -154,13 +155,20 @@ void app_main(void)
         set_led(0, 0);
     }
     
+    /* Initialise ESP-NOW mesh — WiFi must already be up */
+    if (wifi_connected) {
+        /* g_bird_mapper is an internal symbol in echoes.c; we expose it via
+         * a getter so we can pass it to the mesh layer. */
+        espnow_mesh_init(get_bird_mapper());
+    }
+
     /* Start detection task */
     ESP_LOGI(TAG, "Starting Echoes of the Machine...");
     xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, NULL);
     
     /* Start lux-based bird selection task - only for full hardware */
     if (hw_config == HW_CONFIG_FULL) {
-        // xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
+        xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
     }
     
     ESP_LOGI(TAG, "System started successfully!");

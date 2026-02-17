@@ -5,6 +5,7 @@
 
 #include "echoes.h"
 #include "synthesis.h"
+#include "espnow_mesh.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -534,6 +535,7 @@ void audio_detection_task(void *param) {
                     
                     if (state->clap_count >= CLAP_CONFIRM) {
                         ESP_LOGI(TAG, "👏 CLAP! (w:%.0f, v:%.0f)", mag_w, mag_v);
+                        espnow_mesh_broadcast_sound(DETECTION_CLAP);
                         
                         // Generate and play bird call using static buffer
                         bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_CLAP);
@@ -551,6 +553,7 @@ void audio_detection_task(void *param) {
                     
                     if (state->whistle_count >= WHISTLE_CONFIRM) {
                         ESP_LOGI(TAG, "🎵 WHISTLE! (w:%.0f, v:%.0f)", mag_w, mag_v);
+                        espnow_mesh_broadcast_sound(DETECTION_WHISTLE);
                         
                         // Generate and play bird call using static buffer
                         bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_WHISTLE);
@@ -568,6 +571,7 @@ void audio_detection_task(void *param) {
                     
                     if (state->voice_count >= VOICE_CONFIRM) {
                         ESP_LOGI(TAG, "🗣️ VOICE! (w:%.0f, v:%.0f)", mag_w, mag_v);
+                        espnow_mesh_broadcast_sound(DETECTION_VOICE);
                         
                         // Generate and play bird call using static buffer
                         bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_VOICE);
@@ -703,7 +707,11 @@ void lux_based_birds_task(void *param) {
         float lux = get_lux_level();
         
         if (lux >= 0) {
+            /* Update local mapper immediately */
             bird_mapper_update_for_lux(&g_bird_mapper, lux);
+
+            /* Broadcast so neighbours can react */
+            espnow_mesh_broadcast_light(lux);
             
             const char *time_desc;
             if (lux < 10) time_desc = "NIGHT";
@@ -723,6 +731,14 @@ void lux_based_birds_task(void *param) {
 /* ========================================================================
  * HARDWARE CONFIGURATION HELPERS
  * ======================================================================== */
+
+/**
+ * @brief Return pointer to the global bird mapper (used by main to pass to ESP-NOW)
+ */
+bird_call_mapper_t *get_bird_mapper(void)
+{
+    return &g_bird_mapper;
+}
 
 /**
  * @brief Check if audio output (speaker) is available

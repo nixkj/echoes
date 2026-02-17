@@ -147,6 +147,15 @@ typedef enum {
 } hardware_config_t;
 
 /* ========================================================================
+ * FORWARD DECLARATIONS
+ * ======================================================================== */
+
+/* bird_call_mapper_t is fully defined in synthesis.h.
+ * Forward-declaring it here lets files that only include echoes.h compile
+ * without needing to pull in the full synthesis header. */
+typedef struct bird_call_mapper_t bird_call_mapper_t;
+
+/* ========================================================================
  * FUNCTION DECLARATIONS
  * ======================================================================== */
 
@@ -183,5 +192,8 @@ void lux_based_birds_task(void *param);
 /* Hardware Detection */
 hardware_config_t get_hardware_config(void);
 bool has_audio_output(void);
+
+/* Bird mapper access (for ESP-NOW mesh initialisation) */
+bird_call_mapper_t *get_bird_mapper(void);
 
 #endif /* SA_BIRD_SYSTEM_H */

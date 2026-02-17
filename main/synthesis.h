@@ -71,11 +71,9 @@ size_t generate_silence(bird_synthesizer_t *synth, int16_t *buffer, size_t offse
  * BIRD CALL GENERATORS
  * ======================================================================== */
 
-size_t generate_hadada_ibis(bird_synthesizer_t *synth, audio_buffer_t *out);
 size_t generate_piet_my_vrou(bird_synthesizer_t *synth, audio_buffer_t *out);
 size_t generate_cape_robin_chat(bird_synthesizer_t *synth, audio_buffer_t *out);
 size_t generate_southern_boubou(bird_synthesizer_t *synth, audio_buffer_t *out);
-size_t generate_pied_crow(bird_synthesizer_t *synth, audio_buffer_t *out);
 size_t generate_red_eyed_dove(bird_synthesizer_t *synth, audio_buffer_t *out);
 size_t generate_glossy_starling(bird_synthesizer_t *synth, audio_buffer_t *out);
 size_t generate_spotted_eagle_owl(bird_synthesizer_t *synth, audio_buffer_t *out);
@@ -89,7 +87,7 @@ size_t generate_southern_masked_weaver(bird_synthesizer_t *synth, audio_buffer_t
 
 #define MAX_BIRDS_PER_CATEGORY 8
 
-typedef struct {
+typedef struct bird_call_mapper_t {
     bird_synthesizer_t synth;
     bird_info_t whistle_birds[MAX_BIRDS_PER_CATEGORY];
     uint8_t num_whistle_birds;
