@@ -343,19 +343,24 @@ bool ota_perform_update(const char *url)
     /* Blink blue LED during update */
     set_led(0, BRIGHT_MID);
     
-    // Configure HTTP client for plain HTTP (not HTTPS)
+    // Configure HTTP client for plain HTTP with proper settings
     esp_http_client_config_t config = {
         .url = url,
         .event_handler = ota_http_event_handler,
         .timeout_ms = 30000,
         .buffer_size = OTA_BUFFER_SIZE,
-        .keep_alive_enable = true,
+        .keep_alive_enable = false,
+        // CRITICAL: For HTTP (not HTTPS), we must disable cert verification
+        .skip_cert_common_name_check = true,
+        .use_global_ca_store = false,
+        .crt_bundle_attach = NULL,
     };
 
-    // Use the basic OTA config - skip_cert_common_name_check isn't needed for HTTP
+    // Configure OTA with partial download support
     esp_https_ota_config_t ota_config = {
         .http_config = &config,
-        .http_client_init_cb = NULL,  // No additional init needed
+        .partial_http_download = false,  // Download entire image at once
+        .max_http_request_size = 0,      // No limit on request size
     };
 
     ESP_LOGI(TAG, "Starting download...");
