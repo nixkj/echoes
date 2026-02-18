@@ -18,6 +18,7 @@
 #include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_check.h"
 #include "esp_log.h"
 
@@ -28,6 +29,7 @@ static system_state_t g_system_state = {0};
 static bird_call_mapper_t g_bird_mapper = {0};
 static markov_chain_t g_markov = {0};
 static audio_buffer_t g_audio_buffer = {0};  // Static buffer for bird calls
+static SemaphoreHandle_t s_playback_mutex = NULL;  // Prevents concurrent I2S writes
 
 /* Global hardware configuration */
 static hardware_config_t g_hw_config = HW_CONFIG_FULL;
@@ -139,7 +141,7 @@ esp_err_t i2s_speaker_init(void)
     i2s_chan_config_t chan_cfg = {
         .id = I2S_NUM_1,
         .role = I2S_ROLE_MASTER,
-        .dma_desc_num = 2,          // Number of DMA descriptors (buffers)
+        .dma_desc_num = 8,          // Increased: 8×512 = 4096 frames = 256 ms headroom
         .dma_frame_num = 512,       // Number of frames per DMA buffer
         .auto_clear = true,         // Auto clear DMA buffer on underflow (prevents looping!)
     };
@@ -281,6 +283,10 @@ void system_init(void) {
 
     // Initialize Markov chain (NVS must already be initialised by app_main)
     markov_init(&g_markov, &g_bird_mapper);
+
+    // Create playback mutex (guards the I2S speaker channel)
+    s_playback_mutex = xSemaphoreCreateMutex();
+    configASSERT(s_playback_mutex != NULL);
     
     ESP_LOGI(TAG, "System initialized");
 }
@@ -632,75 +638,82 @@ void play_bird_call(const char *bird_name, const audio_buffer_t *audio_buffer) {
         return;
     }
 
-    ESP_LOGI(TAG, "🐦 Playing: %s (%zu samples, %zu bytes)",
-             bird_name, audio_buffer->num_samples, audio_buffer->num_samples * sizeof(int16_t));
-    
-    // Find global peak across entire audio buffer for normalization
-    int16_t global_peak = 0;
+    /* Acquire playback mutex — prevents lux-flash task or Markov autonomous
+     * calls from writing to spk_chan while we are already streaming.
+     * Block for up to 500 ms; if the channel is still busy by then, skip
+     * this call rather than stacking up a second simultaneous write.      */
+    if (s_playback_mutex == NULL ||
+        xSemaphoreTake(s_playback_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+        ESP_LOGW(TAG, "play_bird_call: speaker busy, skipping '%s'", bird_name);
+        return;
+    }
+
+    ESP_LOGI(TAG, "🐦 Playing: %s (%zu samples)", bird_name, audio_buffer->num_samples);
+
+    /* Find global peak for VU brightness scaling */
+    int16_t global_peak = 1;
     for (size_t i = 0; i < audio_buffer->num_samples; i++) {
-        int16_t abs_val = audio_buffer->buffer[i] < 0 ? -audio_buffer->buffer[i] : audio_buffer->buffer[i];
+        int16_t abs_val = audio_buffer->buffer[i] < 0
+                          ? -audio_buffer->buffer[i]
+                          : audio_buffer->buffer[i];
         if (abs_val > global_peak) global_peak = abs_val;
     }
-    
-    // Avoid division by zero
-    if (global_peak == 0) global_peak = 1;
-    
-    // Stream audio in chunks to I2S
+
+    /* Set LED to full VU brightness at start of call — updated once per
+     * CHUNK_SIZE samples below, but NOT inside the tight i2s_channel_write
+     * loop.  ledc writes between DMA submissions cause inter-chunk jitter. */
+    set_led(VU_MAX_BRIGHTNESS, BRIGHT_OFF);
+
     size_t total_bytes = audio_buffer->num_samples * sizeof(int16_t);
-    size_t bytes_sent = 0;
-    const size_t chunk_bytes = CHUNK_SIZE * sizeof(int16_t);
+    size_t bytes_sent  = 0;
+    const size_t chunk_bytes   = CHUNK_SIZE * sizeof(int16_t);
     const size_t chunk_samples = CHUNK_SIZE;
-    
-    // Send the actual bird call audio
+
     while (bytes_sent < total_bytes) {
-        size_t bytes_to_send = chunk_bytes;
+        size_t bytes_to_send    = chunk_bytes;
         size_t samples_in_chunk = chunk_samples;
-        
+
         if (bytes_sent + bytes_to_send > total_bytes) {
-            bytes_to_send = total_bytes - bytes_sent;
+            bytes_to_send    = total_bytes - bytes_sent;
             samples_in_chunk = bytes_to_send / sizeof(int16_t);
         }
-        
-        // Get pointer to current chunk
+
+        /* Update VU LED once per chunk — cheap peak scan, no APB write
+         * stall inside i2s_channel_write's DMA handoff.                 */
         const int16_t *chunk_ptr = audio_buffer->buffer + (bytes_sent / sizeof(int16_t));
-        
-        // Find peak absolute value in this chunk
-        int16_t peak = 0;
+        int16_t peak = 1;
         for (size_t i = 0; i < samples_in_chunk; i++) {
             int16_t abs_val = chunk_ptr[i] < 0 ? -chunk_ptr[i] : chunk_ptr[i];
             if (abs_val > peak) peak = abs_val;
         }
-        
-        // Normalize brightness so global peak = 1.0, then scale by max brightness
         float brightness = ((float)peak / (float)global_peak) * VU_MAX_BRIGHTNESS;
         set_led(brightness, BRIGHT_OFF);
-        
-        // Write audio to I2S
+
+        /* Write the chunk — portMAX_DELAY blocks until the DMA descriptor
+         * is free; no additional vTaskDelay needed or wanted here.       */
         size_t bytes_written = 0;
-        esp_err_t ret = i2s_channel_write(spk_chan, 
-                 (const uint8_t*)audio_buffer->buffer + bytes_sent,
-                 bytes_to_send,
-                 &bytes_written, 
-                 portMAX_DELAY);
-        
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "I2S write error: %s", esp_err_to_name(ret));
+        esp_err_t ret = i2s_channel_write(spk_chan,
+                            (const uint8_t *)audio_buffer->buffer + bytes_sent,
+                            bytes_to_send,
+                            &bytes_written,
+                            portMAX_DELAY);
+
+        if (ret != ESP_OK || bytes_written == 0) {
+            ESP_LOGE(TAG, "I2S write error: %s (written=%zu)", esp_err_to_name(ret), bytes_written);
             break;
         }
-        
-        if (bytes_written == 0) {
-            ESP_LOGE(TAG, "I2S wrote 0 bytes!");
-            break;
-        }
-        
+
         bytes_sent += bytes_written;
-        vTaskDelay(pdMS_TO_TICKS(1));
+        /* No vTaskDelay here — i2s_channel_write already yields to the
+         * scheduler when waiting for a free DMA descriptor.             */
     }
-    
-    // Turn off LED
+
     set_led(BRIGHT_OFF, BRIGHT_OFF);
-    
-    vTaskDelay(pdMS_TO_TICKS(100));  // Brief pause before next detection
+    xSemaphoreGive(s_playback_mutex);
+
+    /* Brief post-playback pause so detection thresholds can re-settle
+     * before the next event is acted on.                               */
+    vTaskDelay(pdMS_TO_TICKS(100));
 }
 
 /* ========================================================================

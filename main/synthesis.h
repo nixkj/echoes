@@ -80,6 +80,7 @@ size_t generate_spotted_eagle_owl(bird_synthesizer_t *synth, audio_buffer_t *out
 size_t generate_fork_tailed_drongo(bird_synthesizer_t *synth, audio_buffer_t *out);
 size_t generate_cape_canary(bird_synthesizer_t *synth, audio_buffer_t *out);
 size_t generate_southern_masked_weaver(bird_synthesizer_t *synth, audio_buffer_t *out);
+size_t generate_red_billed_quelea(bird_synthesizer_t *synth, audio_buffer_t *out);
 
 /* ========================================================================
  * BIRD CALL MAPPER

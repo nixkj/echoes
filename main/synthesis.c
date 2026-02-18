@@ -269,6 +269,61 @@ size_t generate_southern_masked_weaver(bird_synthesizer_t *synth, audio_buffer_t
     return pos;
 }
 
+
+size_t generate_red_billed_quelea(bird_synthesizer_t *synth, audio_buffer_t *out) {
+    size_t pos = 0;
+
+    /*
+     * Red-billed Quelea (Quelea quelea)
+     *
+     * Structure: a colony-bird chatter — rapid buzzy syllables at ~2–3 kHz
+     * with nasal harmonic content, interspersed with short upward-sweep
+     * "contact whistles".  The call is fast, dense, and energetic.
+     *
+     * Phrase layout (total ~1.1 s, well within 3 s budget):
+     *   1. Opening chatter burst  — 4 harsh notes, tightly spaced
+     *   2. Contact whistle        — upward sweep
+     *   3. Second chatter burst   — 4 tremolo notes (slightly varied pitch)
+     *   4. Short upward chirp     — sweep, then a brief falling close
+     *   5. Final buzz             — harsh note to end
+     */
+
+    /* --- Phrase 1: opening chatter (buzzy, nasal, staccato) --- */
+    pos += generate_harsh(synth, out->buffer, pos, 2200, 55, 2, 0.28f);
+    pos += generate_silence(synth, out->buffer, pos, 30);
+    pos += generate_harsh(synth, out->buffer, pos, 2400, 50, 2, 0.30f);
+    pos += generate_silence(synth, out->buffer, pos, 28);
+    pos += generate_harsh(synth, out->buffer, pos, 2300, 55, 2, 0.29f);
+    pos += generate_silence(synth, out->buffer, pos, 30);
+    pos += generate_harsh(synth, out->buffer, pos, 2500, 45, 3, 0.28f);
+    pos += generate_silence(synth, out->buffer, pos, 55);
+
+    /* --- Phrase 2: contact whistle — fast upward sweep --- */
+    pos += generate_sweep(synth, out->buffer, pos, 1900, 3100, 110, 0.32f);
+    pos += generate_silence(synth, out->buffer, pos, 45);
+
+    /* --- Phrase 3: second chatter burst — tremolo for flock texture --- */
+    pos += generate_tremolo(synth, out->buffer, pos, 2600, 65, 28, 0.55f, 0.27f);
+    pos += generate_silence(synth, out->buffer, pos, 25);
+    pos += generate_tremolo(synth, out->buffer, pos, 2800, 60, 28, 0.60f, 0.28f);
+    pos += generate_silence(synth, out->buffer, pos, 25);
+    pos += generate_tremolo(synth, out->buffer, pos, 2500, 65, 28, 0.55f, 0.27f);
+    pos += generate_silence(synth, out->buffer, pos, 25);
+    pos += generate_tremolo(synth, out->buffer, pos, 2700, 55, 30, 0.58f, 0.27f);
+    pos += generate_silence(synth, out->buffer, pos, 50);
+
+    /* --- Phrase 4: short rising chirp then falling close --- */
+    pos += generate_sweep(synth, out->buffer, pos, 2000, 3200, 90, 0.30f);
+    pos += generate_silence(synth, out->buffer, pos, 20);
+    pos += generate_sweep(synth, out->buffer, pos, 3000, 2100, 75, 0.28f);
+    pos += generate_silence(synth, out->buffer, pos, 40);
+
+    /* --- Phrase 5: closing buzz --- */
+    pos += generate_harsh(synth, out->buffer, pos, 2300, 70, 3, 0.26f);
+
+    out->num_samples = pos;
+    return pos;
+}
 /* ========================================================================
  * BIRD CALL MAPPER
  * ======================================================================== */
@@ -296,7 +351,8 @@ void bird_mapper_init(bird_call_mapper_t *mapper, uint32_t sample_rate) {
     mapper->clap_birds[0] = (bird_info_t){"fork_tailed_drongo",    "Drongo"};
     mapper->clap_birds[1] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
     mapper->clap_birds[2] = (bird_info_t){"cape_canary",            "Cape Canary"};
-    mapper->num_clap_birds = 3;
+    mapper->clap_birds[3] = (bird_info_t){"red_billed_quelea",       "Red-billed Quelea"};
+    mapper->num_clap_birds = 4;
 }
 
 bird_info_t bird_mapper_get_bird(bird_call_mapper_t *mapper,
@@ -346,6 +402,7 @@ size_t bird_mapper_generate_call(bird_call_mapper_t *mapper,
         {"fork_tailed_drongo",    generate_fork_tailed_drongo},
         {"cape_canary",           generate_cape_canary},
         {"southern_masked_weaver",generate_southern_masked_weaver},
+        {"red_billed_quelea",      generate_red_billed_quelea},
     };
     
     for (int i = 0; i < sizeof(bird_funcs) / sizeof(bird_funcs[0]); i++) {
@@ -427,6 +484,7 @@ void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
         mapper->clap_birds[1] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
         mapper->clap_birds[2] = (bird_info_t){"cape_canary",            "Cape Canary"};
         mapper->clap_birds[3] = (bird_info_t){"glossy_starling",        "Glossy Starling"};
-        mapper->num_clap_birds = 4;
+        mapper->clap_birds[4] = (bird_info_t){"red_billed_quelea",       "Red-billed Quelea"};
+        mapper->num_clap_birds = 5;
     }
 }

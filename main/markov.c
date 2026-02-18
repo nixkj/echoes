@@ -290,9 +290,16 @@ static void fire_autonomous_call(markov_chain_t *mc, uint8_t predicted_state)
     bird_mapper_update_for_lux(mc->mapper, representative_lux);
 
     bird_info_t bird = bird_mapper_get_bird(mc->mapper, det);
+
+    /* Restore mapper to actual local lux before any blocking call so that
+     * if playback is skipped (speaker busy) the mapper is still correct. */
+    if (mc->local_lux >= 0.0f)
+        bird_mapper_update_for_lux(mc->mapper, mc->local_lux);
+
     if (bird.function_name == NULL || bird.function_name[0] == '\0') return;
 
-    /* Allocate a temporary audio buffer on the heap for autonomous calls */
+    /* Allocate a temporary audio buffer on the heap for autonomous calls.
+     * sizeof(audio_buffer_t) is ~96 KB — only attempt if heap is sufficient. */
     audio_buffer_t *buf = (audio_buffer_t *)malloc(sizeof(audio_buffer_t));
     if (!buf) {
         ESP_LOGE(TAG, "Autonomous call: out of memory for audio buffer");
@@ -303,13 +310,11 @@ static void fire_autonomous_call(markov_chain_t *mc, uint8_t predicted_state)
              bird.display_name, markov_state_name(predicted_state));
 
     bird_mapper_generate_call(mc->mapper, bird.function_name, buf);
+    /* play_bird_call acquires the playback mutex internally — if the speaker
+     * is already busy it will log a warning and return immediately.        */
     play_bird_call(bird.display_name, buf);
 
     free(buf);
-
-    /* Restore mapper to actual local lux */
-    if (mc->local_lux >= 0.0f)
-        bird_mapper_update_for_lux(mc->mapper, mc->local_lux);
 }
 
 /* ========================================================================
