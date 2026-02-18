@@ -46,6 +46,7 @@ class StartupReportHandler(BaseHTTPRequestHandler):
             
             # Extract fields
             mac = data.get('mac', 'UNKNOWN')
+            firmware = data.get('firmware', 'UNKNOWN')
             node_type = data.get('node_type', 'UNKNOWN')
             avg_light = data.get('avg_light', -1.0)
             light_samples = data.get('light_samples', 0)
@@ -62,6 +63,7 @@ class StartupReportHandler(BaseHTTPRequestHandler):
             log_message = (
                 f"[{timestamp}] Startup Report | "
                 f"MAC: {mac} | "
+		f"Firmware: {firmware} | "
                 f"Type: {node_type} | "
                 f"IP: {client_ip} | "
                 f"Light: {avg_light:.2f} lux ({light_samples} samples) | "
