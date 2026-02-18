@@ -70,7 +70,7 @@
  * LUX_FLASH_THRESHOLD   : single-poll jump that triggers an immediate bird
  *   call response.  Phone torch at 1 m ≈ 50–200 lux; lamp on ≈ 100–500 lux.
  */
-#define LUX_POLL_INTERVAL_MS    100     // ms between sensor reads
+#define LUX_POLL_INTERVAL_MS    800     // ms between sensor reads
 #define LUX_CHANGE_THRESHOLD    1.0f    // lux — minimum change to act on
 #define LUX_FLASH_THRESHOLD     30.0f   // lux — jump that triggers instant response
 
