@@ -713,35 +713,73 @@ void lux_based_birds_task(void *param) {
         vTaskDelete(NULL);
         return;
     }
-    
-    ESP_LOGI(TAG, "Lux-based bird selection enabled");
-    
+
+    ESP_LOGI(TAG, "Lux-based bird selection enabled (poll=%d ms, change=%.1f lux, flash=%.1f lux)",
+             LUX_POLL_INTERVAL_MS, LUX_CHANGE_THRESHOLD, LUX_FLASH_THRESHOLD);
+
+    float last_acted_lux = -1000.0f;  /* lux at the last mapper update */
+    float prev_lux       = -1.0f;     /* reading from the previous tick */
+
     while (1) {
         float lux = get_lux_level();
-        
-        if (lux >= 0) {
-            /* Notify chain of lux change */
-            markov_set_lux(&g_markov, lux);
 
-            /* Apply Markov lux bias before updating mapper */
-            float markov_bias = markov_get_lux_bias(&g_markov);
-            bird_mapper_update_for_lux(&g_bird_mapper, lux + markov_bias);
-
-            /* Broadcast so neighbours can react */
-            espnow_mesh_broadcast_light(lux);
-            
-            const char *time_desc;
-            if (lux < 10) time_desc = "NIGHT";
-            else if (lux < 100) time_desc = "DAWN/DUSK";
-            else if (lux < 500) time_desc = "CLOUDY DAY";
-            else time_desc = "SUNNY DAY";
-            
-            ESP_LOGI(TAG, "☀️ Light: %.1f lux (%s)", lux, time_desc);
+        if (lux < 0.0f) {
+            vTaskDelay(pdMS_TO_TICKS(LUX_POLL_INTERVAL_MS));
+            continue;
         }
-        
-        vTaskDelay(pdMS_TO_TICKS(30000));  // Check every 30 seconds
+
+        float delta     = lux - last_acted_lux;
+        float raw_delta = (prev_lux >= 0.0f) ? (lux - prev_lux) : 0.0f;
+        prev_lux = lux;
+
+        /* Flash detection: a jump >= LUX_FLASH_THRESHOLD in a single 100 ms
+         * window (phone torch, lamp switching on/off) triggers an immediate
+         * bird call without waiting for a sound event.                       */
+        bool is_flash = (fabsf(raw_delta) >= LUX_FLASH_THRESHOLD);
+
+        if (is_flash) {
+            ESP_LOGI(TAG, "⚡ Flash: %.1f → %.1f lux (Δ%.1f)", prev_lux, lux, raw_delta);
+
+            /* Bright flash → WHISTLE (alert); sudden dark → VOICE (quiet) */
+            detection_type_t flash_det = (raw_delta > 0.0f)
+                                         ? DETECTION_WHISTLE
+                                         : DETECTION_VOICE;
+
+            markov_on_event(&g_markov, flash_det, lux);
+
+            if (has_audio_output()) {
+                float bias = markov_get_lux_bias(&g_markov);
+                bird_mapper_update_for_lux(&g_bird_mapper, lux + bias);
+                bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, flash_det);
+                bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
+                play_bird_call(bird.display_name, &g_audio_buffer);
+            }
+
+            /* Force broadcast regardless of ESPNOW_LUX_THRESHOLD */
+            espnow_mesh_broadcast_light(lux);
+            last_acted_lux = lux;
+
+        } else if (fabsf(delta) >= LUX_CHANGE_THRESHOLD) {
+            /* Gradual change: update mapper + Markov + broadcast.
+             * espnow_mesh_broadcast_light() applies its own larger threshold
+             * so it won't flood the network on minor indoor fluctuations.    */
+            markov_set_lux(&g_markov, lux);
+            float bias = markov_get_lux_bias(&g_markov);
+            bird_mapper_update_for_lux(&g_bird_mapper, lux + bias);
+            espnow_mesh_broadcast_light(lux);
+            last_acted_lux = lux;
+
+            const char *band;
+            if      (lux < 10.0f)  band = "NIGHT";
+            else if (lux < 100.0f) band = "DAWN/DUSK";
+            else if (lux < 500.0f) band = "CLOUDY DAY";
+            else                   band = "SUNNY DAY";
+            ESP_LOGD(TAG, "☀️ Light: %.1f lux (%s)", lux, band);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(LUX_POLL_INTERVAL_MS));
     }
-    
+
     vTaskDelete(NULL);
 }
 
