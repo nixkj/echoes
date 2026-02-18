@@ -21,6 +21,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "esp_random.h"
 #include "markov.h"
 #include <string.h>
 #include <math.h>
@@ -42,6 +43,13 @@ static QueueHandle_t       s_rx_queue        = NULL;
 /* Last lux value we broadcast — used to suppress redundant transmissions */
 static float               s_last_tx_lux     = -1000.0f;
 
+/* ---- ESP-NOW flood detection ------------------------------------------ */
+/* Ring buffer of arrival timestamps for the last ESPNOW_FLOOD_COUNT msgs   */
+#define FLOOD_RING_SIZE     ESPNOW_FLOOD_COUNT
+static uint32_t            s_rx_times[FLOOD_RING_SIZE] = {0};
+static uint8_t             s_rx_head = 0;       /* next slot to write       */
+static bool                s_flooded = false;   /* current flood state       */
+
 /* Timestamp (ms) of the last remote event that influenced our bird set */
 static uint32_t            s_last_remote_event_ms = 0;
 
@@ -50,6 +58,9 @@ static float               s_remote_lux      = -1.0f;
 
 /* Our own last-known lux — to restore after TTL */
 static float               s_local_lux       = -1.0f;
+
+/* Timestamp of last sound broadcast */
+static uint32_t s_last_sound_broadcast_ms = 0;
 
 /* ========================================================================
  * INTERNAL HELPERS
@@ -71,6 +82,13 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info,
 
     const espnow_msg_t *msg = (const espnow_msg_t *)data;
     if (msg->magic != ESPNOW_MAGIC) return;
+
+    /* Record arrival timestamp for flood detection */
+    {
+        uint32_t now = (uint32_t)(xTaskGetTickCountFromISR() * portTICK_PERIOD_MS);
+        s_rx_times[s_rx_head] = now;
+        s_rx_head = (s_rx_head + 1) % FLOOD_RING_SIZE;
+    }
 
     /* Post a copy to the processing queue (non-blocking) */
     espnow_msg_t copy = *msg;
@@ -244,6 +262,12 @@ bool espnow_mesh_init(bird_call_mapper_t *mapper, markov_chain_t *mc)
 
 void espnow_mesh_broadcast_sound(detection_type_t detection)
 {
+    uint32_t now = millis();
+    if (now - s_last_sound_broadcast_ms < ESPNOW_SOUND_THROTTLE_MS) {
+        ESP_LOGD(TAG, "Sound broadcast throttled (detection %d) — too soon", detection);
+        return;
+    }
+
     espnow_msg_t msg = {
         .magic     = ESPNOW_MAGIC,
         .msg_type  = (uint8_t)ESPNOW_MSG_SOUND,
@@ -252,6 +276,8 @@ void espnow_mesh_broadcast_sound(detection_type_t detection)
         .lux       = 0.0f,
     };
 
+    /* Random back-off to reduce collisions */
+    vTaskDelay(pdMS_TO_TICKS(esp_random() % BROADCAST_JITTER_MS));
     esp_err_t err = esp_now_send(BROADCAST_MAC,
                                  (const uint8_t *)&msg,
                                  sizeof(msg));
@@ -282,6 +308,8 @@ void espnow_mesh_broadcast_light(float lux)
         .lux       = lux,
     };
 
+    /* Random back-off to reduce collisions */
+    vTaskDelay(pdMS_TO_TICKS(esp_random() % BROADCAST_JITTER_MS));
     esp_err_t err = esp_now_send(BROADCAST_MAC,
                                  (const uint8_t *)&msg,
                                  sizeof(msg));
@@ -290,6 +318,27 @@ void espnow_mesh_broadcast_light(float lux)
     } else {
         ESP_LOGI(TAG, "Broadcast lux %.1f", lux);
     }
+}
+
+bool espnow_mesh_is_flooded(void)
+{
+    /* Check whether the oldest timestamp in the ring is within the flood
+     * window.  When the ring is full (FLOOD_COUNT messages have arrived)
+     * and the oldest one is less than FLOOD_WINDOW_MS ago, we're flooded. */
+    uint32_t now = millis();
+    /* The slot AFTER head is the oldest entry in the ring */
+    uint8_t oldest_slot = s_rx_head;   /* head has just been bumped past oldest */
+    uint32_t oldest = s_rx_times[oldest_slot];
+
+    /* oldest == 0 means the ring hasn't filled yet */
+    bool flooded = (oldest != 0) &&
+                   ((now - oldest) <= ESPNOW_FLOOD_WINDOW_MS);
+
+    if (flooded != s_flooded) {
+        s_flooded = flooded;
+        ESP_LOGI(TAG, "Flood state → %s", flooded ? "FLOODED (Quelea)" : "normal");
+    }
+    return s_flooded;
 }
 
 markov_chain_t *espnow_mesh_get_markov(void)

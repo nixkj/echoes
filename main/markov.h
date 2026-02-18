@@ -53,7 +53,7 @@
 #define MARKOV_LAPLACE_K            2.0f
 
 /** Number of events between NVS saves (reduces flash write cycles). */
-#define MARKOV_NVS_SAVE_INTERVAL    20
+#define MARKOV_NVS_SAVE_INTERVAL    100
 
 /** How long (ms) without any network event before autonomous playback fires. */
 #define MARKOV_IDLE_TRIGGER_MS      45000   /* 45 s */

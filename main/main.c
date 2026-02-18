@@ -27,6 +27,7 @@
 #include "driver/ledc.h"
 #include "esp_check.h"
 #include "nvs_flash.h"
+#include "esp_random.h"
 
 static const char *TAG = "MAIN";
 
@@ -61,9 +62,10 @@ void app_main(void)
     if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES ||
         nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "NVS partition issue — erasing and reinitialising");
-        nvs_flash_erase();
-        nvs_flash_init();
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_ret = nvs_flash_init();
     }
+    ESP_ERROR_CHECK(nvs_ret);
 
     /* Initialize LEDs FIRST (needed for ALL status feedback including OTA) */
     led_init();
@@ -78,6 +80,9 @@ void app_main(void)
     /* Initialize WiFi and connect */
     ESP_LOGI(TAG, "Connecting to WiFi...");
     bool wifi_connected = wifi_init_and_connect();
+
+    /* Staggered startup delay to avoid all OTA hitting the server at once (20s spread) */
+    vTaskDelay(pdMS_TO_TICKS(1000 + (esp_random() % 20000)));
     
     if (wifi_connected) {
         ESP_LOGI(TAG, "WiFi connected successfully");

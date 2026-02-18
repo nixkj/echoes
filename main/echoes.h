@@ -61,6 +61,25 @@
 /* VU Meter */
 #define VU_MAX_BRIGHTNESS   0.75f        // Maximum LED brightness during playback (0.0 to 1.0)
 
+/* Lux-based volume scaling
+ * Volume scales linearly between VOLUME_SCALE_MIN (darkness) and VOLUME_SCALE_MAX
+ * (bright).  Applied as a per-sample multiplier inside play_bird_call().
+ * VOLUME in synthesis controls synthesis amplitude; this is a separate
+ * playback-time gain on the final rendered buffer.
+ */
+#define VOLUME_LUX_MIN          2.0f    // lux — at or below this, VOLUME_SCALE_MIN applies
+#define VOLUME_LUX_MAX          200.0f  // lux — at or above this, VOLUME_SCALE_MAX applies
+#define VOLUME_SCALE_MIN        0.25f   // quietest multiplier (dark room)
+#define VOLUME_SCALE_MAX        1.0f    // loudest multiplier (bright room)
+
+/* ESP-NOW activity flood threshold
+ * When ESPNOW_FLOOD_COUNT or more messages arrive within ESPNOW_FLOOD_WINDOW_MS,
+ * espnow_mesh_is_flooded() returns true and bird selection switches to Quelea.
+ * The state resets automatically when the message rate drops.
+ */
+#define ESPNOW_FLOOD_COUNT      5       // messages that trigger flood state
+#define ESPNOW_FLOOD_WINDOW_MS  8000    // sliding window in ms
+
 /* Light sensor polling
  * LUX_POLL_INTERVAL_MS  : how often the sensor is read.  100 ms is the
  *   practical floor for the BH1750 (120 ms typ measurement time); safe for
@@ -70,7 +89,7 @@
  * LUX_FLASH_THRESHOLD   : single-poll jump that triggers an immediate bird
  *   call response.  Phone torch at 1 m ≈ 50–200 lux; lamp on ≈ 100–500 lux.
  */
-#define LUX_POLL_INTERVAL_MS    800     // ms between sensor reads
+#define LUX_POLL_INTERVAL_MS    500     // ms between sensor reads
 #define LUX_CHANGE_THRESHOLD    1.0f    // lux — minimum change to act on
 #define LUX_FLASH_THRESHOLD     30.0f   // lux — jump that triggers instant response
 
@@ -214,6 +233,7 @@ void compute_goertzel(const int16_t *buffer, size_t num_samples,
 
 /* Light Sensor */
 float get_lux_level(void);
+float get_volume_for_lux(float lux);
 
 /* Detection */
 void audio_detection_task(void *param);

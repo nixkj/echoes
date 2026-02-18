@@ -347,12 +347,11 @@ void bird_mapper_init(bird_call_mapper_t *mapper, uint32_t sample_rate) {
     mapper->voice_birds[2] = (bird_info_t){"spotted_eagle_owl","Eagle-Owl"};
     mapper->num_voice_birds = 3;
 
-    /* Clap -> energetic birds (no hadada or pied crow) */
-    mapper->clap_birds[0] = (bird_info_t){"fork_tailed_drongo",    "Drongo"};
-    mapper->clap_birds[1] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
-    mapper->clap_birds[2] = (bird_info_t){"cape_canary",            "Cape Canary"};
-    mapper->clap_birds[3] = (bird_info_t){"red_billed_quelea",       "Red-billed Quelea"};
-    mapper->num_clap_birds = 4;
+    /* CLAP: percussive, rapid, aggressive — quelea reserved for ESP-NOW flood only */
+    mapper->clap_birds[0] = (bird_info_t){"fork_tailed_drongo",     "Fork-tailed Drongo"};
+    mapper->clap_birds[1] = (bird_info_t){"glossy_starling",         "Glossy Starling"};
+    mapper->clap_birds[2] = (bird_info_t){"southern_masked_weaver",  "Masked Weaver"};
+    mapper->num_clap_birds = 3;
 }
 
 bird_info_t bird_mapper_get_bird(bird_call_mapper_t *mapper,
@@ -480,11 +479,9 @@ void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
         mapper->voice_birds[2] = (bird_info_t){"spotted_eagle_owl","Eagle-Owl"};
         mapper->num_voice_birds = 3;
 
-        mapper->clap_birds[0] = (bird_info_t){"fork_tailed_drongo",    "Drongo"};
-        mapper->clap_birds[1] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
-        mapper->clap_birds[2] = (bird_info_t){"cape_canary",            "Cape Canary"};
-        mapper->clap_birds[3] = (bird_info_t){"glossy_starling",        "Glossy Starling"};
-        mapper->clap_birds[4] = (bird_info_t){"red_billed_quelea",       "Red-billed Quelea"};
-        mapper->num_clap_birds = 5;
+        mapper->clap_birds[0] = (bird_info_t){"fork_tailed_drongo",    "Fork-tailed Drongo"};
+        mapper->clap_birds[1] = (bird_info_t){"glossy_starling",        "Glossy Starling"};
+        mapper->clap_birds[2] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
+        mapper->num_clap_birds = 3;
     }
 }

@@ -550,7 +550,13 @@ void audio_detection_task(void *param) {
                         markov_on_event(&g_markov, DETECTION_CLAP, get_lux_level());
                         
                         // Generate and play bird call using static buffer
-                        bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_CLAP);
+                        bird_info_t bird;
+                        if (espnow_mesh_is_flooded()) {
+                            /* Network is busy — Quelea signals collective activity */
+                            bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
+                        } else {
+                            bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_CLAP);
+                        }
                         bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
                         play_bird_call(bird.display_name, &g_audio_buffer);
                         
@@ -569,7 +575,13 @@ void audio_detection_task(void *param) {
                         markov_on_event(&g_markov, DETECTION_WHISTLE, get_lux_level());
                         
                         // Generate and play bird call using static buffer
-                        bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_WHISTLE);
+                        bird_info_t bird;
+                        if (espnow_mesh_is_flooded()) {
+                            /* Network is busy — Quelea signals collective activity */
+                            bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
+                        } else {
+                            bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_WHISTLE);
+                        }
                         bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
                         play_bird_call(bird.display_name, &g_audio_buffer);
                         
@@ -588,7 +600,13 @@ void audio_detection_task(void *param) {
                         markov_on_event(&g_markov, DETECTION_VOICE, get_lux_level());
                         
                         // Generate and play bird call using static buffer
-                        bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_VOICE);
+                        bird_info_t bird;
+                        if (espnow_mesh_is_flooded()) {
+                            /* Network is busy — Quelea signals collective activity */
+                            bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
+                        } else {
+                            bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_VOICE);
+                        }
                         bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
                         play_bird_call(bird.display_name, &g_audio_buffer);
                         
@@ -632,6 +650,25 @@ void audio_detection_task(void *param) {
  * PLAYBACK
  * ======================================================================== */
 
+/* ========================================================================
+ * VOLUME SCALING
+ * ======================================================================== */
+
+/**
+ * @brief Compute playback volume multiplier from current lux level.
+ *
+ * Scales linearly between VOLUME_SCALE_MIN (dark) and VOLUME_SCALE_MAX
+ * (bright).  This is applied at render time inside play_bird_call() as a
+ * per-sample gain so synthesis amplitudes remain unchanged.
+ */
+float get_volume_for_lux(float lux)
+{
+    if (lux <= VOLUME_LUX_MIN) return VOLUME_SCALE_MIN;
+    if (lux >= VOLUME_LUX_MAX) return VOLUME_SCALE_MAX;
+    float t = (lux - VOLUME_LUX_MIN) / (VOLUME_LUX_MAX - VOLUME_LUX_MIN);
+    return VOLUME_SCALE_MIN + t * (VOLUME_SCALE_MAX - VOLUME_SCALE_MIN);
+}
+
 void play_bird_call(const char *bird_name, const audio_buffer_t *audio_buffer) {
     if (spk_chan == NULL) {
         ESP_LOGW(TAG, "play_bird_call: no speaker (HW_CONFIG_MINIMAL) — skipping '%s'", bird_name);
@@ -659,15 +696,20 @@ void play_bird_call(const char *bird_name, const audio_buffer_t *audio_buffer) {
         if (abs_val > global_peak) global_peak = abs_val;
     }
 
-    /* Set LED to full VU brightness at start of call — updated once per
-     * CHUNK_SIZE samples below, but NOT inside the tight i2s_channel_write
-     * loop.  ledc writes between DMA submissions cause inter-chunk jitter. */
-    set_led(VU_MAX_BRIGHTNESS, BRIGHT_OFF);
+    /* Compute lux-based volume multiplier once per call */
+    float vol_scale = get_volume_for_lux(get_lux_level());
+    ESP_LOGD(TAG, "  volume scale: %.2f (lux=%.1f)", vol_scale, get_lux_level());
+
+    set_led(VU_MAX_BRIGHTNESS * vol_scale, BRIGHT_OFF);
 
     size_t total_bytes = audio_buffer->num_samples * sizeof(int16_t);
     size_t bytes_sent  = 0;
     const size_t chunk_bytes   = CHUNK_SIZE * sizeof(int16_t);
     const size_t chunk_samples = CHUNK_SIZE;
+
+    /* Scaled chunk buffer — volume-adjusted samples written here before
+     * passing to i2s_channel_write so the original buffer stays intact. */
+    static int16_t s_scaled_chunk[CHUNK_SIZE];
 
     while (bytes_sent < total_bytes) {
         size_t bytes_to_send    = chunk_bytes;
@@ -678,23 +720,25 @@ void play_bird_call(const char *bird_name, const audio_buffer_t *audio_buffer) {
             samples_in_chunk = bytes_to_send / sizeof(int16_t);
         }
 
-        /* Update VU LED once per chunk — cheap peak scan, no APB write
-         * stall inside i2s_channel_write's DMA handoff.                 */
+        /* Scale samples and compute VU peak in one pass */
         const int16_t *chunk_ptr = audio_buffer->buffer + (bytes_sent / sizeof(int16_t));
         int16_t peak = 1;
         for (size_t i = 0; i < samples_in_chunk; i++) {
-            int16_t abs_val = chunk_ptr[i] < 0 ? -chunk_ptr[i] : chunk_ptr[i];
+            int32_t scaled = (int32_t)(chunk_ptr[i] * vol_scale);
+            /* Clamp to int16 range */
+            if (scaled >  32767) scaled =  32767;
+            if (scaled < -32768) scaled = -32768;
+            s_scaled_chunk[i] = (int16_t)scaled;
+            int16_t abs_val = scaled < 0 ? (int16_t)-scaled : (int16_t)scaled;
             if (abs_val > peak) peak = abs_val;
         }
-        float brightness = ((float)peak / (float)global_peak) * VU_MAX_BRIGHTNESS;
+        float brightness = ((float)peak / (float)global_peak) * VU_MAX_BRIGHTNESS * vol_scale;
         set_led(brightness, BRIGHT_OFF);
 
-        /* Write the chunk — portMAX_DELAY blocks until the DMA descriptor
-         * is free; no additional vTaskDelay needed or wanted here.       */
         size_t bytes_written = 0;
         esp_err_t ret = i2s_channel_write(spk_chan,
-                            (const uint8_t *)audio_buffer->buffer + bytes_sent,
-                            bytes_to_send,
+                            (const uint8_t *)s_scaled_chunk,
+                            samples_in_chunk * sizeof(int16_t),
                             &bytes_written,
                             portMAX_DELAY);
 
@@ -763,7 +807,12 @@ void lux_based_birds_task(void *param) {
             if (has_audio_output()) {
                 float bias = markov_get_lux_bias(&g_markov);
                 bird_mapper_update_for_lux(&g_bird_mapper, lux + bias);
-                bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, flash_det);
+                bird_info_t bird;
+                if (espnow_mesh_is_flooded()) {
+                    bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
+                } else {
+                    bird = bird_mapper_get_bird(&g_bird_mapper, flash_det);
+                }
                 bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
                 play_bird_call(bird.display_name, &g_audio_buffer);
             }

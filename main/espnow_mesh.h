@@ -29,13 +29,22 @@
 /** Channel must match the channel used by the WiFi STA interface. */
 #define ESPNOW_CHANNEL          1
 
+/** Random jitter to avoid collisions on ESP-NOW */
+#define BROADCAST_JITTER_MS  200
+
+/**
+ * Minimum time (ms) between consecutive sound broadcasts from this node.
+ * Prevents flooding during rapid repeated detections.
+ */
+#define ESPNOW_SOUND_THROTTLE_MS    3000   // 3 seconds — tune based on testing
+
 /**
  * Minimum lux change (absolute) that triggers a broadcast.
  * Prevents flooding the network with tiny sensor fluctuations.
  * Lowered to 5 lux for dark indoor installations where phone screens
  * and torches create changes in the 5–200 lux range.
  */
-#define ESPNOW_LUX_THRESHOLD    5.0f
+#define ESPNOW_LUX_THRESHOLD    12.0f
 
 /**
  * How long (ms) a remote event influences local bird selection before
@@ -115,5 +124,15 @@ void espnow_mesh_tick(void);
  * @brief Get pointer to the markov chain managed by the mesh layer.
  */
 markov_chain_t *espnow_mesh_get_markov(void);
+
+/**
+ * @brief Returns true when incoming ESP-NOW message rate exceeds the flood
+ *        threshold (ESPNOW_FLOOD_COUNT messages within ESPNOW_FLOOD_WINDOW_MS).
+ *
+ * When flooded, the calling code should override bird selection with Quelea
+ * to signal network-wide activity.  The flag resets automatically once the
+ * message rate drops below the threshold.
+ */
+bool espnow_mesh_is_flooded(void);
 
 #endif /* ESPNOW_MESH_H */
