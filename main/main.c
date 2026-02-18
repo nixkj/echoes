@@ -149,22 +149,23 @@ void app_main(void)
         ESP_LOGI(TAG, "Minimal hardware detected - speaker disabled, LED VU mode");
     }
 
-    /* Send startup report */
-    ESP_LOGI(TAG, "Sending startup report...");
-    esp_err_t report_err = startup_send_report(&startup_report);
-    
-    if (report_err == ESP_OK) {
-        ESP_LOGI(TAG, "Startup report sent successfully");
-        // Brief white LED flash to indicate successful report
-        set_led(BRIGHT_MID, 0);
-        vTaskDelay(pdMS_TO_TICKS(200));
-        set_led(0, 0);
+    /* Send startup report — only if WiFi is available */
+    if (wifi_connected) {
+        ESP_LOGI(TAG, "Sending startup report...");
+        esp_err_t report_err = startup_send_report(&startup_report);
+        if (report_err == ESP_OK) {
+            ESP_LOGI(TAG, "Startup report sent successfully");
+            set_led(BRIGHT_MID, 0);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            set_led(0, 0);
+        } else {
+            ESP_LOGW(TAG, "Failed to send startup report: %s", esp_err_to_name(report_err));
+            set_led(0, BRIGHT_MID);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            set_led(0, 0);
+        }
     } else {
-        ESP_LOGW(TAG, "Failed to send startup report: %s", esp_err_to_name(report_err));
-        // Brief blue LED flash to indicate report failure
-        set_led(0, BRIGHT_MID);
-        vTaskDelay(pdMS_TO_TICKS(200));
-        set_led(0, 0);
+        ESP_LOGI(TAG, "WiFi not connected — skipping startup report");
     }
     
     /* Initialise ESP-NOW mesh.
