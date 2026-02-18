@@ -167,12 +167,12 @@ void app_main(void)
         set_led(0, 0);
     }
     
-    /* Initialise ESP-NOW mesh — WiFi must already be up */
-    if (wifi_connected) {
-        /* g_bird_mapper is an internal symbol in echoes.c; we expose it via
-         * a getter so we can pass it to the mesh layer. */
-        espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
-    }
+    /* Initialise ESP-NOW mesh.
+     * ESP-NOW is peer-to-peer and runs directly on the WiFi radio layer —
+     * it does NOT require a connection to an AP.  wifi_init_and_connect()
+     * calls esp_wifi_start() unconditionally, so the radio is always up by
+     * this point regardless of whether the AP connection succeeded.        */
+    espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
 
     /* Start detection task */
     ESP_LOGI(TAG, "Starting Echoes of the Machine...");
