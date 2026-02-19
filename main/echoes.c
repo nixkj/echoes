@@ -22,6 +22,7 @@
 #include "freertos/semphr.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_random.h"
 
 static const char *TAG = "ECHOES";
 
@@ -845,7 +846,6 @@ float get_volume_for_lux(float lux)
 }
 
 
-
 /* ========================================================================
  * LUX-BASED BIRD SELECTION
  * ======================================================================== */
@@ -927,8 +927,104 @@ void lux_based_birds_task(void *param) {
 }
 
 /* ========================================================================
- * HARDWARE CONFIGURATION HELPERS
+ * CHAOS MODE TASK
+ *
+ * Monitors espnow_mesh_is_chaos().  While active, selects bird calls
+ * randomly from the ENTIRE catalogue (all detection categories combined),
+ * plays them back-to-back, and drives the white LED in a rapid strobe that
+ * is independent of the normal VU meter.
+ *
+ * The task yields back to the scheduler between each call so the audio
+ * detection loop and other tasks are not starved.
  * ======================================================================== */
+
+/* Full catalogue of every synthesised bird for random chaos selection.
+ * Kept as a file-scope table so the compiler places it in DRAM once.      */
+static const bird_info_t k_all_birds[] = {
+    { "generate_piet_my_vrou",          "Piet-my-vrou"            },
+    { "generate_cape_robin_chat",        "Cape Robin-Chat"         },
+    { "generate_southern_boubou",        "Southern Boubou"         },
+    { "generate_red_eyed_dove",          "Red-eyed Dove"           },
+    { "generate_glossy_starling",        "Glossy Starling"         },
+    { "generate_spotted_eagle_owl",      "Spotted Eagle-Owl"       },
+    { "generate_fork_tailed_drongo",     "Fork-tailed Drongo"      },
+    { "generate_cape_canary",            "Cape Canary"             },
+    { "generate_southern_masked_weaver", "Southern Masked Weaver"  },
+    { "generate_red_billed_quelea",      "Red-billed Quelea"       },
+    { "generate_paradise_flycatcher",    "Paradise Flycatcher"     },
+};
+#define NUM_ALL_BIRDS  (sizeof(k_all_birds) / sizeof(k_all_birds[0]))
+
+void chaos_task(void *param)
+{
+    (void)param;
+
+    if (!has_audio_output()) {
+        /* Minimal hardware: LED-only chaos — strobe indefinitely while active */
+        ESP_LOGI(TAG, "🌪️  Chaos task running (LED-only mode)");
+        bool was_chaos = false;
+        while (1) {
+            bool chaos = espnow_mesh_is_chaos();
+            if (chaos) {
+                /* Rapid alternating strobe */
+                set_led(BRIGHT_FULL, BRIGHT_FULL);
+                vTaskDelay(pdMS_TO_TICKS(60));
+                set_led(BRIGHT_OFF,  BRIGHT_OFF);
+                vTaskDelay(pdMS_TO_TICKS(60));
+            } else {
+                if (was_chaos) {
+                    set_led(BRIGHT_OFF, BRIGHT_OFF);
+                }
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+            was_chaos = chaos;
+        }
+    }
+
+    ESP_LOGI(TAG, "🌪️  Chaos task running (full audio mode)");
+
+    /* Seed the PRNG with the hardware timer for better randomness */
+    uint32_t last_bird_idx = 0xFFFFFFFF;
+
+    while (1) {
+        if (!espnow_mesh_is_chaos()) {
+            /* Not in chaos — sleep and poll */
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+        }
+
+        const remote_config_t *cfg = remote_config_get();
+
+        /* Pick a random bird, avoiding immediate repetition */
+        uint32_t idx;
+        do {
+            idx = (uint32_t)(esp_random() % NUM_ALL_BIRDS);
+        } while (idx == last_bird_idx && NUM_ALL_BIRDS > 1);
+        last_bird_idx = idx;
+
+        const bird_info_t *bird = &k_all_birds[idx];
+        ESP_LOGI(TAG, "🌪️  Chaos: playing %s", bird->display_name);
+
+        /* Rapid LED flash before each call to signal chaos visually */
+        set_led(BRIGHT_FULL, BRIGHT_FULL);
+        vTaskDelay(pdMS_TO_TICKS(40));
+        set_led(BRIGHT_OFF, BRIGHT_OFF);
+        vTaskDelay(pdMS_TO_TICKS(40));
+        set_led(BRIGHT_FULL, BRIGHT_OFF);
+        vTaskDelay(pdMS_TO_TICKS(40));
+        set_led(BRIGHT_OFF, BRIGHT_OFF);
+
+        /* Generate and play — use the blocking variant so we don't overlap */
+        generate_and_play_bird_call(&g_bird_mapper,
+                                    bird->function_name,
+                                    bird->display_name);
+
+        /* Short gap between calls — configurable */
+        uint32_t gap = cfg->chaos_call_gap_ms;
+        if (gap < 50) gap = 50;   /* Safety floor */
+        vTaskDelay(pdMS_TO_TICKS(gap));
+    }
+}
 
 /**
  * @brief Return pointer to the global bird mapper (used by main to pass to ESP-NOW)

@@ -90,6 +90,24 @@
 #define ESPNOW_FLOOD_COUNT      5       // messages that trigger flood state
 #define ESPNOW_FLOOD_WINDOW_MS  8000    // sliding window in ms
 
+/* ESP-NOW chaos mode threshold
+ * When CHAOS_MSG_COUNT or more messages arrive within CHAOS_WINDOW_MS the
+ * whole flock enters "chaos" mode: random bird calls are fired back-to-back
+ * with frantic LED strobing.  Chaos mode requires a HIGHER message rate than
+ * ordinary flood mode so the two states are clearly distinct.
+ *
+ * Chaos mode stays active for at least CHAOS_HOLD_MS after the last
+ * qualifying burst, then decays back to normal automatically.
+ *
+ * CHAOS_CALL_GAP_MS  — minimum pause (ms) between consecutive chaos calls
+ *                      (keeps the flock from sounding like a single sustained
+ *                      tone; a short gap makes individual calls perceptible).
+ */
+#define CHAOS_MSG_COUNT         12      // messages in window to trigger chaos
+#define CHAOS_WINDOW_MS         6000    // sliding window in ms
+#define CHAOS_HOLD_MS           10000   // how long chaos persists after trigger
+#define CHAOS_CALL_GAP_MS       200     // inter-call silence during chaos
+
 /* Light sensor polling
  * LUX_POLL_INTERVAL_MS  : how often the sensor is read.  100 ms is the
  *   practical floor for the BH1750 (120 ms typ measurement time); safe for
@@ -259,6 +277,9 @@ void generate_and_play_bird_call(bird_call_mapper_t *mapper, const char *functio
 
 /* Lux-based bird selection */
 void lux_based_birds_task(void *param);
+
+/* Chaos mode — driven by ESP-NOW mesh message rate */
+void chaos_task(void *param);
 
 /* Hardware Detection */
 hardware_config_t get_hardware_config(void);

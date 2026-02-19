@@ -105,6 +105,12 @@ typedef struct {
     uint32_t markov_idle_trigger_ms;        /**< Silence before autonomous call */
     uint32_t markov_autonomous_cooldown_ms; /**< Min gap between auto calls     */
 
+    /* ── Chaos mode ──────────────────────────────────────────────── */
+    uint32_t chaos_msg_count;    /**< Messages in window to trigger chaos      */
+    uint32_t chaos_window_ms;    /**< Sliding window for chaos detection (ms)  */
+    uint32_t chaos_hold_ms;      /**< How long chaos persists after trigger    */
+    uint32_t chaos_call_gap_ms;  /**< Pause between consecutive chaos calls    */
+
     /* ── Output switches ────────────────────────────────────────── */
     bool     silent_mode;       /**< true → disable ALL output (LEDs + sound) */
     bool     sound_off;         /**< true → disable sound only; LEDs still run*/

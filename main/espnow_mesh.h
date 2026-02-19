@@ -132,4 +132,16 @@ markov_chain_t *espnow_mesh_get_markov(void);
  */
 bool espnow_mesh_is_flooded(void);
 
+/**
+ * @brief Returns true when the network is in "chaos" mode.
+ *
+ * Chaos requires a significantly higher message rate than ordinary flood mode
+ * (CHAOS_MSG_COUNT messages within CHAOS_WINDOW_MS, as defined in echoes.h).
+ * While true, the calling code should play random bird calls from the full
+ * catalogue and drive the LED into a frantic strobe pattern.
+ *
+ * The state self-clears after CHAOS_HOLD_MS of silence.
+ */
+bool espnow_mesh_is_chaos(void);
+
 #endif /* ESPNOW_MESH_H */

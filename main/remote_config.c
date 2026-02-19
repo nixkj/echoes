@@ -19,6 +19,15 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* =========================================================================
+ * RTC SLOW MEMORY
+ * RTC_NOINIT_ATTR variables survive esp_restart() (software reset) but are
+ * cleared on power-on reset / deep sleep wakeup.  We use this to remember
+ * which restart command we have already acted on so we cannot loop even if
+ * the server window is still open when we come back up.
+ * ========================================================================= */
+RTC_NOINIT_ATTR static uint32_t s_last_restart_token;
+
 static const char *TAG = "RCFG";
 
 /* =========================================================================
@@ -79,11 +88,16 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .markov_idle_trigger_ms          = 45000,
     .markov_autonomous_cooldown_ms   = 15000,
 
+    /* Chaos mode */
+    .chaos_msg_count                 = 12,
+    .chaos_window_ms                 = 6000,
+    .chaos_hold_ms                   = 10000,
+    .chaos_call_gap_ms               = 200,
+
     /* Meta */
     /* Output switches */
     .silent_mode   = false,
     .sound_off     = false,
-
     .loaded        = false,
     .last_fetch_ms = 0,
 };
@@ -217,6 +231,12 @@ static void apply_json(cJSON *root)
     /* Markov chain */
     CFG_UINT32 (root, s_cfg.markov_idle_trigger_ms,         "MARKOV_IDLE_TRIGGER_MS");
     CFG_UINT32 (root, s_cfg.markov_autonomous_cooldown_ms,  "MARKOV_AUTONOMOUS_COOLDOWN_MS");
+
+    /* Chaos mode */
+    CFG_UINT32 (root, s_cfg.chaos_msg_count,    "CHAOS_MSG_COUNT");
+    CFG_UINT32 (root, s_cfg.chaos_window_ms,    "CHAOS_WINDOW_MS");
+    CFG_UINT32 (root, s_cfg.chaos_hold_ms,      "CHAOS_HOLD_MS");
+    CFG_UINT32 (root, s_cfg.chaos_call_gap_ms,  "CHAOS_CALL_GAP_MS");
 
     /* Output switches */
     CFG_BOOL   (root, s_cfg.silent_mode,  "SILENT_MODE");

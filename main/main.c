@@ -202,6 +202,13 @@ void app_main(void)
         xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
     }
 
+    /* Chaos mode task — runs on ALL hardware configurations.
+     * On minimal hardware (no speaker) it drives the LED strobe only.
+     * Stack is slightly larger because chaos_task calls generate_and_play_bird_call
+     * which synthesises into the shared audio buffer.                          */
+    xTaskCreate(chaos_task, "chaos", 4096, NULL, 4, NULL);
+    ESP_LOGI(TAG, "Chaos mode task started");
+
     /* Start remote config polling task (60-second interval) */
     if (wifi_connected) {
         xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);
