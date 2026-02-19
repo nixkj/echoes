@@ -463,7 +463,7 @@ size_t generate_paradise_flycatcher(bird_synthesizer_t *synth, audio_buffer_t *o
 void bird_mapper_init(bird_call_mapper_t *mapper, uint32_t sample_rate) {
     mapper->synth.sample_rate = sample_rate;
     mapper->synth.chunk_size = CHUNK_SIZE;
-    mapper->synth.quelea_gain = 1.5f;   /* default; overwritten by echoes.c from remote config */   /* default; overwritten by echoes.c from remote config */
+    mapper->synth.quelea_gain = 1.2f;   /* default; overwritten by echoes.c from remote config */   /* default; overwritten by echoes.c from remote config */
 
     /* Default (neutral) lists — overridden by bird_mapper_update_for_lux() */
 
@@ -480,11 +480,12 @@ void bird_mapper_init(bird_call_mapper_t *mapper, uint32_t sample_rate) {
     mapper->voice_birds[2] = (bird_info_t){"spotted_eagle_owl","Eagle-Owl"};
     mapper->num_voice_birds = 3;
 
-    /* CLAP: percussive, rapid, aggressive — quelea reserved for ESP-NOW flood only */
+    /* CLAP: percussive, rapid, aggressive */
     mapper->clap_birds[0] = (bird_info_t){"fork_tailed_drongo",     "Fork-tailed Drongo"};
     mapper->clap_birds[1] = (bird_info_t){"glossy_starling",         "Glossy Starling"};
     mapper->clap_birds[2] = (bird_info_t){"southern_masked_weaver",  "Masked Weaver"};
-    mapper->num_clap_birds = 3;
+    mapper->clap_birds[3] = (bird_info_t){"red_billed_quelea",       "Red-billed Quelea"};
+    mapper->num_clap_birds = 4;
 
     /* BIRDSONG: high-frequency melodic detections — richly patterned songs */
     mapper->birdsong_birds[0] = (bird_info_t){"paradise_flycatcher", "Paradise Flycatcher"};
@@ -605,7 +606,7 @@ void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
         mapper->num_birdsong_birds = 2;
     }
     else if (lux < 500.0f) {
-        /* Overcast: moderate mix, leaning gentle */
+        /* Overcast: moderate mix */
         mapper->whistle_birds[0] = (bird_info_t){"piet_my_vrou",    "Red-chested Cuckoo"};
         mapper->whistle_birds[1] = (bird_info_t){"cape_robin_chat", "Cape Robin-Chat"};
         mapper->whistle_birds[2] = (bird_info_t){"glossy_starling", "Glossy Starling"};
@@ -618,9 +619,9 @@ void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
         mapper->clap_birds[0] = (bird_info_t){"fork_tailed_drongo",    "Drongo"};
         mapper->clap_birds[1] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
         mapper->clap_birds[2] = (bird_info_t){"glossy_starling",        "Glossy Starling"};
-        mapper->num_clap_birds = 3;
+        mapper->clap_birds[3] = (bird_info_t){"red_billed_quelea",      "Red-billed Quelea"};
+        mapper->num_clap_birds = 4;
 
-        /* Overcast birdsong: full melodic set */
         mapper->birdsong_birds[0] = (bird_info_t){"paradise_flycatcher", "Paradise Flycatcher"};
         mapper->birdsong_birds[1] = (bird_info_t){"cape_robin_chat",     "Cape Robin-Chat"};
         mapper->birdsong_birds[2] = (bird_info_t){"cape_canary",         "Cape Canary"};
@@ -628,7 +629,7 @@ void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
     }
     else {
         /* Bright/Sunny: full lively set */
-        mapper->whistle_birds[0] = (bird_info_t){"piet_my_vrou",   "Red-chested Cuckoo"};
+        mapper->whistle_birds[0] = (bird_info_t){"piet_my_vrou",    "Red-chested Cuckoo"};
         mapper->whistle_birds[1] = (bird_info_t){"cape_robin_chat", "Cape Robin-Chat"};
         mapper->whistle_birds[2] = (bird_info_t){"glossy_starling", "Glossy Starling"};
         mapper->whistle_birds[3] = (bird_info_t){"cape_canary",     "Cape Canary"};
@@ -642,9 +643,9 @@ void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
         mapper->clap_birds[0] = (bird_info_t){"fork_tailed_drongo",    "Fork-tailed Drongo"};
         mapper->clap_birds[1] = (bird_info_t){"glossy_starling",        "Glossy Starling"};
         mapper->clap_birds[2] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
-        mapper->num_clap_birds = 3;
+        mapper->clap_birds[3] = (bird_info_t){"red_billed_quelea",      "Red-billed Quelea"};
+        mapper->num_clap_birds = 4;
 
-        /* Sunny birdsong: all three high-energy melodic birds */
         mapper->birdsong_birds[0] = (bird_info_t){"paradise_flycatcher", "Paradise Flycatcher"};
         mapper->birdsong_birds[1] = (bird_info_t){"cape_canary",         "Cape Canary"};
         mapper->birdsong_birds[2] = (bird_info_t){"cape_robin_chat",     "Cape Robin-Chat"};

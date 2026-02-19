@@ -6,6 +6,7 @@
  */
 
 #include "markov.h"
+#include "echoes.h"
 #include "remote_config.h"
 #include "esp_log.h"
 #include "esp_random.h"
@@ -299,23 +300,16 @@ static void fire_autonomous_call(markov_chain_t *mc, uint8_t predicted_state)
 
     if (bird.function_name == NULL || bird.function_name[0] == '\0') return;
 
-    /* Allocate a temporary audio buffer on the heap for autonomous calls.
-     * sizeof(audio_buffer_t) is ~96 KB — only attempt if heap is sufficient. */
-    audio_buffer_t *buf = (audio_buffer_t *)malloc(sizeof(audio_buffer_t));
-    if (!buf) {
-        ESP_LOGE(TAG, "Autonomous call: out of memory for audio buffer");
-        return;
-    }
+    /* Use the application's shared audio buffer rather than malloc-ing ~96 KB.
+     * play_bird_call() acquires the playback mutex internally, which also
+     * serialises access to the shared buffer.                               */
+    audio_buffer_t *buf = get_audio_buffer();
 
     ESP_LOGI(TAG, "🤖 Autonomous call: %s (predicted state %s)",
              bird.display_name, markov_state_name(predicted_state));
 
     bird_mapper_generate_call(mc->mapper, bird.function_name, buf);
-    /* play_bird_call acquires the playback mutex internally — if the speaker
-     * is already busy it will log a warning and return immediately.        */
     play_bird_call(bird.display_name, buf);
-
-    free(buf);
 }
 
 /* ========================================================================

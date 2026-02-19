@@ -267,6 +267,10 @@ bool has_audio_output(void);
 /* Bird mapper access (for ESP-NOW mesh initialisation) */
 bird_call_mapper_t *get_bird_mapper(void);
 
+/* Shared audio buffer access — use only while holding the playback mutex
+ * (play_bird_call acquires it internally, so callers do not need to).    */
+audio_buffer_t *get_audio_buffer(void);
+
 /* Markov chain access.
  * Forward declaration only — markov.h includes echoes.h, so we cannot
  * include markov.h here without a circular dependency.  A pointer
