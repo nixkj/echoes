@@ -113,9 +113,24 @@ typedef struct {
     bool     restart_requested; /**< true → reboot at next config poll        */
     uint32_t restart_token;     /**< Unique token per restart command          */
 
+    /* ── Quiet hours ─────────────────────────────────────────────
+     * When enabled the entire flock goes silent (no sound, no LEDs)
+     * between QUIET_HOUR_START and QUIET_HOUR_END (wall-clock hours,
+     * 0–23, local server time as supplied via _server_time in the
+     * config response).  Default: 17:00 → 08:00.                   */
+    bool     quiet_hours_enabled; /**< Master switch for scheduled quiet       */
+    uint8_t  quiet_hour_start;    /**< Hour at which silence begins (0-23)     */
+    uint8_t  quiet_hour_end;      /**< Hour at which sound resumes (0-23)      */
+
     /* ── Meta ──────────────────────────────────────────────────── */
     bool     loaded;            /**< true after at least one successful fetch */
     uint32_t last_fetch_ms;     /**< Tick count of last successful fetch      */
+
+    /* Wall-clock offset derived from _server_time.
+     * Stored as UTC epoch seconds of the most recent config fetch.
+     * Combined with esp_timer_get_time() to infer current hour.    */
+    int64_t  server_epoch_s;    /**< UTC epoch seconds at last fetch           */
+    uint32_t fetch_tick_ms;     /**< xTaskGetTickCount()*period at last fetch  */
 } remote_config_t;
 
 /* =========================================================================
@@ -157,5 +172,16 @@ void remote_config_task(void *param);
  * @return Const pointer to the live remote_config_t.
  */
 const remote_config_t *remote_config_get(void);
+
+/**
+ * @brief Return true if the current wall-clock time falls within the
+ *        configured quiet hours window.
+ *
+ * Uses the server epoch captured at the last successful config fetch
+ * combined with the local tick counter to estimate the current hour.
+ * Returns false (i.e. not quiet) when quiet_hours_enabled is false or
+ * when no server time has been received yet.
+ */
+bool remote_config_is_quiet_hours(void);
 
 #endif /* REMOTE_CONFIG_H */

@@ -89,16 +89,19 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .chaos_hold_ms                   = 10000,
     .chaos_call_gap_ms               = 200,
 
-    /* Meta */
-    /* Output switches */
-    .silent_mode   = false,
-    .sound_off     = false,
-
+    /* Remote restart */
     .restart_requested           = false,
     .restart_token               = 0,
 
+    /* Quiet hours (17:00 → 08:00, disabled until server confirms) */
+    .quiet_hours_enabled         = true,
+    .quiet_hour_start            = 17,
+    .quiet_hour_end              = 8,
+
     .loaded        = false,
     .last_fetch_ms = 0,
+    .server_epoch_s = 0,
+    .fetch_tick_ms  = 0,
 };
 
 /* =========================================================================
@@ -237,6 +240,20 @@ static void apply_json(cJSON *root)
     /* Remote restart */
     CFG_BOOL   (root, s_cfg.restart_requested, "RESTART_REQUESTED");
     CFG_UINT32 (root, s_cfg.restart_token,     "RESTART_TOKEN");
+
+    /* Quiet hours */
+    CFG_BOOL  (root, s_cfg.quiet_hours_enabled, "QUIET_HOURS_ENABLED");
+    CFG_UINT8 (root, s_cfg.quiet_hour_start,    "QUIET_HOUR_START");
+    CFG_UINT8 (root, s_cfg.quiet_hour_end,      "QUIET_HOUR_END");
+
+    /* Server wall-clock time — used for quiet-hours calculation */
+    {
+        cJSON *_item = cJSON_GetObjectItemCaseSensitive(root, "_server_time");
+        if (_item && cJSON_IsNumber(_item)) {
+            s_cfg.server_epoch_s = (int64_t)_item->valuedouble;
+            s_cfg.fetch_tick_ms  = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        }
+    }
 }
 
 /* =========================================================================
@@ -305,6 +322,12 @@ esp_err_t remote_config_fetch(void)
              (unsigned long)s_cfg.voice_freq,
              (unsigned long)s_cfg.lux_poll_interval_ms);
 
+    if (s_cfg.quiet_hours_enabled) {
+        ESP_LOGI(TAG, "Quiet hours: %02u:00 → %02u:00 (server epoch %lld)",
+                 s_cfg.quiet_hour_start, s_cfg.quiet_hour_end,
+                 (long long)s_cfg.server_epoch_s);
+    }
+
     return ESP_OK;
 }
 
@@ -354,4 +377,48 @@ void remote_config_task(void *param)
 const remote_config_t *remote_config_get(void)
 {
     return &s_cfg;
+}
+
+/* =========================================================================
+ * QUIET HOURS
+ *
+ * We have no hardware RTC, so we derive the current UTC hour from:
+ *   epoch_now ≈ server_epoch_s + (current_tick_ms - fetch_tick_ms) / 1000
+ *
+ * The server already sends its local time in _server_time (Unix epoch,
+ * local time of the server).  For an indoor installation the server is
+ * co-located and in the same timezone, so this works without any TZ
+ * conversion.  If the server is in a different timezone adjust
+ * QUIET_HOUR_START / QUIET_HOUR_END to compensate.
+ *
+ * The wrap-around case (start > end, e.g. 17→08) is handled explicitly:
+ *   17:00 → 23:59  and  00:00 → 07:59  are both quiet.
+ * ========================================================================= */
+
+bool remote_config_is_quiet_hours(void)
+{
+    if (!s_cfg.quiet_hours_enabled) return false;
+    if (s_cfg.server_epoch_s == 0)  return false;   /* no time reference yet */
+
+    /* Estimate elapsed seconds since last config fetch */
+    uint32_t now_ms   = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    uint32_t delta_ms = now_ms - s_cfg.fetch_tick_ms;  /* wraps safely at 32-bit */
+    int64_t  epoch_now = s_cfg.server_epoch_s + (int64_t)(delta_ms / 1000);
+
+    /* Extract hour from epoch (UTC, or local if server sends local time) */
+    uint8_t hour = (uint8_t)((epoch_now % 86400) / 3600);
+
+    uint8_t qs = s_cfg.quiet_hour_start;
+    uint8_t qe = s_cfg.quiet_hour_end;
+
+    bool quiet;
+    if (qs < qe) {
+        /* Simple contiguous window, e.g. 01:00 → 06:00 */
+        quiet = (hour >= qs && hour < qe);
+    } else {
+        /* Overnight wrap-around, e.g. 17:00 → 08:00 */
+        quiet = (hour >= qs || hour < qe);
+    }
+
+    return quiet;
 }

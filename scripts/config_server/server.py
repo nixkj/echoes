@@ -372,6 +372,30 @@ DEFAULT_CONFIG = {
         "type": "bool",
         "description": "When ON, bird-call audio is silenced but LEDs continue to operate normally (ambient glow and VU meter during detection). Useful in quiet settings where visual response is still wanted.",
         "unit": "on / off"
+    },
+    "QUIET_HOURS_ENABLED": {
+        "value": True,
+        "type": "bool",
+        "description": "When ON, all nodes enter a fully silent mode (no sound, no LEDs) between QUIET_HOUR_START and QUIET_HOUR_END each day. Uses the server's local time so keep server and installation in the same timezone.",
+        "unit": "on / off"
+    },
+    "QUIET_HOUR_START": {
+        "value": 17,
+        "min": 0,
+        "max": 23,
+        "step": 1,
+        "type": "int",
+        "description": "Hour (0–23, 24-hour clock) at which the daily quiet period begins. Default 17 = 17:00 (5 pm). The quiet window wraps overnight when START > END.",
+        "unit": "hour (0-23)"
+    },
+    "QUIET_HOUR_END": {
+        "value": 8,
+        "min": 0,
+        "max": 23,
+        "step": 1,
+        "type": "int",
+        "description": "Hour (0–23) at which the daily quiet period ends and normal operation resumes. Default 8 = 08:00 (8 am). Set equal to START to disable the window without touching QUIET_HOURS_ENABLED.",
+        "unit": "hour (0-23)"
     }
 }
 
@@ -435,6 +459,12 @@ def get_config():
     flat["_version"] = _last_modified
     flat["RESTART_REQUESTED"] = _restart_pending
     flat["RESTART_TOKEN"] = _restart_token
+
+    # Inject computed quiet-hours status so devices always receive it
+    flat["QUIET_HOURS_ENABLED"] = _config["QUIET_HOURS_ENABLED"]["value"]
+    flat["QUIET_HOUR_START"]    = _config["QUIET_HOUR_START"]["value"]
+    flat["QUIET_HOUR_END"]      = _config["QUIET_HOUR_END"]["value"]
+
     if _restart_pending:
         print(f"[INFO] RESTART_REQUESTED=true (token={_restart_token}) delivered to a node")
     return jsonify(flat)
@@ -534,6 +564,49 @@ def reset_config():
     _last_modified = datetime.now().isoformat()
     save_config(_config)
     return jsonify({"status": "reset", "version": _last_modified})
+
+
+@app.route("/quiet-hours/status", methods=["GET"])
+def quiet_hours_status():
+    """Return whether the flock is currently in a quiet-hours window."""
+    from datetime import datetime as dt
+    now = dt.now()
+    hour = now.hour
+    qs = _config["QUIET_HOUR_START"]["value"]
+    qe = _config["QUIET_HOUR_END"]["value"]
+    enabled = _config["QUIET_HOURS_ENABLED"]["value"]
+
+    if not enabled:
+        quiet_now = False
+    elif qs < qe:
+        quiet_now = qs <= hour < qe
+    else:  # overnight wrap
+        quiet_now = hour >= qs or hour < qe
+
+    # Calculate minutes until next transition
+    def _minutes_to(target_hour):
+        delta = (target_hour - hour) % 24
+        if delta == 0:
+            return 0
+        return delta * 60 - now.minute
+
+    if quiet_now:
+        next_event = "end"
+        minutes_remaining = _minutes_to(qe)
+    else:
+        next_event = "start"
+        minutes_remaining = _minutes_to(qs)
+
+    return jsonify({
+        "enabled": enabled,
+        "quiet_now": quiet_now,
+        "current_hour": hour,
+        "quiet_start": qs,
+        "quiet_end": qe,
+        "next_event": next_event,
+        "minutes_to_next_event": minutes_remaining,
+        "server_time": now.strftime("%H:%M:%S"),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -965,6 +1038,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <span id="restart-status"></span>
   </div>
 
+  <div id="quiet-hours-banner" style="display:none;margin-bottom:24px;padding:12px 18px;border-radius:4px;border:1px solid var(--muted);font-family:var(--font-mono);font-size:12px;"></div>
+
   <div id="param-sections"></div>
 </div>
 
@@ -981,6 +1056,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <script>
 const SECTIONS = {
   "Output Switches": ["SILENT_MODE","SOUND_OFF"],
+  "Quiet Hours": ["QUIET_HOURS_ENABLED","QUIET_HOUR_START","QUIET_HOUR_END"],
   "Audio Detection": ["GAIN","WHISTLE_FREQ","VOICE_FREQ","WHISTLE_MULTIPLIER","VOICE_MULTIPLIER","CLAP_MULTIPLIER","WHISTLE_CONFIRM","VOICE_CONFIRM","CLAP_CONFIRM","DEBOUNCE_BUFFERS","BIRDSONG_FREQ","BIRDSONG_MULTIPLIER","BIRDSONG_HF_RATIO","BIRDSONG_MF_MIN","BIRDSONG_CONFIRM","NOISE_FLOOR_WHISTLE","NOISE_FLOOR_VOICE","NOISE_FLOOR_BIRDSONG"],
   "Playback Volume": ["VOLUME","VOLUME_LUX_MIN","VOLUME_LUX_MAX","VOLUME_SCALE_MIN","VOLUME_SCALE_MAX","QUELEA_GAIN"],
   "Light Sensor": ["LUX_POLL_INTERVAL_MS","LUX_CHANGE_THRESHOLD","LUX_FLASH_THRESHOLD","LUX_FLASH_PERCENT","LUX_FLASH_MIN_ABS"],
@@ -999,6 +1075,28 @@ async function loadConfig() {
   renderAll();
   document.getElementById("last-saved").textContent = fullConfig["VOLUME"]?._last_modified || "just now";
   document.getElementById("param-count").textContent = Object.keys(fullConfig).length;
+  updateQuietHoursBanner();
+}
+
+async function updateQuietHoursBanner() {
+  try {
+    const r = await fetch("/quiet-hours/status");
+    const d = await r.json();
+    const banner = document.getElementById("quiet-hours-banner");
+    if (!d.enabled) { banner.style.display = "none"; return; }
+    banner.style.display = "block";
+    if (d.quiet_now) {
+      banner.style.background = "rgba(240,74,106,0.08)";
+      banner.style.borderColor = "var(--danger)";
+      banner.style.color = "var(--danger)";
+      banner.innerHTML = `🔇 <strong>QUIET HOURS ACTIVE</strong> — flock is silent until ${String(d.quiet_end).padStart(2,"0")}:00 &nbsp;·&nbsp; ${d.minutes_to_next_event} min remaining &nbsp;·&nbsp; server time ${d.server_time}`;
+    } else {
+      banner.style.background = "rgba(200,240,74,0.06)";
+      banner.style.borderColor = "var(--accent)";
+      banner.style.color = "var(--accent)";
+      banner.innerHTML = `🔊 Flock active — quiet hours begin at ${String(d.quiet_start).padStart(2,"0")}:00 &nbsp;·&nbsp; ${d.minutes_to_next_event} min until silence &nbsp;·&nbsp; server time ${d.server_time}`;
+    }
+  } catch(e) { /* non-critical */ }
 }
 
 function renderAll() {
@@ -1231,6 +1329,8 @@ function resetRestartBtn() {
 }
 
 loadConfig();
+// Refresh quiet-hours banner every 60 s so the countdown stays accurate
+setInterval(updateQuietHoursBanner, 60000);
 </script>
 </body>
 </html>"""

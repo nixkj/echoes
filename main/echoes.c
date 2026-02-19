@@ -304,7 +304,7 @@ void system_init(void) {
  * ======================================================================== */
 
 void set_led(float white_level, float blue_level) {
-    if (remote_config_get()->silent_mode) {
+    if (remote_config_get()->silent_mode || remote_config_is_quiet_hours()) {
         white_level = 0.0f;
         blue_level  = 0.0f;
     }
@@ -507,6 +507,10 @@ static void _play_locked(const char *bird_name, const audio_buffer_t *audio_buff
     if (_cfg->silent_mode || _cfg->sound_off) {
         ESP_LOGD(TAG, "Sound suppressed (%s): skipping '%s'",
                  _cfg->silent_mode ? "silent_mode" : "sound_off", bird_name);
+        return;
+    }
+    if (remote_config_is_quiet_hours()) {
+        ESP_LOGD(TAG, "Quiet hours: skipping '%s'", bird_name);
         return;
     }
 
@@ -850,6 +854,10 @@ float get_volume_for_lux(float lux)
  * LUX-BASED BIRD SELECTION
  * ======================================================================== */
 
+/* Forward declaration — full definition is in chaos_task section below */
+static const bird_info_t k_all_birds[];
+#define NUM_ALL_BIRDS  11u   /* must match the table in chaos_task section */
+
 void lux_based_birds_task(void *param) {
     if (g_system_state.light_sensor_type == LIGHT_SENSOR_NONE) {
         ESP_LOGW(TAG, "Lux-based bird selection disabled (no sensor)");
@@ -886,18 +894,31 @@ void lux_based_birds_task(void *param) {
         if (is_flash) {
             ESP_LOGI(TAG, "⚡ Flash: %.1f → %.1f lux (Δ%.1f)", last_lux, lux, raw_delta);
 
-            /* Bright flash → WHISTLE (alert); sudden dark → VOICE (quiet) */
+            /* Pick a random bird from the full catalogue so every flash
+             * produces a surprise response.  We avoid repeating the
+             * most recent flash bird for variety.                         */
+            static uint32_t s_last_flash_idx = 0xFFFFFFFF;
+            uint32_t flash_idx;
+            do {
+                flash_idx = (uint32_t)(esp_random() % NUM_ALL_BIRDS);
+            } while (flash_idx == s_last_flash_idx && NUM_ALL_BIRDS > 1);
+            s_last_flash_idx = flash_idx;
+            const bird_info_t *flash_bird = &k_all_birds[flash_idx];
+
+            /* Still teach the Markov chain the implied detection so the
+             * chain learns from flash events.                             */
             detection_type_t flash_det = (raw_delta > 0.0f)
                                          ? DETECTION_WHISTLE
                                          : DETECTION_VOICE;
-
             markov_on_event(&g_markov, flash_det, lux);
 
             if (has_audio_output()) {
                 float bias = markov_get_lux_bias(&g_markov);
                 bird_mapper_update_for_lux(&g_bird_mapper, lux + bias);
-                bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, flash_det);
-                generate_and_play_bird_call(&g_bird_mapper, bird.function_name, bird.display_name);
+                ESP_LOGI(TAG, "⚡ Flash bird: %s", flash_bird->display_name);
+                generate_and_play_bird_call(&g_bird_mapper,
+                                            flash_bird->function_name,
+                                            flash_bird->display_name);
             }
 
             /* Force broadcast regardless of ESPNOW_LUX_THRESHOLD */
@@ -953,7 +974,7 @@ static const bird_info_t k_all_birds[] = {
     { "generate_red_billed_quelea",      "Red-billed Quelea"       },
     { "generate_paradise_flycatcher",    "Paradise Flycatcher"     },
 };
-#define NUM_ALL_BIRDS  (sizeof(k_all_birds) / sizeof(k_all_birds[0]))
+/* NUM_ALL_BIRDS defined above as 11u — must match this table */
 
 void chaos_task(void *param)
 {
