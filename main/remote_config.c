@@ -37,6 +37,11 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .voice_confirm               = 3,
     .clap_confirm                = 1,
     .debounce_buffers            = 20,
+    .birdsong_freq               = 3500,
+    .birdsong_multiplier         = 2.2f,
+    .birdsong_hf_ratio           = 1.4f,
+    .birdsong_mf_min             = 0.35f,
+    .birdsong_confirm            = 3,
 
     /* Playback volume */
     .volume                      = 0.20f,
@@ -44,6 +49,7 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .volume_lux_max              = 200.0f,
     .volume_scale_min            = 0.25f,
     .volume_scale_max            = 1.0f,
+    .quelea_gain                 = 2.5f,
 
     /* Light sensor */
     .lux_poll_interval_ms        = 500,
@@ -155,6 +161,11 @@ static void apply_json(cJSON *root)
     CFG_UINT8  (root, s_cfg.voice_confirm,       "VOICE_CONFIRM");
     CFG_UINT8  (root, s_cfg.clap_confirm,        "CLAP_CONFIRM");
     CFG_UINT8  (root, s_cfg.debounce_buffers,    "DEBOUNCE_BUFFERS");
+    CFG_UINT32 (root, s_cfg.birdsong_freq,       "BIRDSONG_FREQ");
+    CFG_FLOAT  (root, s_cfg.birdsong_multiplier, "BIRDSONG_MULTIPLIER");
+    CFG_FLOAT  (root, s_cfg.birdsong_hf_ratio,   "BIRDSONG_HF_RATIO");
+    CFG_FLOAT  (root, s_cfg.birdsong_mf_min,     "BIRDSONG_MF_MIN");
+    CFG_UINT8  (root, s_cfg.birdsong_confirm,    "BIRDSONG_CONFIRM");
 
     /* Playback volume */
     CFG_FLOAT  (root, s_cfg.volume,              "VOLUME");
@@ -162,6 +173,7 @@ static void apply_json(cJSON *root)
     CFG_FLOAT  (root, s_cfg.volume_lux_max,      "VOLUME_LUX_MAX");
     CFG_FLOAT  (root, s_cfg.volume_scale_min,    "VOLUME_SCALE_MIN");
     CFG_FLOAT  (root, s_cfg.volume_scale_max,    "VOLUME_SCALE_MAX");
+    CFG_FLOAT  (root, s_cfg.quelea_gain,         "QUELEA_GAIN");
 
     /* Light sensor */
     CFG_UINT32 (root, s_cfg.lux_poll_interval_ms,  "LUX_POLL_INTERVAL_MS");

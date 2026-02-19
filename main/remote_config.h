@@ -63,6 +63,11 @@ typedef struct {
     uint8_t  voice_confirm;         /**< Confirmation frames — voice          */
     uint8_t  clap_confirm;          /**< Confirmation frames — clap           */
     uint8_t  debounce_buffers;      /**< Debounce buffer count                */
+    uint32_t birdsong_freq;         /**< Goertzel birdsong centre freq (Hz)   */
+    float    birdsong_multiplier;   /**< Adaptive threshold × for birdsong    */
+    float    birdsong_hf_ratio;     /**< High-band must exceed mid by this ×  */
+    float    birdsong_mf_min;       /**< Mid-freq min fraction of threshold   */
+    uint8_t  birdsong_confirm;      /**< Confirmation frames — birdsong       */
 
     /* ── Playback volume ─────────────────────────────────────────── */
     float    volume;                /**< Master playback amplitude            */
@@ -70,6 +75,7 @@ typedef struct {
     float    volume_lux_max;        /**< Lux level for maximum volume         */
     float    volume_scale_min;      /**< Volume multiplier in darkness        */
     float    volume_scale_max;      /**< Volume multiplier in bright light    */
+    float    quelea_gain;           /**< Post-process gain for Quelea call    */
 
     /* ── Light sensor ────────────────────────────────────────────── */
     uint32_t lux_poll_interval_ms;  /**< Sensor poll period (ms)              */

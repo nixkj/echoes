@@ -390,14 +390,15 @@ size_t generate_red_billed_quelea(bird_synthesizer_t *synth, audio_buffer_t *out
     out->num_samples = pos;
 
     /*
-     * Post-process gain: 4.0× brings Quelea to full perceived loudness.
-     * apply_gain_inplace clips safely to int16 range, so no distortion risk
-     * given the per-sample amplitudes above are already below 1.0.
-     * This is intentionally louder than every other bird — Quelea signals
-     * a network-wide event and must cut through environmental noise.
+     * Post-process gain: QUELEA_GAIN (default 2.5×) applied here so the
+     * level can be tuned via remote config without reflashing.
+     * Quelea bypasses the global VOLUME constant so this gain is the sole
+     * loudness control — intentionally louder than other birds to signal
+     * a network-wide flood event clearly above ambient noise.
      */
+    float quelea_gain = remote_config_get()->quelea_gain;
     for (size_t i = 0; i < pos; i++) {
-        int32_t v = (int32_t)out->buffer[i] * 4;
+        int32_t v = (int32_t)((float)out->buffer[i] * quelea_gain);
         if (v >  32767) v =  32767;
         if (v < -32768) v = -32768;
         out->buffer[i] = (int16_t)v;

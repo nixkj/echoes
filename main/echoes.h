@@ -31,7 +31,7 @@
 /* Detection frequencies */
 #define WHISTLE_FREQ        2000
 #define VOICE_FREQ          200
-#define BIRDSONG_FREQ       3500   /**< High-freq Goertzel bin for melodic birdsong */
+#define BIRDSONG_FREQ       8000   /**< High-freq Goertzel bin for melodic birdsong */
 
 /* Adaptive threshold parameters */
 #define ALPHA               0.98f       // Smoothing factor

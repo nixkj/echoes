@@ -274,9 +274,9 @@ void system_init(void) {
     // Precompute Goertzel coefficients using remote config (or defaults)
     {
         const remote_config_t *cfg = remote_config_get();
-        g_coeff_whistle  = 2.0f * cosf(2.0f * M_PI * cfg->whistle_freq / SAMPLE_RATE);
-        g_coeff_voice    = 2.0f * cosf(2.0f * M_PI * cfg->voice_freq   / SAMPLE_RATE);
-        g_coeff_birdsong = 2.0f * cosf(2.0f * M_PI * BIRDSONG_FREQ     / SAMPLE_RATE);
+        g_coeff_whistle  = 2.0f * cosf(2.0f * M_PI * cfg->whistle_freq  / SAMPLE_RATE);
+        g_coeff_voice    = 2.0f * cosf(2.0f * M_PI * cfg->voice_freq    / SAMPLE_RATE);
+        g_coeff_birdsong = 2.0f * cosf(2.0f * M_PI * cfg->birdsong_freq / SAMPLE_RATE);
     }
     
     // Initialize light sensor (this detects BH1750 vs analog)
@@ -653,17 +653,16 @@ void audio_detection_task(void *param) {
 
             // Recompute Goertzel coefficients if frequencies changed
             {
-                float new_cw = 2.0f * cosf(2.0f * M_PI * cfg->whistle_freq / SAMPLE_RATE);
-                float new_cv = 2.0f * cosf(2.0f * M_PI * cfg->voice_freq   / SAMPLE_RATE);
+                float new_cw = 2.0f * cosf(2.0f * M_PI * cfg->whistle_freq  / SAMPLE_RATE);
+                float new_cv = 2.0f * cosf(2.0f * M_PI * cfg->voice_freq    / SAMPLE_RATE);
                 if (new_cw != g_coeff_whistle || new_cv != g_coeff_voice) {
-                    g_coeff_whistle = new_cw;
-                    g_coeff_voice   = new_cv;
-                    /* Birdsong freq is fixed — no remote config knob needed */
-                    g_coeff_birdsong = 2.0f * cosf(2.0f * M_PI * BIRDSONG_FREQ / SAMPLE_RATE);
-                    ESP_LOGI(TAG, "Goertzel: whistle=%luHz voice=%luHz birdsong=%dHz",
+                    g_coeff_whistle  = new_cw;
+                    g_coeff_voice    = new_cv;
+                    g_coeff_birdsong = 2.0f * cosf(2.0f * M_PI * cfg->birdsong_freq / SAMPLE_RATE);
+                    ESP_LOGI(TAG, "Goertzel: whistle=%luHz voice=%luHz birdsong=%luHz",
                              (unsigned long)cfg->whistle_freq,
                              (unsigned long)cfg->voice_freq,
-                             BIRDSONG_FREQ);
+                             (unsigned long)cfg->birdsong_freq);
                 }
             }
 
@@ -678,7 +677,7 @@ void audio_detection_task(void *param) {
             
             float thresh_w    = state->running_avg_whistle  * cfg->whistle_multiplier;
             float thresh_v    = state->running_avg_voice    * cfg->voice_multiplier;
-            float thresh_b    = state->running_avg_birdsong * BIRDSONG_MULTIPLIER;
+            float thresh_b    = state->running_avg_birdsong * cfg->birdsong_multiplier;
             float thresh_clap = fmaxf(thresh_w * cfg->clap_multiplier, thresh_v * 2.0f);
             
             // Handle debounce
@@ -716,13 +715,13 @@ void audio_detection_task(void *param) {
                 // Spectral signature: mag_b exceeds threshold AND is stronger than mid by
                 // BIRDSONG_HF_RATIO AND there is some (but not dominant) mid-freq energy.
                 else if (mag_b > thresh_b &&
-                         mag_b > mag_w * BIRDSONG_HF_RATIO &&
-                         mag_w > thresh_w * BIRDSONG_MF_MIN &&
+                         mag_b > mag_w * cfg->birdsong_hf_ratio &&
+                         mag_w > thresh_w * cfg->birdsong_mf_min &&
                          mag_v < thresh_v) {
                     state->birdsong_count++;
                     state->whistle_count = state->voice_count = state->clap_count = 0;
 
-                    if (state->birdsong_count >= BIRDSONG_CONFIRM) {
+                    if (state->birdsong_count >= cfg->birdsong_confirm) {
                         ESP_LOGI(TAG, "🐦 BIRDSONG! (b:%.0f, w:%.0f, v:%.0f)", mag_b, mag_w, mag_v);
                         espnow_mesh_broadcast_sound(DETECTION_BIRDSONG);
                         markov_on_event(&g_markov, DETECTION_BIRDSONG, get_lux_level());
