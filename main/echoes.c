@@ -877,11 +877,29 @@ void lux_based_birds_task(void *param) {
         float last_lux  = prev_lux;
         prev_lux = lux;
 
-        /* Flash detection using remote config thresholds */
-        bool is_flash = (fabsf(raw_delta) >= cfg->lux_flash_threshold) ||
-                        (fabsf(raw_delta) >= cfg->lux_flash_min_abs &&
-                         prev_lux > 0.0f &&
-                         fabsf(raw_delta) >= prev_lux * cfg->lux_flash_percent);
+        /* Flash detection — relative to ambient level so normal sensor noise
+         * at high lux (e.g. Δ30 at 300 lux = 10%) does not trigger, but a
+         * phone torch doubling the light (Δ300 = 100%) does.
+         *
+         * Uses last_lux (the value BEFORE this tick's update) so we compare
+         * against the actual previous reading, not the current one.
+         *
+         * Two conditions must both be true:
+         *   1. Relative: |delta| / last_lux >= lux_flash_percent  (e.g. 15%)
+         *   2. Absolute floor: |delta| >= lux_flash_min_abs  (filters micro-noise)
+         *
+         * lux_flash_threshold is kept as a hard fallback for the first tick
+         * (when last_lux is not yet valid).
+         */
+        bool is_flash;
+        if (last_lux > 0.0f) {
+            /* Normal case: relative threshold against previous reading */
+            is_flash = (fabsf(raw_delta) >= cfg->lux_flash_min_abs) &&
+                       (fabsf(raw_delta) / last_lux >= cfg->lux_flash_percent);
+        } else {
+            /* First tick — fall back to absolute threshold */
+            is_flash = (fabsf(raw_delta) >= cfg->lux_flash_threshold);
+        }
 
         if (is_flash) {
             ESP_LOGI(TAG, "⚡ Flash: %.1f → %.1f lux (Δ%.1f)", last_lux, lux, raw_delta);
