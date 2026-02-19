@@ -22,6 +22,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "markov.h"
+#include "remote_config.h"
 #include <string.h>
 #include <math.h>
 
@@ -262,7 +263,7 @@ bool espnow_mesh_init(bird_call_mapper_t *mapper, markov_chain_t *mc)
 void espnow_mesh_broadcast_sound(detection_type_t detection)
 {
     uint32_t now = millis();
-    if (now - s_last_sound_broadcast_ms < ESPNOW_SOUND_THROTTLE_MS) {
+    if (now - s_last_sound_broadcast_ms < remote_config_get()->espnow_sound_throttle_ms) {
         ESP_LOGD(TAG, "Sound broadcast throttled (detection %d) — too soon", detection);
         return;
     }
@@ -288,7 +289,7 @@ void espnow_mesh_broadcast_sound(detection_type_t detection)
 void espnow_mesh_broadcast_light(float lux)
 {
     /* Only broadcast if the change is significant */
-    if (fabsf(lux - s_last_tx_lux) < ESPNOW_LUX_THRESHOLD) return;
+    if (fabsf(lux - s_last_tx_lux) < remote_config_get()->espnow_lux_threshold) return;
 
     /* Update local lux record before blending */
     s_local_lux   = lux;
@@ -319,7 +320,8 @@ bool espnow_mesh_is_flooded(void)
 {
     /* Check whether the oldest timestamp in the ring is within the flood
      * window.  When the ring is full (FLOOD_COUNT messages have arrived)
-     * and the oldest one is less than FLOOD_WINDOW_MS ago, we're flooded. */
+     * and the oldest one is less than espnow_flood_window_ms ago, we're flooded. */
+    uint32_t flood_window = remote_config_get()->espnow_flood_window_ms;
     uint32_t now = millis();
     /* The slot AFTER head is the oldest entry in the ring */
     uint8_t oldest_slot = s_rx_head;   /* head has just been bumped past oldest */
@@ -327,7 +329,7 @@ bool espnow_mesh_is_flooded(void)
 
     /* oldest == 0 means the ring hasn't filled yet */
     bool flooded = (oldest != 0) &&
-                   ((now - oldest) <= ESPNOW_FLOOD_WINDOW_MS);
+                   ((now - oldest) <= flood_window);
 
     if (flooded != s_flooded) {
         s_flooded = flooded;
@@ -348,7 +350,7 @@ void espnow_mesh_tick(void)
     uint32_t now     = millis();
     uint32_t elapsed = now - s_last_remote_event_ms;
 
-    if (elapsed >= ESPNOW_EVENT_TTL_MS) {
+    if (elapsed >= remote_config_get()->espnow_event_ttl_ms) {
         ESP_LOGI(TAG, "Remote event TTL expired — reverting to local lux %.1f",
                  s_local_lux);
         s_remote_lux = -1.0f;

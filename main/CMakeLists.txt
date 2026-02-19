@@ -9,6 +9,7 @@ idf_component_register(
 	"startup.c"
 	"espnow_mesh.c"
 	"markov.c"
+	"remote_config.c"
     INCLUDE_DIRS 
         "."
     REQUIRES 
@@ -20,4 +21,5 @@ idf_component_register(
         esp_https_ota 
         app_update
 	nvs_flash
+	json
 )

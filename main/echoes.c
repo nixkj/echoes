@@ -7,6 +7,7 @@
 #include "synthesis.h"
 #include "espnow_mesh.h"
 #include "markov.h"
+#include "remote_config.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -268,9 +269,12 @@ void system_init(void) {
     g_system_state.detection.running_avg_whistle = 1000.0f;
     g_system_state.detection.running_avg_voice = 1000.0f;
     
-    // Precompute Goertzel coefficients
-    g_coeff_whistle = 2.0f * cosf(2.0f * M_PI * WHISTLE_FREQ / SAMPLE_RATE);
-    g_coeff_voice = 2.0f * cosf(2.0f * M_PI * VOICE_FREQ / SAMPLE_RATE);
+    // Precompute Goertzel coefficients using remote config (or defaults)
+    {
+        const remote_config_t *cfg = remote_config_get();
+        g_coeff_whistle = 2.0f * cosf(2.0f * M_PI * cfg->whistle_freq / SAMPLE_RATE);
+        g_coeff_voice   = 2.0f * cosf(2.0f * M_PI * cfg->voice_freq   / SAMPLE_RATE);
+    }
     
     // Initialize light sensor (this detects BH1750 vs analog)
     light_sensor_init();
@@ -441,7 +445,7 @@ static float calculate_vu_level(const int16_t *buffer, size_t num_samples)
         return 0.80f;
     } else {
         // Level 5 - High (max)
-        return VU_MAX_BRIGHTNESS;
+        return remote_config_get()->vu_max_brightness;
     }
 }
 
@@ -494,7 +498,8 @@ static void _play_locked(const char *bird_name, const audio_buffer_t *audio_buff
     }
 
     float vol_scale = get_volume_for_lux(get_lux_level());
-    set_led(VU_MAX_BRIGHTNESS * vol_scale, BRIGHT_OFF);
+    const remote_config_t *_pcfg = remote_config_get();
+    set_led(_pcfg->vu_max_brightness * vol_scale, BRIGHT_OFF);
 
     size_t total_bytes = audio_buffer->num_samples * sizeof(int16_t);
     size_t bytes_sent  = 0;
@@ -517,7 +522,7 @@ static void _play_locked(const char *bird_name, const audio_buffer_t *audio_buff
             int16_t av = scaled < 0 ? (int16_t)-scaled : (int16_t)scaled;
             if (av > peak) peak = av;
         }
-        set_led(((float)peak / (float)global_peak) * VU_MAX_BRIGHTNESS * vol_scale, BRIGHT_OFF);
+        set_led(((float)peak / (float)global_peak) * _pcfg->vu_max_brightness * vol_scale, BRIGHT_OFF);
 
         size_t bytes_written = 0;
         esp_err_t ret = i2s_channel_write(spk_chan,
@@ -623,8 +628,8 @@ void audio_detection_task(void *param) {
 
         size_t num_samples = bytes_read / sizeof(int16_t);
         
-        // Apply gain
-        apply_gain_inplace(buffer, num_samples, GAIN);
+        // Apply gain from remote config
+        apply_gain_inplace(buffer, num_samples, remote_config_get()->gain);
         
         // Branch based on hardware configuration
         if (g_hw_config == HW_CONFIG_FULL) {
@@ -632,17 +637,33 @@ void audio_detection_task(void *param) {
              * FULL SYSTEM: Sound detection and bird call playback
              * ============================================================ */
             
+            // Snapshot config once per loop for consistency
+            const remote_config_t *cfg = remote_config_get();
+
+            // Recompute Goertzel coefficients if frequencies changed
+            {
+                float new_cw = 2.0f * cosf(2.0f * M_PI * cfg->whistle_freq / SAMPLE_RATE);
+                float new_cv = 2.0f * cosf(2.0f * M_PI * cfg->voice_freq   / SAMPLE_RATE);
+                if (new_cw != g_coeff_whistle || new_cv != g_coeff_voice) {
+                    g_coeff_whistle = new_cw;
+                    g_coeff_voice   = new_cv;
+                    ESP_LOGI(TAG, "Goertzel: whistle=%luHz voice=%luHz",
+                             (unsigned long)cfg->whistle_freq,
+                             (unsigned long)cfg->voice_freq);
+                }
+            }
+
             // Compute frequencies
             float mag_w, mag_v;
             compute_goertzel(buffer, num_samples, &mag_w, &mag_v);
             
             // Update adaptive thresholds
             state->running_avg_whistle = ALPHA * state->running_avg_whistle + (1.0f - ALPHA) * mag_w;
-            state->running_avg_voice = ALPHA * state->running_avg_voice + (1.0f - ALPHA) * mag_v;
+            state->running_avg_voice   = ALPHA * state->running_avg_voice   + (1.0f - ALPHA) * mag_v;
             
-            float thresh_w = state->running_avg_whistle * WHISTLE_MULTIPLIER;
-            float thresh_v = state->running_avg_voice * VOICE_MULTIPLIER;
-            float thresh_clap = fmaxf(thresh_w * CLAP_MULTIPLIER, thresh_v * 2.0f);
+            float thresh_w    = state->running_avg_whistle * cfg->whistle_multiplier;
+            float thresh_v    = state->running_avg_voice   * cfg->voice_multiplier;
+            float thresh_clap = fmaxf(thresh_w * cfg->clap_multiplier, thresh_v * 2.0f);
             
             // Handle debounce
             if (state->debounce_counter > 0) {
@@ -657,15 +678,13 @@ void audio_detection_task(void *param) {
                     state->clap_count++;
                     state->whistle_count = state->voice_count = 0;
                     
-                    if (state->clap_count >= CLAP_CONFIRM) {
+                    if (state->clap_count >= cfg->clap_confirm) {
                         ESP_LOGI(TAG, "👏 CLAP! (w:%.0f, v:%.0f)", mag_w, mag_v);
                         espnow_mesh_broadcast_sound(DETECTION_CLAP);
                         markov_on_event(&g_markov, DETECTION_CLAP, get_lux_level());
                         
-                        // Generate and play bird call using static buffer
                         bird_info_t bird;
                         if (espnow_mesh_is_flooded()) {
-                            /* Network is busy — Quelea signals collective activity */
                             bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
                         } else {
                             bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_CLAP);
@@ -673,7 +692,7 @@ void audio_detection_task(void *param) {
                         generate_and_play_bird_call_nowait(&g_bird_mapper, bird.function_name, bird.display_name);
                         
                         state->clap_count = 0;
-                        state->debounce_counter = DEBOUNCE_BUFFERS;
+                        state->debounce_counter = cfg->debounce_buffers;
                     }
                 }
                 // Check for whistle (high frequency, narrow band)
@@ -681,15 +700,13 @@ void audio_detection_task(void *param) {
                     state->whistle_count++;
                     state->clap_count = state->voice_count = 0;
                     
-                    if (state->whistle_count >= WHISTLE_CONFIRM) {
+                    if (state->whistle_count >= cfg->whistle_confirm) {
                         ESP_LOGI(TAG, "🎵 WHISTLE! (w:%.0f, v:%.0f)", mag_w, mag_v);
                         espnow_mesh_broadcast_sound(DETECTION_WHISTLE);
                         markov_on_event(&g_markov, DETECTION_WHISTLE, get_lux_level());
                         
-                        // Generate and play bird call using static buffer
                         bird_info_t bird;
                         if (espnow_mesh_is_flooded()) {
-                            /* Network is busy — Quelea signals collective activity */
                             bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
                         } else {
                             bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_WHISTLE);
@@ -697,7 +714,7 @@ void audio_detection_task(void *param) {
                         generate_and_play_bird_call_nowait(&g_bird_mapper, bird.function_name, bird.display_name);
                         
                         state->whistle_count = 0;
-                        state->debounce_counter = DEBOUNCE_BUFFERS;
+                        state->debounce_counter = cfg->debounce_buffers;
                     }
                 }
                 // Check for voice (low frequency)
@@ -705,15 +722,13 @@ void audio_detection_task(void *param) {
                     state->voice_count++;
                     state->whistle_count = state->clap_count = 0;
                     
-                    if (state->voice_count >= VOICE_CONFIRM) {
+                    if (state->voice_count >= cfg->voice_confirm) {
                         ESP_LOGI(TAG, "🗣️ VOICE! (w:%.0f, v:%.0f)", mag_w, mag_v);
                         espnow_mesh_broadcast_sound(DETECTION_VOICE);
                         markov_on_event(&g_markov, DETECTION_VOICE, get_lux_level());
                         
-                        // Generate and play bird call using static buffer
                         bird_info_t bird;
                         if (espnow_mesh_is_flooded()) {
-                            /* Network is busy — Quelea signals collective activity */
                             bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
                         } else {
                             bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_VOICE);
@@ -721,7 +736,7 @@ void audio_detection_task(void *param) {
                         generate_and_play_bird_call_nowait(&g_bird_mapper, bird.function_name, bird.display_name);
                         
                         state->voice_count = 0;
-                        state->debounce_counter = DEBOUNCE_BUFFERS;
+                        state->debounce_counter = cfg->debounce_buffers;
                     }
                 }
                 // No detection
@@ -773,10 +788,11 @@ void audio_detection_task(void *param) {
  */
 float get_volume_for_lux(float lux)
 {
-    if (lux <= VOLUME_LUX_MIN) return VOLUME_SCALE_MIN;
-    if (lux >= VOLUME_LUX_MAX) return VOLUME_SCALE_MAX;
-    float t = (lux - VOLUME_LUX_MIN) / (VOLUME_LUX_MAX - VOLUME_LUX_MIN);
-    return VOLUME_SCALE_MIN + t * (VOLUME_SCALE_MAX - VOLUME_SCALE_MIN);
+    const remote_config_t *cfg = remote_config_get();
+    if (lux <= cfg->volume_lux_min) return cfg->volume_scale_min;
+    if (lux >= cfg->volume_lux_max) return cfg->volume_scale_max;
+    float t = (lux - cfg->volume_lux_min) / (cfg->volume_lux_max - cfg->volume_lux_min);
+    return cfg->volume_scale_min + t * (cfg->volume_scale_max - cfg->volume_scale_min);
 }
 
 
@@ -792,29 +808,31 @@ void lux_based_birds_task(void *param) {
         return;
     }
 
-    ESP_LOGI(TAG, "Lux-based bird selection enabled (poll=%d ms, change=%.1f lux, flash=%.1f lux)",
-             LUX_POLL_INTERVAL_MS, LUX_CHANGE_THRESHOLD, LUX_FLASH_THRESHOLD);
+    ESP_LOGI(TAG, "Lux-based bird selection enabled");
 
     float last_acted_lux = -1000.0f;  /* lux at the last mapper update */
     float prev_lux       = -1.0f;     /* reading from the previous tick */
 
     while (1) {
+        const remote_config_t *cfg = remote_config_get();
+
         float lux = get_lux_level();
 
         if (lux < 0.0f) {
-            vTaskDelay(pdMS_TO_TICKS(LUX_POLL_INTERVAL_MS));
+            vTaskDelay(pdMS_TO_TICKS(cfg->lux_poll_interval_ms));
             continue;
         }
 
         float delta     = lux - last_acted_lux;
         float raw_delta = (prev_lux >= 0.0f) ? (lux - prev_lux) : 0.0f;
-        float last_lux  = prev_lux;   /* save before overwriting — used in log below */
+        float last_lux  = prev_lux;
         prev_lux = lux;
 
-        /* Flash detection: a jump >= LUX_FLASH_THRESHOLD in a single poll
-         * window (phone torch, lamp switching on/off) triggers an immediate
-         * bird call without waiting for a sound event.                       */
-        bool is_flash = (fabsf(raw_delta) >= LUX_FLASH_THRESHOLD);
+        /* Flash detection using remote config thresholds */
+        bool is_flash = (fabsf(raw_delta) >= cfg->lux_flash_threshold) ||
+                        (fabsf(raw_delta) >= cfg->lux_flash_min_abs &&
+                         prev_lux > 0.0f &&
+                         fabsf(raw_delta) >= prev_lux * cfg->lux_flash_percent);
 
         if (is_flash) {
             ESP_LOGI(TAG, "⚡ Flash: %.1f → %.1f lux (Δ%.1f)", last_lux, lux, raw_delta);
@@ -842,10 +860,8 @@ void lux_based_birds_task(void *param) {
             espnow_mesh_broadcast_light(lux);
             last_acted_lux = lux;
 
-        } else if (fabsf(delta) >= LUX_CHANGE_THRESHOLD) {
-            /* Gradual change: update mapper + Markov + broadcast.
-             * espnow_mesh_broadcast_light() applies its own larger threshold
-             * so it won't flood the network on minor indoor fluctuations.    */
+        } else if (fabsf(delta) >= cfg->lux_change_threshold) {
+            /* Gradual change: update mapper + Markov + broadcast. */
             markov_set_lux(&g_markov, lux);
             float bias = markov_get_lux_bias(&g_markov);
             bird_mapper_update_for_lux(&g_bird_mapper, lux + bias);
@@ -860,7 +876,7 @@ void lux_based_birds_task(void *param) {
             ESP_LOGD(TAG, "☀️ Light: %.1f lux (%s)", lux, band);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(LUX_POLL_INTERVAL_MS));
+        vTaskDelay(pdMS_TO_TICKS(cfg->lux_poll_interval_ms));
     }
 
     vTaskDelete(NULL);

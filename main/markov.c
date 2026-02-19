@@ -6,6 +6,7 @@
  */
 
 #include "markov.h"
+#include "remote_config.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "nvs_flash.h"
@@ -446,10 +447,12 @@ void markov_tick(markov_chain_t *mc)
     uint32_t now     = markov_millis();
     uint32_t silence = now - mc->last_event_ms;
 
-    if (silence >= MARKOV_IDLE_TRIGGER_MS) {
+    const remote_config_t *cfg = remote_config_get();
+
+    if (silence >= cfg->markov_idle_trigger_ms) {
         /* Check autonomous cooldown */
         uint32_t since_last_auto = now - mc->last_autonomous_ms;
-        if (since_last_auto >= MARKOV_AUTONOMOUS_COOLDOWN_MS) {
+        if (since_last_auto >= cfg->markov_autonomous_cooldown_ms) {
 
             /* Recompute probs if needed */
             if (mc->probs_dirty) recompute_probs(mc);

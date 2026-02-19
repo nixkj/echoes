@@ -18,6 +18,7 @@
 #include "startup.h"
 #include "espnow_mesh.h"
 #include "markov.h"
+#include "remote_config.h"
 
 // ESP32-specific includes
 #include "driver/i2s_std.h"
@@ -65,6 +66,9 @@ void app_main(void)
         nvs_ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(nvs_ret);
+
+    /* Initialise remote config with defaults (works even without WiFi) */
+    remote_config_init();
 
     /* Initialize LEDs FIRST (needed for ALL status feedback including OTA) */
     led_init();
@@ -129,6 +133,16 @@ void app_main(void)
     if (wifi_connected) {
         ESP_LOGI(TAG, "WiFi connected successfully");
 
+        /* Fetch remote config from server (best-effort — defaults used on failure) */
+        ESP_LOGI(TAG, "Fetching remote configuration...");
+        esp_err_t cfg_err = remote_config_fetch();
+        if (cfg_err == ESP_OK) {
+            ESP_LOGI(TAG, "Remote config applied successfully");
+        } else {
+            ESP_LOGW(TAG, "Remote config fetch failed (%s) — using defaults",
+                     esp_err_to_name(cfg_err));
+        }
+
         /* Check for firmware updates */
         ESP_LOGI(TAG, "Checking for firmware updates...");
         bool updated = ota_check_and_update();
@@ -184,6 +198,12 @@ void app_main(void)
     /* Start lux-based bird selection task - only for full hardware */
     if (hw_config == HW_CONFIG_FULL) {
         xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
+    }
+
+    /* Start remote config polling task (60-second interval) */
+    if (wifi_connected) {
+        xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);
+        ESP_LOGI(TAG, "Remote config polling task started");
     }
     
     ESP_LOGI(TAG, "System started successfully!");
