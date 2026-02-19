@@ -263,19 +263,24 @@ static void fire_autonomous_call(markov_chain_t *mc, uint8_t predicted_state)
     light_band_t band;
     markov_decode_state(predicted_state, &det_idx, &band);
 
-    /* det_idx 0 = IDLE — don't play anything for an IDLE prediction */
-    if (det_idx == 0) {
-        ESP_LOGD(TAG, "Autonomous: predicted IDLE — skipping call");
-        return;
-    }
-
-    /* Map detection index back to detection_type_t */
+    /* det_idx 0 = IDLE.
+     * Rather than silently skipping (which means the autonomous call fires
+     * but plays nothing — very common because IDLE self-loops dominate the
+     * priors), treat an IDLE prediction as an ambient "voice" call appropriate
+     * to the current light band.  This is the whole point of sporadic calls:
+     * fill silence with something natural even when no interaction is expected. */
     detection_type_t det;
-    switch (det_idx) {
-        case 1:  det = DETECTION_WHISTLE; break;
-        case 2:  det = DETECTION_VOICE;   break;
-        case 3:  det = DETECTION_CLAP;    break;
-        default: det = DETECTION_NONE;    break;
+    if (det_idx == 0) {
+        /* Ambient fallback: gentle voice-type call scaled to light level */
+        det = DETECTION_VOICE;
+        ESP_LOGI(TAG, "Autonomous: predicted IDLE → playing ambient call for band %d", (int)band);
+    } else {
+        switch (det_idx) {
+            case 1:  det = DETECTION_WHISTLE; break;
+            case 2:  det = DETECTION_VOICE;   break;
+            case 3:  det = DETECTION_CLAP;    break;
+            default: det = DETECTION_NONE;    break;
+        }
     }
 
     /* Temporarily apply a lux matching the predicted band so the mapper
@@ -461,14 +466,16 @@ void markov_tick(markov_chain_t *mc)
             mc->last_autonomous_ms = now;
 
             /* Advance the chain state as if we observed this event
-             * (the call we just made IS an event from our node's perspective) */
+             * (the call we just made IS an event from our node's perspective).
+             * If the predicted state was IDLE, fire_autonomous_call() played
+             * a VOICE call as an ambient fallback — record that instead.    */
             uint8_t det_idx;
             light_band_t band;
             markov_decode_state(predicted, &det_idx, &band);
-            /* Only advance if it was a sound event, not IDLE */
-            if (det_idx > 0) {
+            {
                 detection_type_t det;
                 switch (det_idx) {
+                    case 0: det = DETECTION_VOICE;   break; /* IDLE → ambient VOICE fallback */
                     case 1: det = DETECTION_WHISTLE; break;
                     case 2: det = DETECTION_VOICE;   break;
                     case 3: det = DETECTION_CLAP;    break;
