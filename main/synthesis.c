@@ -335,13 +335,15 @@ size_t generate_red_billed_quelea(bird_synthesizer_t *synth, audio_buffer_t *out
      * does not apply.  A post-process gain of 4.0× is applied at the end
      * so Quelea sits well above every other bird in perceived loudness.
      *
-     * Phrase layout (~1.4 s total):
+     * Phrase layout (~2.0 s total):
      *   1. Opening chatter burst  — 4 harsh staccato notes
      *   2. Contact whistle        — fast upward sweep
      *   3. Colony tremolo burst   — 4 rapid tremolo notes
      *   4. Rising chirp + fall    — paired sweeps
      *   5. Dense re-burst         — 2 harsh + 1 tremolo
-     *   6. Closing sweep + buzz
+     *   6. Second colony tremolo  — 3 rapid tremolo notes
+     *   7. Mid-phrase rising pair — paired sweeps
+     *   8. Closing chatter + sweep + buzz
      */
 
     /* --- Phrase 1: opening chatter --- */
@@ -382,7 +384,25 @@ size_t generate_red_billed_quelea(bird_synthesizer_t *synth, audio_buffer_t *out
     pos += _quelea_tremolo(synth, out->buffer, pos, 2750, 80, 30, 0.60f, 0.88f);
     pos += generate_silence(synth, out->buffer, pos, 30);
 
-    /* --- Phrase 6: closing sweep + final buzz --- */
+    /* --- Phrase 6: second colony tremolo burst --- */
+    pos += _quelea_tremolo(synth, out->buffer, pos, 2400, 75, 26, 0.55f, 0.86f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
+    pos += _quelea_tremolo(synth, out->buffer, pos, 2650, 70, 28, 0.58f, 0.88f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
+    pos += _quelea_tremolo(synth, out->buffer, pos, 2900, 65, 28, 0.60f, 0.85f);
+    pos += generate_silence(synth, out->buffer, pos, 40);
+
+    /* --- Phrase 7: mid-phrase rising pair --- */
+    pos += _quelea_sweep  (synth, out->buffer, pos, 1800, 3100, 105, 0.87f);
+    pos += generate_silence(synth, out->buffer, pos, 18);
+    pos += _quelea_sweep  (synth, out->buffer, pos, 3000, 2000,  85, 0.84f);
+    pos += generate_silence(synth, out->buffer, pos, 35);
+
+    /* --- Phrase 8: closing chatter + final sweep + buzz --- */
+    pos += _quelea_harsh  (synth, out->buffer, pos, 2200, 55, 2, 0.82f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
+    pos += _quelea_harsh  (synth, out->buffer, pos, 2450, 50, 2, 0.84f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
     pos += _quelea_sweep  (synth, out->buffer, pos, 2100, 3300, 110, 0.88f);
     pos += generate_silence(synth, out->buffer, pos, 20);
     pos += _quelea_harsh  (synth, out->buffer, pos, 2300,  80, 3, 0.82f);

@@ -355,6 +355,10 @@ def save_config(config):
 _config = load_config()
 _last_modified = datetime.now().isoformat()
 
+# One-shot restart flag — set by POST /restart, cleared after first delivery
+_restart_pending = False
+_restart_timestamp: str | None = None
+
 
 # ---------------------------------------------------------------------------
 # API ROUTES
@@ -363,9 +367,15 @@ _last_modified = datetime.now().isoformat()
 @app.route("/config", methods=["GET"])
 def get_config():
     """Return flat key→value map for device consumption."""
+    global _restart_pending
     flat = {k: v["value"] for k, v in _config.items()}
     flat["_server_time"] = time.time()
     flat["_version"] = _last_modified
+    # Inject one-shot restart flag; clear immediately after delivery
+    flat["RESTART_REQUESTED"] = _restart_pending
+    if _restart_pending:
+        _restart_pending = False
+        print(f"[INFO] RESTART_REQUESTED delivered to a node — flag cleared")
     return jsonify(flat)
 
 
@@ -416,6 +426,32 @@ def update_config():
         save_config(_config)
 
     return jsonify({"updated": updated, "errors": errors, "version": _last_modified})
+
+
+@app.route("/restart", methods=["POST"])
+def request_restart():
+    """Set the one-shot restart flag — next node to poll /config will reboot."""
+    global _restart_pending, _restart_timestamp
+    _restart_pending = True
+    _restart_timestamp = datetime.now().isoformat()
+    print(f"[INFO] Restart requested at {_restart_timestamp}")
+    return jsonify({"status": "restart_pending", "timestamp": _restart_timestamp})
+
+
+@app.route("/restart/cancel", methods=["POST"])
+def cancel_restart():
+    """Cancel a pending restart before it is delivered."""
+    global _restart_pending, _restart_timestamp
+    was_pending = _restart_pending
+    _restart_pending = False
+    _restart_timestamp = None
+    return jsonify({"status": "cancelled", "was_pending": was_pending})
+
+
+@app.route("/restart/status", methods=["GET"])
+def restart_status():
+    """Check whether a restart is pending."""
+    return jsonify({"pending": _restart_pending, "timestamp": _restart_timestamp})
 
 
 @app.route("/config/reset", methods=["POST"])
@@ -559,6 +595,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     border-color: var(--accent);
     color: #0a0c0f;
     font-weight: 700;
+  }
+  .btn-danger {
+    background: transparent;
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 8px 16px;
+    cursor: pointer;
+    border-radius: var(--radius);
+    letter-spacing: 0.05em;
+  }
+  .btn-danger:hover {
+    background: var(--danger);
+    color: var(--bg);
+  }
+  #restart-status {
+    font-size: 11px;
+    color: var(--warn);
+    font-family: var(--font-mono);
   }
   .btn-primary:hover { background: #d8ff5a; box-shadow: var(--glow); }
   .btn-ghost {
@@ -827,6 +883,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button class="btn btn-ghost2" onclick="expandAll()">Expand all</button>
     <button class="btn btn-ghost" onclick="confirmReset()">Reset defaults</button>
     <button class="btn btn-primary" id="save-btn" onclick="saveAll()">Save changes</button>
+    <button class="btn btn-danger" id="restart-btn" onclick="requestRestart()" title="Queue a reboot — all nodes will restart at their next config poll (≤60 s)">⟳ Restart all nodes</button>
+    <span id="restart-status"></span>
   </div>
 
   <div id="param-sections"></div>
@@ -1019,7 +1077,50 @@ async function confirmReset() {
   const resp = await fetch("/config/reset", { method: "POST" });
   if (resp.ok) {
     dirty = {};
-    await loadConfig();
+    await async function requestRestart() {
+  const btn = document.getElementById("restart-btn");
+  const statusEl = document.getElementById("restart-status");
+  if (!confirm("Queue a restart for ALL nodes?\n\nEach node will reboot at its next config poll (within 60 s).\nA cancel option is available until the first node polls.")) return;
+  btn.disabled = true;
+  btn.textContent = "Queuing…";
+  try {
+    const resp = await fetch("/restart", { method: "POST" });
+    const data = await resp.json();
+    if (data.status === "restart_pending") {
+      showToast("Restart queued — nodes will reboot within 60 s", "success");
+      statusEl.textContent = "⏳ restart pending";
+      btn.textContent = "Cancel restart";
+      btn.onclick = cancelRestart;
+      btn.disabled = false;
+    } else {
+      showToast("Unexpected response from server", "error");
+      btn.textContent = "⟳ Restart all nodes";
+      btn.disabled = false;
+    }
+  } catch(e) {
+    showToast("Network error: " + e.message, "error");
+    btn.textContent = "⟳ Restart all nodes";
+    btn.disabled = false;
+  }
+}
+
+async function cancelRestart() {
+  const btn = document.getElementById("restart-btn");
+  const statusEl = document.getElementById("restart-status");
+  try {
+    const resp = await fetch("/restart/cancel", { method: "POST" });
+    const data = await resp.json();
+    showToast(data.was_pending ? "Restart cancelled" : "No restart was pending", "info");
+  } catch(e) {
+    showToast("Cancel failed: " + e.message, "error");
+  }
+  btn.textContent = "⟳ Restart all nodes";
+  btn.onclick = requestRestart;
+  btn.disabled = false;
+  statusEl.textContent = "";
+}
+
+loadConfig();
     showToast("All parameters reset to defaults", "info");
     updateDirtyCount();
   }
@@ -1044,6 +1145,49 @@ document.getElementById("filter-input").addEventListener("input", renderAll);
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveAll(); }
 });
+
+async function requestRestart() {
+  const btn = document.getElementById("restart-btn");
+  const statusEl = document.getElementById("restart-status");
+  if (!confirm("Queue a restart for ALL nodes?\n\nEach node will reboot at its next config poll (within 60 s).\nA cancel option is available until the first node polls.")) return;
+  btn.disabled = true;
+  btn.textContent = "Queuing…";
+  try {
+    const resp = await fetch("/restart", { method: "POST" });
+    const data = await resp.json();
+    if (data.status === "restart_pending") {
+      showToast("Restart queued — nodes will reboot within 60 s", "success");
+      statusEl.textContent = "⏳ restart pending";
+      btn.textContent = "Cancel restart";
+      btn.onclick = cancelRestart;
+      btn.disabled = false;
+    } else {
+      showToast("Unexpected response from server", "error");
+      btn.textContent = "⟳ Restart all nodes";
+      btn.disabled = false;
+    }
+  } catch(e) {
+    showToast("Network error: " + e.message, "error");
+    btn.textContent = "⟳ Restart all nodes";
+    btn.disabled = false;
+  }
+}
+
+async function cancelRestart() {
+  const btn = document.getElementById("restart-btn");
+  const statusEl = document.getElementById("restart-status");
+  try {
+    const resp = await fetch("/restart/cancel", { method: "POST" });
+    const data = await resp.json();
+    showToast(data.was_pending ? "Restart cancelled" : "No restart was pending", "info");
+  } catch(e) {
+    showToast("Cancel failed: " + e.message, "error");
+  }
+  btn.textContent = "⟳ Restart all nodes";
+  btn.onclick = requestRestart;
+  btn.disabled = false;
+  statusEl.textContent = "";
+}
 
 loadConfig();
 </script>

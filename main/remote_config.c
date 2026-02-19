@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 #include "cJSON.h"
 
+#include "esp_system.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -83,6 +84,8 @@ static const remote_config_t CONFIG_DEFAULTS = {
     /* Output switches */
     .silent_mode   = false,
     .sound_off     = false,
+
+    .restart_requested           = false,
 
     .loaded        = false,
     .last_fetch_ms = 0,
@@ -221,6 +224,9 @@ static void apply_json(cJSON *root)
     /* Output switches */
     CFG_BOOL   (root, s_cfg.silent_mode,  "SILENT_MODE");
     CFG_BOOL   (root, s_cfg.sound_off,    "SOUND_OFF");
+
+    /* Remote restart */
+    CFG_BOOL   (root, s_cfg.restart_requested, "RESTART_REQUESTED");
 }
 
 /* =========================================================================
@@ -302,6 +308,21 @@ void remote_config_task(void *param)
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Config poll failed (%s) — keeping previous values",
                      esp_err_to_name(err));
+        } else if (s_cfg.restart_requested) {
+            /* Server has requested a node restart.
+             * Signal the request was received by clearing the flag so
+             * a subsequent re-fetch won't loop, then reboot.          */
+            ESP_LOGW(TAG, "Remote restart requested — rebooting in 2 s");
+            /* Flash both LEDs three times as a visual warning */
+            extern void set_led(float white, float blue);
+            for (int i = 0; i < 3; i++) {
+                set_led(1.0f, 1.0f);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                set_led(0.0f, 0.0f);
+                vTaskDelay(pdMS_TO_TICKS(200));
+            }
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_restart();
         }
     }
 }
