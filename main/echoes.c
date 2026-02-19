@@ -303,6 +303,10 @@ void system_init(void) {
  * ======================================================================== */
 
 void set_led(float white_level, float blue_level) {
+    if (remote_config_get()->silent_mode) {
+        white_level = 0.0f;
+        blue_level  = 0.0f;
+    }
     uint32_t duty_white = (uint32_t)(65535.0f * white_level);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty_white);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
@@ -498,6 +502,13 @@ static float smooth_vu_level(float current, float target, float smooth_factor)
 
 static void _play_locked(const char *bird_name, const audio_buffer_t *audio_buffer)
 {
+    const remote_config_t *_cfg = remote_config_get();
+    if (_cfg->silent_mode || _cfg->sound_off) {
+        ESP_LOGD(TAG, "Sound suppressed (%s): skipping '%s'",
+                 _cfg->silent_mode ? "silent_mode" : "sound_off", bird_name);
+        return;
+    }
+
     ESP_LOGI(TAG, "🐦 Playing: %s (%zu samples)", bird_name, audio_buffer->num_samples);
 
     int16_t global_peak = 1;

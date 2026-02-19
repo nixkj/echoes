@@ -34,8 +34,6 @@ static const char *TAG = "MAIN";
 // Task for delayed firmware update validation
 void ota_validation_task(void *param)
 {
-    set_led(0, BRIGHT_FULL);
-
     // Wait for system to run successfully for 2 minutes
     ESP_LOGI(TAG, "OTA validation: Waiting 2 minutes before marking valid...");
     vTaskDelay(pdMS_TO_TICKS(120000));  // 2 minutes
@@ -54,6 +52,8 @@ void ota_validation_task(void *param)
 
 void app_main(void)
 {
+    set_led(0, BRIGHT_FULL);
+
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Echoes of the Machine");
     ESP_LOGI(TAG, "Firmware Version: %s", FIRMWARE_VERSION);
