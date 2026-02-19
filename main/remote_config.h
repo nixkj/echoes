@@ -68,6 +68,9 @@ typedef struct {
     float    birdsong_hf_ratio;     /**< High-band must exceed mid by this ×  */
     float    birdsong_mf_min;       /**< Mid-freq min fraction of threshold   */
     uint8_t  birdsong_confirm;      /**< Confirmation frames — birdsong       */
+    float    noise_floor_whistle;   /**< Absolute minimum threshold — whistle */
+    float    noise_floor_voice;     /**< Absolute minimum threshold — voice   */
+    float    noise_floor_birdsong;  /**< Absolute minimum threshold — birdsong*/
 
     /* ── Playback volume ─────────────────────────────────────────── */
     float    volume;                /**< Master playback amplitude            */

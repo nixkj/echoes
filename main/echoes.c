@@ -304,16 +304,13 @@ void system_init(void) {
 
 void set_led(float white_level, float blue_level) {
     uint32_t duty_white = (uint32_t)(65535.0f * white_level);
-    
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty_white);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    
-    // Blue LED disabled (uncomment to enable)
-    // uint32_t duty_blue = (uint32_t)(65535.0f * blue_level);
-    // ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty_blue);
-    // ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-    
-    (void)blue_level;  // Suppress unused parameter warning
+
+    // Blue LED enabled for testing phase
+    uint32_t duty_blue = (uint32_t)(65535.0f * blue_level);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty_blue);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
 }
 
 /* ========================================================================
@@ -676,12 +673,29 @@ void audio_detection_task(void *param) {
             state->running_avg_whistle  = ALPHA * state->running_avg_whistle  + (1.0f - ALPHA) * mag_w;
             state->running_avg_voice    = ALPHA * state->running_avg_voice    + (1.0f - ALPHA) * mag_v;
             state->running_avg_birdsong = ALPHA * state->running_avg_birdsong + (1.0f - ALPHA) * mag_b;
-            
-            float thresh_w    = state->running_avg_whistle  * cfg->whistle_multiplier;
-            float thresh_v    = state->running_avg_voice    * cfg->voice_multiplier;
-            float thresh_b    = state->running_avg_birdsong * cfg->birdsong_multiplier;
+
+            /* Apply noise-floor minimums so adaptive thresholds never collapse
+             * to near-zero in a quiet/dark room.  Without this, electrical
+             * noise from the MEMS mic constantly clears thresh_v and drains
+             * debounce, preventing softer detections (voice) from confirming.
+             * These floors are remotely configurable for per-installation tuning. */
+            float thresh_w    = fmaxf(state->running_avg_whistle  * cfg->whistle_multiplier,
+                                      cfg->noise_floor_whistle);
+            float thresh_v    = fmaxf(state->running_avg_voice    * cfg->voice_multiplier,
+                                      cfg->noise_floor_voice);
+            float thresh_b    = fmaxf(state->running_avg_birdsong * cfg->birdsong_multiplier,
+                                      cfg->noise_floor_birdsong);
             float thresh_clap = fmaxf(thresh_w * cfg->clap_multiplier, thresh_v * 2.0f);
             
+            /* Periodic diagnostic log — helps tune thresholds during testing.
+             * At 4 ms/buffer this fires roughly every 5 seconds.            */
+            static uint32_t s_diag_count = 0;
+            if (++s_diag_count >= 1250) {
+                s_diag_count = 0;
+                ESP_LOGI(TAG, "THR w:%.0f v:%.0f b:%.0f | MAG w:%.0f v:%.0f b:%.0f",
+                         thresh_w, thresh_v, thresh_b, mag_w, mag_v, mag_b);
+            }
+
             // Handle debounce
             if (state->debounce_counter > 0) {
                 state->debounce_counter--;

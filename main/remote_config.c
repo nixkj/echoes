@@ -42,6 +42,9 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .birdsong_hf_ratio           = 1.4f,
     .birdsong_mf_min             = 0.35f,
     .birdsong_confirm            = 3,
+    .noise_floor_whistle         = 10000.0f,
+    .noise_floor_voice           = 4000.0f,
+    .noise_floor_birdsong        = 10000.0f,
 
     /* Playback volume */
     .volume                      = 0.20f,
@@ -49,7 +52,7 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .volume_lux_max              = 200.0f,
     .volume_scale_min            = 0.25f,
     .volume_scale_max            = 1.0f,
-    .quelea_gain                 = 2.5f,
+    .quelea_gain                 = 1.5f,
 
     /* Light sensor */
     .lux_poll_interval_ms        = 500,
@@ -166,6 +169,9 @@ static void apply_json(cJSON *root)
     CFG_FLOAT  (root, s_cfg.birdsong_hf_ratio,   "BIRDSONG_HF_RATIO");
     CFG_FLOAT  (root, s_cfg.birdsong_mf_min,     "BIRDSONG_MF_MIN");
     CFG_UINT8  (root, s_cfg.birdsong_confirm,    "BIRDSONG_CONFIRM");
+    CFG_FLOAT  (root, s_cfg.noise_floor_whistle,  "NOISE_FLOOR_WHISTLE");
+    CFG_FLOAT  (root, s_cfg.noise_floor_voice,    "NOISE_FLOOR_VOICE");
+    CFG_FLOAT  (root, s_cfg.noise_floor_birdsong, "NOISE_FLOOR_BIRDSONG");
 
     /* Playback volume */
     CFG_FLOAT  (root, s_cfg.volume,              "VOLUME");
