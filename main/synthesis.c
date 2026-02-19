@@ -109,7 +109,9 @@ size_t generate_harsh(bird_synthesizer_t *synth, int16_t *buffer, size_t offset,
             float harmonic_amp = 1.0f / h;
             sample_val += harmonic_amp * sinf(2.0f * M_PI * freq * h * t);
         }
-        sample_val /= harmonics;
+        /* RMS-style normalization: dividing by harmonics is far too aggressive.
+         * sqrt(harmonics) preserves perceived loudness of harmonic-rich calls. */
+        sample_val /= sqrtf((float)harmonics);
         
         float sample_f = 32767.0f * amplitude * VOLUME * env * sample_val;
         buffer[offset + i] = (int16_t)sample_f;
@@ -134,11 +136,11 @@ size_t generate_piet_my_vrou(bird_synthesizer_t *synth, audio_buffer_t *out) {
     size_t pos = 0;
     
     // Red-chested Cuckoo
-    pos += generate_sweep(synth, out->buffer, pos, 1200, 1350, 250, 0.38f);
-    pos += generate_silence(synth, out->buffer, pos, 120);
-    pos += generate_tone(synth, out->buffer, pos, 1300, 220, 0.38f, 0, 0);
-    pos += generate_silence(synth, out->buffer, pos, 120);
-    pos += generate_sweep(synth, out->buffer, pos, 1400, 1100, 280, 0.38f);
+    pos += generate_sweep(synth, out->buffer, pos, 1200, 1380, 260, 0.72f);
+    pos += generate_silence(synth, out->buffer, pos, 110);
+    pos += generate_tone(synth, out->buffer, pos, 1320, 230, 0.70f, 0, 0);
+    pos += generate_silence(synth, out->buffer, pos, 110);
+    pos += generate_sweep(synth, out->buffer, pos, 1420, 1080, 290, 0.72f);
     
     out->num_samples = pos;
     return pos;
@@ -148,14 +150,14 @@ size_t generate_cape_robin_chat(bird_synthesizer_t *synth, audio_buffer_t *out) 
     size_t pos = 0;
     
     struct { float start; float end; uint32_t dur; } sweeps[] = {
-        {2200, 2600, 180}, {2800, 2400, 160}, {2600, 3000, 170},
-        {2900, 2500, 190}, {2700, 2200, 160}
+        {2200, 2650, 190}, {2850, 2420, 170}, {2650, 3050, 180},
+        {2950, 2520, 200}, {2750, 2200, 170}
     };
     
     for (int i = 0; i < 5; i++) {
         pos += generate_sweep(synth, out->buffer, pos, sweeps[i].start, 
-                            sweeps[i].end, sweeps[i].dur, 0.32f);
-        pos += generate_silence(synth, out->buffer, pos, 90);
+                            sweeps[i].end, sweeps[i].dur, 0.65f);
+        pos += generate_silence(synth, out->buffer, pos, 80);
     }
     
     out->num_samples = pos;
@@ -165,13 +167,13 @@ size_t generate_cape_robin_chat(bird_synthesizer_t *synth, audio_buffer_t *out) 
 size_t generate_southern_boubou(bird_synthesizer_t *synth, audio_buffer_t *out) {
     size_t pos = 0;
     
-    pos += generate_tone(synth, out->buffer, pos, 900, 250, 0.35f, 4, 0.02f);
-    pos += generate_silence(synth, out->buffer, pos, 100);
-    pos += generate_sweep(synth, out->buffer, pos, 2400, 2800, 200, 0.33f);
-    pos += generate_silence(synth, out->buffer, pos, 150);
-    pos += generate_tone(synth, out->buffer, pos, 950, 230, 0.35f, 0, 0);
-    pos += generate_silence(synth, out->buffer, pos, 90);
-    pos += generate_sweep(synth, out->buffer, pos, 2500, 2900, 180, 0.33f);
+    pos += generate_tone(synth, out->buffer, pos, 900, 260, 0.68f, 4, 0.02f);
+    pos += generate_silence(synth, out->buffer, pos, 95);
+    pos += generate_sweep(synth, out->buffer, pos, 2400, 2850, 210, 0.65f);
+    pos += generate_silence(synth, out->buffer, pos, 140);
+    pos += generate_tone(synth, out->buffer, pos, 950, 240, 0.68f, 0, 0);
+    pos += generate_silence(synth, out->buffer, pos, 80);
+    pos += generate_sweep(synth, out->buffer, pos, 2550, 2950, 190, 0.65f);
     
     out->num_samples = pos;
     return pos;
@@ -182,16 +184,16 @@ size_t generate_red_eyed_dove(bird_synthesizer_t *synth, audio_buffer_t *out) {
     size_t pos = 0;
     
     for (int i = 0; i < 2; i++) {
-        pos += generate_tremolo(synth, out->buffer, pos, 480, 180, 8, 0.3f, 0.32f);
+        pos += generate_tremolo(synth, out->buffer, pos, 480, 180, 8, 0.3f, 0.52f);
         pos += generate_silence(synth, out->buffer, pos, 120);
     }
     
     pos += generate_silence(synth, out->buffer, pos, 100);
-    pos += generate_tremolo(synth, out->buffer, pos, 520, 200, 8, 0.3f, 0.35f);
+    pos += generate_tremolo(synth, out->buffer, pos, 520, 200, 8, 0.3f, 0.55f);
     pos += generate_silence(synth, out->buffer, pos, 100);
-    pos += generate_tremolo(synth, out->buffer, pos, 500, 220, 8, 0.3f, 0.38f);
+    pos += generate_tremolo(synth, out->buffer, pos, 500, 220, 8, 0.3f, 0.58f);
     pos += generate_silence(synth, out->buffer, pos, 120);
-    pos += generate_tremolo(synth, out->buffer, pos, 460, 250, 8, 0.3f, 0.35f);
+    pos += generate_tremolo(synth, out->buffer, pos, 460, 250, 8, 0.3f, 0.55f);
     
     out->num_samples = pos;
     return pos;
@@ -203,8 +205,8 @@ size_t generate_glossy_starling(bird_synthesizer_t *synth, audio_buffer_t *out) 
     float freqs[] = {2800, 3200, 2600, 3400, 2900, 3100};
     
     for (int i = 0; i < 6; i++) {
-        pos += generate_tone(synth, out->buffer, pos, freqs[i], 120, 0.30f, 6, 0.03f);
-        pos += generate_silence(synth, out->buffer, pos, 70);
+        pos += generate_tone(synth, out->buffer, pos, freqs[i], 130, 0.62f, 6, 0.03f);
+        pos += generate_silence(synth, out->buffer, pos, 60);
     }
     
     out->num_samples = pos;
@@ -215,9 +217,9 @@ size_t generate_spotted_eagle_owl(bird_synthesizer_t *synth, audio_buffer_t *out
     size_t pos = 0;
     
     for (int i = 0; i < 2; i++) {
-        pos += generate_tone(synth, out->buffer, pos, 300, 200, 0.35f, 0, 0);
+        pos += generate_tone(synth, out->buffer, pos, 300, 200, 0.55f, 0, 0);
         pos += generate_silence(synth, out->buffer, pos, 150);
-        pos += generate_tone(synth, out->buffer, pos, 280, 350, 0.38f, 3, 0.02f);
+        pos += generate_tone(synth, out->buffer, pos, 280, 350, 0.58f, 3, 0.02f);
         pos += generate_silence(synth, out->buffer, pos, 400);
     }
     
@@ -229,14 +231,14 @@ size_t generate_fork_tailed_drongo(bird_synthesizer_t *synth, audio_buffer_t *ou
     size_t pos = 0;
     
     struct { float start; float end; uint32_t dur; } sweeps[] = {
-        {2400, 2600, 100}, {2200, 2800, 120},
-        {2600, 2300, 110}, {2800, 2400, 100}
+        {2400, 2650, 110}, {2200, 2850, 130},
+        {2650, 2300, 120}, {2850, 2400, 110}
     };
     
     for (int i = 0; i < 4; i++) {
         pos += generate_sweep(synth, out->buffer, pos, sweeps[i].start, 
-                            sweeps[i].end, sweeps[i].dur, 0.33f);
-        pos += generate_silence(synth, out->buffer, pos, 150);
+                            sweeps[i].end, sweeps[i].dur, 0.68f);
+        pos += generate_silence(synth, out->buffer, pos, 140);
     }
     
     out->num_samples = pos;
@@ -248,8 +250,8 @@ size_t generate_cape_canary(bird_synthesizer_t *synth, audio_buffer_t *out) {
     
     for (int i = 0; i < 8; i++) {
         float freq = 2600 + (i * 150);
-        pos += generate_tone(synth, out->buffer, pos, freq, 80, 0.28f, 12, 0.04f);
-        pos += generate_silence(synth, out->buffer, pos, 50);
+        pos += generate_tone(synth, out->buffer, pos, freq, 90, 0.60f, 12, 0.04f);
+        pos += generate_silence(synth, out->buffer, pos, 45);
     }
     
     out->num_samples = pos;
@@ -261,8 +263,8 @@ size_t generate_southern_masked_weaver(bird_synthesizer_t *synth, audio_buffer_t
     
     for (int i = 0; i < 6; i++) {
         float freq = 2000 + (i % 3) * 300;
-        pos += generate_tremolo(synth, out->buffer, pos, freq, 100, 20, 0.6f, 0.30f);
-        pos += generate_silence(synth, out->buffer, pos, 60);
+        pos += generate_tremolo(synth, out->buffer, pos, freq, 110, 20, 0.6f, 0.62f);
+        pos += generate_silence(synth, out->buffer, pos, 50);
     }
     
     out->num_samples = pos;
@@ -289,41 +291,103 @@ size_t generate_red_billed_quelea(bird_synthesizer_t *synth, audio_buffer_t *out
      */
 
     /* --- Phrase 1: opening chatter (buzzy, nasal, staccato) --- */
-    pos += generate_harsh(synth, out->buffer, pos, 2200, 55, 2, 0.28f);
-    pos += generate_silence(synth, out->buffer, pos, 30);
-    pos += generate_harsh(synth, out->buffer, pos, 2400, 50, 2, 0.30f);
+    pos += generate_harsh(synth, out->buffer, pos, 2200, 60, 2, 0.62f);
     pos += generate_silence(synth, out->buffer, pos, 28);
-    pos += generate_harsh(synth, out->buffer, pos, 2300, 55, 2, 0.29f);
-    pos += generate_silence(synth, out->buffer, pos, 30);
-    pos += generate_harsh(synth, out->buffer, pos, 2500, 45, 3, 0.28f);
-    pos += generate_silence(synth, out->buffer, pos, 55);
-
-    /* --- Phrase 2: contact whistle — fast upward sweep --- */
-    pos += generate_sweep(synth, out->buffer, pos, 1900, 3100, 110, 0.32f);
+    pos += generate_harsh(synth, out->buffer, pos, 2400, 55, 2, 0.65f);
+    pos += generate_silence(synth, out->buffer, pos, 25);
+    pos += generate_harsh(synth, out->buffer, pos, 2300, 60, 2, 0.63f);
+    pos += generate_silence(synth, out->buffer, pos, 28);
+    pos += generate_harsh(synth, out->buffer, pos, 2500, 50, 3, 0.60f);
     pos += generate_silence(synth, out->buffer, pos, 45);
 
-    /* --- Phrase 3: second chatter burst — tremolo for flock texture --- */
-    pos += generate_tremolo(synth, out->buffer, pos, 2600, 65, 28, 0.55f, 0.27f);
-    pos += generate_silence(synth, out->buffer, pos, 25);
-    pos += generate_tremolo(synth, out->buffer, pos, 2800, 60, 28, 0.60f, 0.28f);
-    pos += generate_silence(synth, out->buffer, pos, 25);
-    pos += generate_tremolo(synth, out->buffer, pos, 2500, 65, 28, 0.55f, 0.27f);
-    pos += generate_silence(synth, out->buffer, pos, 25);
-    pos += generate_tremolo(synth, out->buffer, pos, 2700, 55, 30, 0.58f, 0.27f);
-    pos += generate_silence(synth, out->buffer, pos, 50);
-
-    /* --- Phrase 4: short rising chirp then falling close --- */
-    pos += generate_sweep(synth, out->buffer, pos, 2000, 3200, 90, 0.30f);
-    pos += generate_silence(synth, out->buffer, pos, 20);
-    pos += generate_sweep(synth, out->buffer, pos, 3000, 2100, 75, 0.28f);
+    /* --- Phrase 2: contact whistle — fast upward sweep --- */
+    pos += generate_sweep(synth, out->buffer, pos, 1900, 3200, 120, 0.72f);
     pos += generate_silence(synth, out->buffer, pos, 40);
 
-    /* --- Phrase 5: closing buzz --- */
-    pos += generate_harsh(synth, out->buffer, pos, 2300, 70, 3, 0.26f);
+    /* --- Phrase 3: second chatter burst — tremolo for flock texture --- */
+    pos += generate_tremolo(synth, out->buffer, pos, 2600, 70, 28, 0.55f, 0.65f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
+    pos += generate_tremolo(synth, out->buffer, pos, 2850, 65, 28, 0.60f, 0.68f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
+    pos += generate_tremolo(synth, out->buffer, pos, 2500, 70, 28, 0.55f, 0.65f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
+    pos += generate_tremolo(synth, out->buffer, pos, 2700, 60, 30, 0.58f, 0.67f);
+    pos += generate_silence(synth, out->buffer, pos, 40);
+
+    /* --- Phrase 4: short rising chirp then falling close --- */
+    pos += generate_sweep(synth, out->buffer, pos, 2000, 3400, 100, 0.70f);
+    pos += generate_silence(synth, out->buffer, pos, 18);
+    pos += generate_sweep(synth, out->buffer, pos, 3200, 2100, 80, 0.65f);
+    pos += generate_silence(synth, out->buffer, pos, 35);
+
+    /* --- Phrase 5: dense colony re-burst --- */
+    pos += generate_harsh(synth, out->buffer, pos, 2350, 55, 2, 0.63f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
+    pos += generate_harsh(synth, out->buffer, pos, 2600, 50, 2, 0.65f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
+    pos += generate_tremolo(synth, out->buffer, pos, 2750, 80, 30, 0.60f, 0.68f);
+    pos += generate_silence(synth, out->buffer, pos, 30);
+
+    /* --- Phrase 6: closing upward sweep + final buzz --- */
+    pos += generate_sweep(synth, out->buffer, pos, 2100, 3300, 110, 0.70f);
+    pos += generate_silence(synth, out->buffer, pos, 20);
+    pos += generate_harsh(synth, out->buffer, pos, 2300, 80, 3, 0.62f);
 
     out->num_samples = pos;
     return pos;
 }
+/**
+ * @brief African Paradise Flycatcher (Terpsiphone viridis)
+ *
+ * A fast, liquid, high-pitched song — cascading phrases in the 3–4 kHz range
+ * with rapid descending sweeps and short tonal notes.  This is the signature
+ * response to DETECTION_BIRDSONG: high-freq dominant, melodic, energetic.
+ *
+ * Structure:
+ *   1. Opening liquid phrase  — three fast descending sweeps (3.8→2.8 kHz)
+ *   2. Ascending trill        — rapid upward tone burst
+ *   3. Core phrase (×2)       — two-note motif: quick sweep + held note
+ *   4. Cascading finish       — five fast sweeps descending in pitch
+ */
+size_t generate_paradise_flycatcher(bird_synthesizer_t *synth, audio_buffer_t *out) {
+    size_t pos = 0;
+
+    /* --- Phrase 1: opening liquid cascades --- */
+    pos += generate_sweep(synth, out->buffer, pos, 3800, 2900, 130, 0.68f);
+    pos += generate_silence(synth, out->buffer, pos, 35);
+    pos += generate_sweep(synth, out->buffer, pos, 3600, 2750, 120, 0.70f);
+    pos += generate_silence(synth, out->buffer, pos, 35);
+    pos += generate_sweep(synth, out->buffer, pos, 3400, 2600, 110, 0.68f);
+    pos += generate_silence(synth, out->buffer, pos, 60);
+
+    /* --- Phrase 2: ascending trill burst --- */
+    pos += generate_tone(synth, out->buffer, pos, 3200, 90, 0.65f, 14, 0.05f);
+    pos += generate_silence(synth, out->buffer, pos, 25);
+    pos += generate_tone(synth, out->buffer, pos, 3500, 90, 0.68f, 14, 0.05f);
+    pos += generate_silence(synth, out->buffer, pos, 25);
+    pos += generate_tone(synth, out->buffer, pos, 3800, 100, 0.70f, 14, 0.05f);
+    pos += generate_silence(synth, out->buffer, pos, 55);
+
+    /* --- Phrase 3: characteristic two-note motif, repeated twice --- */
+    for (int rep = 0; rep < 2; rep++) {
+        pos += generate_sweep(synth, out->buffer, pos, 3600, 2800, 100, 0.70f);
+        pos += generate_silence(synth, out->buffer, pos, 20);
+        pos += generate_tone(synth, out->buffer, pos, 2800, 160, 0.65f, 6, 0.03f);
+        pos += generate_silence(synth, out->buffer, pos, 60);
+    }
+
+    /* --- Phrase 4: cascading finish — five rapid descending sweeps --- */
+    float start_freqs[] = {3900, 3650, 3400, 3150, 2900};
+    float end_freqs[]   = {3000, 2800, 2600, 2400, 2200};
+    for (int i = 0; i < 5; i++) {
+        pos += generate_sweep(synth, out->buffer, pos, start_freqs[i], end_freqs[i], 85, 0.65f - i * 0.03f);
+        pos += generate_silence(synth, out->buffer, pos, 28);
+    }
+
+    out->num_samples = pos;
+    return pos;
+}
+
 /* ========================================================================
  * BIRD CALL MAPPER
  * ======================================================================== */
@@ -352,6 +416,12 @@ void bird_mapper_init(bird_call_mapper_t *mapper, uint32_t sample_rate) {
     mapper->clap_birds[1] = (bird_info_t){"glossy_starling",         "Glossy Starling"};
     mapper->clap_birds[2] = (bird_info_t){"southern_masked_weaver",  "Masked Weaver"};
     mapper->num_clap_birds = 3;
+
+    /* BIRDSONG: high-frequency melodic detections — richly patterned songs */
+    mapper->birdsong_birds[0] = (bird_info_t){"paradise_flycatcher", "Paradise Flycatcher"};
+    mapper->birdsong_birds[1] = (bird_info_t){"cape_robin_chat",      "Cape Robin-Chat"};
+    mapper->birdsong_birds[2] = (bird_info_t){"cape_canary",          "Cape Canary"};
+    mapper->num_birdsong_birds = 3;
 }
 
 bird_info_t bird_mapper_get_bird(bird_call_mapper_t *mapper,
@@ -373,6 +443,10 @@ bird_info_t bird_mapper_get_bird(bird_call_mapper_t *mapper,
         case DETECTION_CLAP:
             bird_list = mapper->clap_birds;
             list_len = mapper->num_clap_birds;
+            break;
+        case DETECTION_BIRDSONG:
+            bird_list = mapper->birdsong_birds;
+            list_len = mapper->num_birdsong_birds;
             break;
         default:
             return (bird_info_t){"", "Unknown"};
@@ -401,7 +475,8 @@ size_t bird_mapper_generate_call(bird_call_mapper_t *mapper,
         {"fork_tailed_drongo",    generate_fork_tailed_drongo},
         {"cape_canary",           generate_cape_canary},
         {"southern_masked_weaver",generate_southern_masked_weaver},
-        {"red_billed_quelea",      generate_red_billed_quelea},
+        {"red_billed_quelea",     generate_red_billed_quelea},
+        {"paradise_flycatcher",   generate_paradise_flycatcher},
     };
     
     for (int i = 0; i < sizeof(bird_funcs) / sizeof(bird_funcs[0]); i++) {
@@ -434,6 +509,11 @@ void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
 
         mapper->clap_birds[0] = (bird_info_t){"spotted_eagle_owl", "Eagle-Owl"};
         mapper->num_clap_birds = 1;
+
+        /* Night birdsong: unlikely but map to owl + dove (most atmospheric) */
+        mapper->birdsong_birds[0] = (bird_info_t){"spotted_eagle_owl", "Eagle-Owl"};
+        mapper->birdsong_birds[1] = (bird_info_t){"red_eyed_dove",     "Red-eyed Dove"};
+        mapper->num_birdsong_birds = 2;
     }
     else if (lux < 100.0f) {
         /* Dawn/Dusk: gentle, mellow chorus */
@@ -449,6 +529,11 @@ void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
         mapper->clap_birds[0] = (bird_info_t){"red_eyed_dove",    "Red-eyed Dove"};
         mapper->clap_birds[1] = (bird_info_t){"southern_boubou",  "Southern Boubou"};
         mapper->num_clap_birds = 2;
+
+        /* Dawn birdsong: chorus birds kicking off the day */
+        mapper->birdsong_birds[0] = (bird_info_t){"cape_robin_chat",     "Cape Robin-Chat"};
+        mapper->birdsong_birds[1] = (bird_info_t){"paradise_flycatcher", "Paradise Flycatcher"};
+        mapper->num_birdsong_birds = 2;
     }
     else if (lux < 500.0f) {
         /* Overcast: moderate mix, leaning gentle */
@@ -465,6 +550,12 @@ void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
         mapper->clap_birds[1] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
         mapper->clap_birds[2] = (bird_info_t){"glossy_starling",        "Glossy Starling"};
         mapper->num_clap_birds = 3;
+
+        /* Overcast birdsong: full melodic set */
+        mapper->birdsong_birds[0] = (bird_info_t){"paradise_flycatcher", "Paradise Flycatcher"};
+        mapper->birdsong_birds[1] = (bird_info_t){"cape_robin_chat",     "Cape Robin-Chat"};
+        mapper->birdsong_birds[2] = (bird_info_t){"cape_canary",         "Cape Canary"};
+        mapper->num_birdsong_birds = 3;
     }
     else {
         /* Bright/Sunny: full lively set */
@@ -483,5 +574,11 @@ void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
         mapper->clap_birds[1] = (bird_info_t){"glossy_starling",        "Glossy Starling"};
         mapper->clap_birds[2] = (bird_info_t){"southern_masked_weaver", "Masked Weaver"};
         mapper->num_clap_birds = 3;
+
+        /* Sunny birdsong: all three high-energy melodic birds */
+        mapper->birdsong_birds[0] = (bird_info_t){"paradise_flycatcher", "Paradise Flycatcher"};
+        mapper->birdsong_birds[1] = (bird_info_t){"cape_canary",         "Cape Canary"};
+        mapper->birdsong_birds[2] = (bird_info_t){"cape_robin_chat",     "Cape Robin-Chat"};
+        mapper->num_birdsong_birds = 3;
     }
 }

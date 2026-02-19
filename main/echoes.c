@@ -38,6 +38,7 @@ static hardware_config_t g_hw_config = HW_CONFIG_FULL;
 /* Goertzel coefficients (precomputed) */
 static float g_coeff_whistle;
 static float g_coeff_voice;
+static float g_coeff_birdsong;   /**< Precomputed coefficient for BIRDSONG_FREQ */
 
 /* I2S */
 static i2s_chan_handle_t mic_chan = NULL;   // global handle for microphone channel
@@ -266,14 +267,16 @@ void system_init(void) {
     memset(&g_system_state, 0, sizeof(g_system_state));
     
     // Initialize detection state
-    g_system_state.detection.running_avg_whistle = 1000.0f;
-    g_system_state.detection.running_avg_voice = 1000.0f;
+    g_system_state.detection.running_avg_whistle  = 1000.0f;
+    g_system_state.detection.running_avg_voice    = 1000.0f;
+    g_system_state.detection.running_avg_birdsong = 1000.0f;
     
     // Precompute Goertzel coefficients using remote config (or defaults)
     {
         const remote_config_t *cfg = remote_config_get();
-        g_coeff_whistle = 2.0f * cosf(2.0f * M_PI * cfg->whistle_freq / SAMPLE_RATE);
-        g_coeff_voice   = 2.0f * cosf(2.0f * M_PI * cfg->voice_freq   / SAMPLE_RATE);
+        g_coeff_whistle  = 2.0f * cosf(2.0f * M_PI * cfg->whistle_freq / SAMPLE_RATE);
+        g_coeff_voice    = 2.0f * cosf(2.0f * M_PI * cfg->voice_freq   / SAMPLE_RATE);
+        g_coeff_birdsong = 2.0f * cosf(2.0f * M_PI * BIRDSONG_FREQ     / SAMPLE_RATE);
     }
     
     // Initialize light sensor (this detects BH1750 vs analog)
@@ -327,29 +330,37 @@ void apply_gain_inplace(int16_t *buffer, size_t num_samples, float gain) {
 }
 
 void compute_goertzel(const int16_t *buffer, size_t num_samples,
-                      float *mag_whistle, float *mag_voice) {
+                      float *mag_whistle, float *mag_voice, float *mag_birdsong) {
     float q1_w = 0.0f, q2_w = 0.0f;
     float q1_v = 0.0f, q2_v = 0.0f;
+    float q1_b = 0.0f, q2_b = 0.0f;
     
     for (size_t i = 0; i < num_samples; i++) {
         float v = (float)buffer[i];
         
-        // Whistle frequency
+        // Whistle frequency (2000 Hz)
         float q0_w = g_coeff_whistle * q1_w - q2_w + v;
         q2_w = q1_w;
         q1_w = q0_w;
         
-        // Voice frequency
+        // Voice frequency (200 Hz)
         float q0_v = g_coeff_voice * q1_v - q2_v + v;
         q2_v = q1_v;
         q1_v = q0_v;
+
+        // Birdsong frequency (3500 Hz)
+        float q0_b = g_coeff_birdsong * q1_b - q2_b + v;
+        q2_b = q1_b;
+        q1_b = q0_b;
     }
     
-    float mag_sq_w = q1_w * q1_w + q2_w * q2_w - g_coeff_whistle * q1_w * q2_w;
-    float mag_sq_v = q1_v * q1_v + q2_v * q2_v - g_coeff_voice * q1_v * q2_v;
+    float mag_sq_w = q1_w * q1_w + q2_w * q2_w - g_coeff_whistle  * q1_w * q2_w;
+    float mag_sq_v = q1_v * q1_v + q2_v * q2_v - g_coeff_voice    * q1_v * q2_v;
+    float mag_sq_b = q1_b * q1_b + q2_b * q2_b - g_coeff_birdsong * q1_b * q2_b;
     
-    *mag_whistle = sqrtf(mag_sq_w);
-    *mag_voice = sqrtf(mag_sq_v);
+    *mag_whistle  = sqrtf(mag_sq_w > 0.0f ? mag_sq_w : 0.0f);
+    *mag_voice    = sqrtf(mag_sq_v > 0.0f ? mag_sq_v : 0.0f);
+    *mag_birdsong = sqrtf(mag_sq_b > 0.0f ? mag_sq_b : 0.0f);
 }
 
 /* ========================================================================
@@ -605,7 +616,7 @@ void audio_detection_task(void *param) {
     ESP_LOGI(TAG, "Audio detection task started");
     
     if (g_hw_config == HW_CONFIG_FULL) {
-        ESP_LOGI(TAG, "🎤 Listening for whistles, voice, and claps...");
+        ESP_LOGI(TAG, "🎤 Listening for whistles, voice, claps, and birdsong...");
     } else {
         ESP_LOGI(TAG, "🎤 LED VU meter mode active (digital stepped output)");
     }
@@ -647,36 +658,42 @@ void audio_detection_task(void *param) {
                 if (new_cw != g_coeff_whistle || new_cv != g_coeff_voice) {
                     g_coeff_whistle = new_cw;
                     g_coeff_voice   = new_cv;
-                    ESP_LOGI(TAG, "Goertzel: whistle=%luHz voice=%luHz",
+                    /* Birdsong freq is fixed — no remote config knob needed */
+                    g_coeff_birdsong = 2.0f * cosf(2.0f * M_PI * BIRDSONG_FREQ / SAMPLE_RATE);
+                    ESP_LOGI(TAG, "Goertzel: whistle=%luHz voice=%luHz birdsong=%dHz",
                              (unsigned long)cfg->whistle_freq,
-                             (unsigned long)cfg->voice_freq);
+                             (unsigned long)cfg->voice_freq,
+                             BIRDSONG_FREQ);
                 }
             }
 
             // Compute frequencies
-            float mag_w, mag_v;
-            compute_goertzel(buffer, num_samples, &mag_w, &mag_v);
+            float mag_w, mag_v, mag_b;
+            compute_goertzel(buffer, num_samples, &mag_w, &mag_v, &mag_b);
             
             // Update adaptive thresholds
-            state->running_avg_whistle = ALPHA * state->running_avg_whistle + (1.0f - ALPHA) * mag_w;
-            state->running_avg_voice   = ALPHA * state->running_avg_voice   + (1.0f - ALPHA) * mag_v;
+            state->running_avg_whistle  = ALPHA * state->running_avg_whistle  + (1.0f - ALPHA) * mag_w;
+            state->running_avg_voice    = ALPHA * state->running_avg_voice    + (1.0f - ALPHA) * mag_v;
+            state->running_avg_birdsong = ALPHA * state->running_avg_birdsong + (1.0f - ALPHA) * mag_b;
             
-            float thresh_w    = state->running_avg_whistle * cfg->whistle_multiplier;
-            float thresh_v    = state->running_avg_voice   * cfg->voice_multiplier;
+            float thresh_w    = state->running_avg_whistle  * cfg->whistle_multiplier;
+            float thresh_v    = state->running_avg_voice    * cfg->voice_multiplier;
+            float thresh_b    = state->running_avg_birdsong * BIRDSONG_MULTIPLIER;
             float thresh_clap = fmaxf(thresh_w * cfg->clap_multiplier, thresh_v * 2.0f);
             
             // Handle debounce
             if (state->debounce_counter > 0) {
                 state->debounce_counter--;
-                state->whistle_count = 0;
-                state->voice_count = 0;
-                state->clap_count = 0;
+                state->whistle_count   = 0;
+                state->voice_count     = 0;
+                state->clap_count      = 0;
+                state->birdsong_count  = 0;
             }
             else {
-                // Check for clap (broadband impulse)
+                // Check for clap (broadband impulse — both bands spike simultaneously)
                 if (mag_w > thresh_clap && mag_v > thresh_v * 1.5f) {
                     state->clap_count++;
-                    state->whistle_count = state->voice_count = 0;
+                    state->whistle_count = state->voice_count = state->birdsong_count = 0;
                     
                     if (state->clap_count >= cfg->clap_confirm) {
                         ESP_LOGI(TAG, "👏 CLAP! (w:%.0f, v:%.0f)", mag_w, mag_v);
@@ -695,10 +712,38 @@ void audio_detection_task(void *param) {
                         state->debounce_counter = cfg->debounce_buffers;
                     }
                 }
-                // Check for whistle (high frequency, narrow band)
-                else if (mag_w > thresh_w && (mag_w / (mag_v + 1.0f)) > 3.0f) {
+                // Check for birdsong (3500 Hz dominant, with mid-freq presence, no strong voice)
+                // Spectral signature: mag_b exceeds threshold AND is stronger than mid by
+                // BIRDSONG_HF_RATIO AND there is some (but not dominant) mid-freq energy.
+                else if (mag_b > thresh_b &&
+                         mag_b > mag_w * BIRDSONG_HF_RATIO &&
+                         mag_w > thresh_w * BIRDSONG_MF_MIN &&
+                         mag_v < thresh_v) {
+                    state->birdsong_count++;
+                    state->whistle_count = state->voice_count = state->clap_count = 0;
+
+                    if (state->birdsong_count >= BIRDSONG_CONFIRM) {
+                        ESP_LOGI(TAG, "🐦 BIRDSONG! (b:%.0f, w:%.0f, v:%.0f)", mag_b, mag_w, mag_v);
+                        espnow_mesh_broadcast_sound(DETECTION_BIRDSONG);
+                        markov_on_event(&g_markov, DETECTION_BIRDSONG, get_lux_level());
+
+                        bird_info_t bird;
+                        if (espnow_mesh_is_flooded()) {
+                            bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
+                        } else {
+                            bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_BIRDSONG);
+                        }
+                        generate_and_play_bird_call_nowait(&g_bird_mapper, bird.function_name, bird.display_name);
+
+                        state->birdsong_count = 0;
+                        state->debounce_counter = cfg->debounce_buffers;
+                    }
+                }
+                // Check for whistle (high frequency, narrow band — no significant 3500 Hz content)
+                else if (mag_w > thresh_w && (mag_w / (mag_v + 1.0f)) > 3.0f &&
+                         mag_b < thresh_b) {
                     state->whistle_count++;
-                    state->clap_count = state->voice_count = 0;
+                    state->clap_count = state->voice_count = state->birdsong_count = 0;
                     
                     if (state->whistle_count >= cfg->whistle_confirm) {
                         ESP_LOGI(TAG, "🎵 WHISTLE! (w:%.0f, v:%.0f)", mag_w, mag_v);
@@ -720,7 +765,7 @@ void audio_detection_task(void *param) {
                 // Check for voice (low frequency)
                 else if (mag_v > thresh_v) {
                     state->voice_count++;
-                    state->whistle_count = state->clap_count = 0;
+                    state->whistle_count = state->clap_count = state->birdsong_count = 0;
                     
                     if (state->voice_count >= cfg->voice_confirm) {
                         ESP_LOGI(TAG, "🗣️ VOICE! (w:%.0f, v:%.0f)", mag_w, mag_v);
@@ -741,7 +786,7 @@ void audio_detection_task(void *param) {
                 }
                 // No detection
                 else {
-                    state->whistle_count = state->voice_count = state->clap_count = 0;
+                    state->whistle_count = state->voice_count = state->clap_count = state->birdsong_count = 0;
                 }
             }
             

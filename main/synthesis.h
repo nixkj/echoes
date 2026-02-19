@@ -81,6 +81,7 @@ size_t generate_fork_tailed_drongo(bird_synthesizer_t *synth, audio_buffer_t *ou
 size_t generate_cape_canary(bird_synthesizer_t *synth, audio_buffer_t *out);
 size_t generate_southern_masked_weaver(bird_synthesizer_t *synth, audio_buffer_t *out);
 size_t generate_red_billed_quelea(bird_synthesizer_t *synth, audio_buffer_t *out);
+size_t generate_paradise_flycatcher(bird_synthesizer_t *synth, audio_buffer_t *out);
 
 /* ========================================================================
  * BIRD CALL MAPPER
@@ -96,6 +97,8 @@ typedef struct bird_call_mapper_t {
     uint8_t num_voice_birds;
     bird_info_t clap_birds[MAX_BIRDS_PER_CATEGORY];
     uint8_t num_clap_birds;
+    bird_info_t birdsong_birds[MAX_BIRDS_PER_CATEGORY];  /**< Responds to DETECTION_BIRDSONG */
+    uint8_t num_birdsong_birds;
 } bird_call_mapper_t;
 
 /**

@@ -31,17 +31,27 @@
 /* Detection frequencies */
 #define WHISTLE_FREQ        2000
 #define VOICE_FREQ          200
+#define BIRDSONG_FREQ       3500   /**< High-freq Goertzel bin for melodic birdsong */
 
 /* Adaptive threshold parameters */
 #define ALPHA               0.98f       // Smoothing factor
 #define WHISTLE_MULTIPLIER  2.5f
 #define VOICE_MULTIPLIER    2.5f
 #define CLAP_MULTIPLIER     4.0f
+#define BIRDSONG_MULTIPLIER 2.2f       /**< Slightly sensitive — birdsong is rich but brief */
+
+/* Birdsong spectral ratios
+ * Birdsong must be high-freq dominant (mag_b > mag_w * BIRDSONG_HF_RATIO)
+ * and have some mid-freq presence (mag_w > thresh_w * BIRDSONG_MF_MIN) to
+ * distinguish it from a plain single-tone whistle.                         */
+#define BIRDSONG_HF_RATIO   1.4f       /**< High band must exceed mid band by this factor */
+#define BIRDSONG_MF_MIN     0.35f      /**< Mid-freq must be at least this fraction of its threshold */
 
 /* Confirmation counts */
 #define WHISTLE_CONFIRM     2
 #define VOICE_CONFIRM       3
 #define CLAP_CONFIRM        1
+#define BIRDSONG_CONFIRM    3          /**< Needs 3 consecutive frames — filters brief transients */
 
 /* Debounce settings (in buffer reads) */
 #define DEBOUNCE_BUFFERS    20
@@ -145,7 +155,8 @@ typedef enum {
     DETECTION_NONE = 0,
     DETECTION_WHISTLE,
     DETECTION_VOICE,
-    DETECTION_CLAP
+    DETECTION_CLAP,
+    DETECTION_BIRDSONG   /**< High-freq melodic birdsong pattern (multi-band) */
 } detection_type_t;
 
 /**
@@ -179,9 +190,11 @@ typedef struct {
 typedef struct {
     float running_avg_whistle;
     float running_avg_voice;
+    float running_avg_birdsong;    /**< Adaptive baseline for the birdsong band */
     uint8_t whistle_count;
     uint8_t voice_count;
     uint8_t clap_count;
+    uint8_t birdsong_count;        /**< Confirmation counter for birdsong detection */
     uint8_t debounce_counter;
 } detection_state_t;
 
@@ -231,7 +244,7 @@ void set_led(float white_level, float blue_level);
 /* Audio Processing */
 void apply_gain_inplace(int16_t *buffer, size_t num_samples, float gain);
 void compute_goertzel(const int16_t *buffer, size_t num_samples, 
-                      float *mag_whistle, float *mag_voice);
+                      float *mag_whistle, float *mag_voice, float *mag_birdsong);
 
 /* Light Sensor */
 float get_lux_level(void);

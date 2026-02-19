@@ -147,10 +147,11 @@ static void espnow_rx_task(void *param)
                  */
                 float implied_lux;
                 switch ((detection_type_t)msg.detection) {
-                    case DETECTION_WHISTLE: implied_lux = 800.0f; break;
-                    case DETECTION_CLAP:    implied_lux = 900.0f; break;
-                    case DETECTION_VOICE:   implied_lux = 80.0f;  break;
-                    default:                implied_lux = s_local_lux; break;
+                    case DETECTION_WHISTLE:   implied_lux = 800.0f; break;
+                    case DETECTION_CLAP:      implied_lux = 900.0f; break;
+                    case DETECTION_VOICE:     implied_lux = 80.0f;  break;
+                    case DETECTION_BIRDSONG:  implied_lux = 700.0f; break;  /* melodic/daylight */
+                    default:                  implied_lux = s_local_lux; break;
                 }
 
                 s_remote_lux = implied_lux;
