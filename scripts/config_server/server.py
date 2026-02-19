@@ -355,7 +355,6 @@ def save_config(config):
 _config = load_config()
 _last_modified = datetime.now().isoformat()
 
-
 # ---------------------------------------------------------------------------
 # API ROUTES
 # ---------------------------------------------------------------------------
@@ -363,9 +362,20 @@ _last_modified = datetime.now().isoformat()
 @app.route("/config", methods=["GET"])
 def get_config():
     """Return flat key→value map for device consumption."""
+    global _restart_pending, _restart_expires, _restart_timestamp
+    # Auto-expire the restart flag after RESTART_WINDOW_S seconds
+    if _restart_pending and time.time() > _restart_expires:
+        _restart_pending = False
+        _restart_timestamp = None
+        print("[INFO] Restart window expired — flag cleared")
     flat = {k: v["value"] for k, v in _config.items()}
     flat["_server_time"] = time.time()
     flat["_version"] = _last_modified
+    flat["RESTART_REQUESTED"] = _restart_pending
+    flat["RESTART_TOKEN"] = _restart_token
+    if _restart_pending:
+        print(f"[INFO] RESTART_REQUESTED=true (token={_restart_token}) delivered to a node")
+>>>>>>> 0d88dee (Introduce chaos mode, and fix boot request)
     return jsonify(flat)
 
 
@@ -418,7 +428,6 @@ def update_config():
     return jsonify({"updated": updated, "errors": errors, "version": _last_modified})
 
 
-@app.route("/config/reset", methods=["POST"])
 def reset_config():
     """Reset all parameters to factory defaults."""
     global _config, _last_modified
