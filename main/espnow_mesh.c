@@ -192,8 +192,12 @@ static void espnow_rx_task(void *param)
                 float effective = blend_lux(s_local_lux, s_remote_lux);
                 if (s_mapper) bird_mapper_update_for_lux(s_mapper, effective);
 
-                /* Update chain with remote light info (IDLE event at remote lux) */
-                if (s_markov) markov_on_event(s_markov, DETECTION_NONE, msg.lux);
+                /* Update chain with remote light info — use markov_set_lux()
+                 * rather than markov_on_event() so that routine ambient light
+                 * broadcasts do NOT reset the silence timer.  Only genuine
+                 * sound events (ESPNOW_MSG_SOUND) should count as "activity"
+                 * for the purpose of the autonomous-call idle trigger.        */
+                if (s_markov) markov_set_lux(s_markov, msg.lux);
 
                 /* Also apply Markov lux bias to local mapper */
                 if (s_markov && s_mapper) {
@@ -384,7 +388,7 @@ bool espnow_mesh_is_chaos(void)
         }
     } else if (s_chaos_active) {
         /* Check hold-time expiry */
-        if ((now - s_chaos_last_ms) >= (uint32_t)CHAOS_HOLD_MS) {
+        if ((now - s_chaos_last_ms) >= remote_config_get()->chaos_hold_ms) {
             s_chaos_active = false;
             ESP_LOGI(TAG, "🌪️  CHAOS MODE exited (hold expired)");
         }

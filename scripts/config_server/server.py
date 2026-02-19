@@ -118,6 +118,78 @@ DEFAULT_CONFIG = {
         "description": "Minimum number of audio buffer reads between successive detections of the same type. Prevents a single event from triggering multiple bird calls.",
         "unit": "buffer cycles"
     },
+    "BIRDSONG_FREQ": {
+        "value": 3500,
+        "min": 1000,
+        "max": 8000,
+        "step": 100,
+        "type": "int",
+        "description": "Centre frequency (Hz) used by the Goertzel detector to recognise birdsong.",
+        "unit": "Hz"
+    },
+    "BIRDSONG_MULTIPLIER": {
+        "value": 2.2,
+        "min": 1.2,
+        "max": 10.0,
+        "step": 0.1,
+        "type": "float",
+        "description": "Adaptive threshold multiplier for birdsong detection. Higher = less sensitive.",
+        "unit": "x running average"
+    },
+    "BIRDSONG_HF_RATIO": {
+        "value": 1.4,
+        "min": 1.0,
+        "max": 5.0,
+        "step": 0.1,
+        "type": "float",
+        "description": "Spectral ratio: high-frequency band must exceed mid-frequency band by at least this factor for birdsong to be confirmed.",
+        "unit": "ratio"
+    },
+    "BIRDSONG_MF_MIN": {
+        "value": 0.35,
+        "min": 0.05,
+        "max": 1.0,
+        "step": 0.05,
+        "type": "float",
+        "description": "Mid-frequency must be at least this fraction of its own threshold for a birdsong detection to proceed.",
+        "unit": "fraction (0-1)"
+    },
+    "BIRDSONG_CONFIRM": {
+        "value": 3,
+        "min": 1,
+        "max": 10,
+        "step": 1,
+        "type": "int",
+        "description": "Consecutive confirmation frames required for birdsong detection. Filters brief transients.",
+        "unit": "frames"
+    },
+    "NOISE_FLOOR_WHISTLE": {
+        "value": 10000.0,
+        "min": 100.0,
+        "max": 100000.0,
+        "step": 500.0,
+        "type": "float",
+        "description": "Absolute minimum Goertzel magnitude for whistle detection, regardless of adaptive threshold. Prevents detections in near-silence.",
+        "unit": "magnitude"
+    },
+    "NOISE_FLOOR_VOICE": {
+        "value": 4000.0,
+        "min": 100.0,
+        "max": 100000.0,
+        "step": 500.0,
+        "type": "float",
+        "description": "Absolute minimum Goertzel magnitude for voice detection. Lower than whistle because voice energy at 200 Hz is naturally lower amplitude.",
+        "unit": "magnitude"
+    },
+    "NOISE_FLOOR_BIRDSONG": {
+        "value": 10000.0,
+        "min": 100.0,
+        "max": 100000.0,
+        "step": 500.0,
+        "type": "float",
+        "description": "Absolute minimum Goertzel magnitude for birdsong detection. Guards against false triggers in quiet environments.",
+        "unit": "magnitude"
+    },
     "LUX_POLL_INTERVAL_MS": {
         "value": 500,
         "min": 100,
@@ -199,6 +271,15 @@ DEFAULT_CONFIG = {
         "description": "Volume scale factor applied in bright conditions (at or above VOLUME_LUX_MAX). Set below 1.0 to cap maximum output even in bright environments.",
         "unit": "multiplier (0–1)"
     },
+    "QUELEA_GAIN": {
+        "value": 1.2,
+        "min": 0.1,
+        "max": 4.0,
+        "step": 0.05,
+        "type": "float",
+        "description": "Post-process gain applied specifically to the Red-billed Quelea synthesised call. Quelea bypasses the global VOLUME constant so this is its sole loudness control.",
+        "unit": "linear multiplier"
+    },
     "ESPNOW_LUX_THRESHOLD": {
         "value": 12.0,
         "min": 1.0,
@@ -225,15 +306,6 @@ DEFAULT_CONFIG = {
         "type": "int",
         "description": "Minimum time between consecutive sound-event broadcasts from this node. Prevents flooding the mesh during rapid repeated detections.",
         "unit": "ms"
-    },
-    "ESPNOW_FLOOD_COUNT": {
-        "value": 5,
-        "min": 2,
-        "max": 20,
-        "step": 1,
-        "type": "int",
-        "description": "Number of incoming ESP-NOW messages within ESPNOW_FLOOD_WINDOW_MS that triggers 'flood' state. In flood state, bird selection switches to Red-billed Quelea to signal network-wide activity.",
-        "unit": "messages"
     },
     "ESPNOW_FLOOD_WINDOW_MS": {
         "value": 8000,
@@ -262,41 +334,23 @@ DEFAULT_CONFIG = {
         "description": "Minimum gap (ms) between consecutive autonomous Markov-triggered calls. Prevents the chain from firing repeatedly during a long quiet period.",
         "unit": "ms"
     },
-    "LUX_LED_MIN": {
-        "value": 0.0,
-        "min": 0.0,
-        "max": 100.0,
-        "step": 1.0,
-        "type": "float",
-        "description": "Lux level at which the white LED is at its floor brightness. Below this the LED stays at LUX_LED_BRIGHTNESS_FLOOR.",
-        "unit": "lux"
+    "CHAOS_HOLD_MS": {
+        "value": 10000,
+        "min": 1000,
+        "max": 120000,
+        "step": 1000,
+        "type": "int",
+        "description": "How long (ms) chaos mode persists after the last qualifying burst before automatically decaying back to normal.",
+        "unit": "ms"
     },
-    "LUX_LED_MAX": {
-        "value": 80.0,
-        "min": 10.0,
-        "max": 2000.0,
-        "step": 10.0,
-        "type": "float",
-        "description": "Lux level at which the white LED reaches ceiling brightness. Tune this for your room — a phone screen at arm's length is roughly 50–100 lux.",
-        "unit": "lux"
-    },
-    "LUX_LED_BRIGHTNESS_FLOOR": {
-        "value": 0.04,
-        "min": 0.0,
-        "max": 0.5,
-        "step": 0.01,
-        "type": "float",
-        "description": "Minimum white LED brightness even in a completely dark room. A small value gives the installation a gentle ambient presence at night.",
-        "unit": "brightness (0–1)"
-    },
-    "LUX_LED_BRIGHTNESS_CEIL": {
-        "value": 1.0,
-        "min": 0.1,
-        "max": 1.0,
-        "step": 0.05,
-        "type": "float",
-        "description": "Maximum white LED brightness reached at LUX_LED_MAX ambient light. Reduce if the LED is uncomfortably bright in well-lit spaces.",
-        "unit": "brightness (0–1)"
+    "CHAOS_CALL_GAP_MS": {
+        "value": 200,
+        "min": 50,
+        "max": 2000,
+        "step": 50,
+        "type": "int",
+        "description": "Minimum silence gap (ms) between consecutive bird calls during chaos mode. Keeps individual calls perceptible rather than blending into a sustained tone.",
+        "unit": "ms"
     },
     "VU_MAX_BRIGHTNESS": {
         "value": 0.75,
@@ -927,12 +981,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <script>
 const SECTIONS = {
   "Output Switches": ["SILENT_MODE","SOUND_OFF"],
-  "Audio Detection": ["GAIN","WHISTLE_FREQ","VOICE_FREQ","WHISTLE_MULTIPLIER","VOICE_MULTIPLIER","CLAP_MULTIPLIER","WHISTLE_CONFIRM","VOICE_CONFIRM","CLAP_CONFIRM","DEBOUNCE_BUFFERS"],
-  "Playback Volume": ["VOLUME","VOLUME_LUX_MIN","VOLUME_LUX_MAX","VOLUME_SCALE_MIN","VOLUME_SCALE_MAX"],
+  "Audio Detection": ["GAIN","WHISTLE_FREQ","VOICE_FREQ","WHISTLE_MULTIPLIER","VOICE_MULTIPLIER","CLAP_MULTIPLIER","WHISTLE_CONFIRM","VOICE_CONFIRM","CLAP_CONFIRM","DEBOUNCE_BUFFERS","BIRDSONG_FREQ","BIRDSONG_MULTIPLIER","BIRDSONG_HF_RATIO","BIRDSONG_MF_MIN","BIRDSONG_CONFIRM","NOISE_FLOOR_WHISTLE","NOISE_FLOOR_VOICE","NOISE_FLOOR_BIRDSONG"],
+  "Playback Volume": ["VOLUME","VOLUME_LUX_MIN","VOLUME_LUX_MAX","VOLUME_SCALE_MIN","VOLUME_SCALE_MAX","QUELEA_GAIN"],
   "Light Sensor": ["LUX_POLL_INTERVAL_MS","LUX_CHANGE_THRESHOLD","LUX_FLASH_THRESHOLD","LUX_FLASH_PERCENT","LUX_FLASH_MIN_ABS"],
-  "LED Behaviour": ["LUX_LED_MIN","LUX_LED_MAX","LUX_LED_BRIGHTNESS_FLOOR","LUX_LED_BRIGHTNESS_CEIL","VU_MAX_BRIGHTNESS"],
-  "ESP-NOW Mesh": ["ESPNOW_LUX_THRESHOLD","ESPNOW_EVENT_TTL_MS","ESPNOW_SOUND_THROTTLE_MS","ESPNOW_FLOOD_COUNT","ESPNOW_FLOOD_WINDOW_MS"],
-  "Markov Chain": ["MARKOV_IDLE_TRIGGER_MS","MARKOV_AUTONOMOUS_COOLDOWN_MS"]
+  "LED Behaviour": ["VU_MAX_BRIGHTNESS"],
+  "ESP-NOW Mesh": ["ESPNOW_LUX_THRESHOLD","ESPNOW_EVENT_TTL_MS","ESPNOW_SOUND_THROTTLE_MS","ESPNOW_FLOOD_WINDOW_MS"],
+  "Markov Chain": ["MARKOV_IDLE_TRIGGER_MS","MARKOV_AUTONOMOUS_COOLDOWN_MS"],
+  "Chaos Mode": ["CHAOS_HOLD_MS","CHAOS_CALL_GAP_MS"]
 };
 
 let fullConfig = {};

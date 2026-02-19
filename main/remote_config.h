@@ -88,17 +88,12 @@ typedef struct {
     float    lux_flash_min_abs;     /**< Min absolute change for % trigger    */
 
     /* ── LED behaviour ───────────────────────────────────────────── */
-    float    lux_led_min;           /**< Lux at LED floor brightness          */
-    float    lux_led_max;           /**< Lux at LED ceiling brightness        */
-    float    lux_led_brightness_floor; /**< Minimum LED brightness            */
-    float    lux_led_brightness_ceil;  /**< Maximum LED brightness            */
     float    vu_max_brightness;     /**< Peak LED brightness during VU meter  */
 
     /* ── ESP-NOW mesh ────────────────────────────────────────────── */
     float    espnow_lux_threshold;      /**< Min lux change to broadcast      */
     uint32_t espnow_event_ttl_ms;       /**< Remote event TTL (ms)            */
     uint32_t espnow_sound_throttle_ms;  /**< Min gap between sound broadcasts */
-    uint8_t  espnow_flood_count;        /**< Messages to trigger flood state  */
     uint32_t espnow_flood_window_ms;    /**< Flood detection window (ms)      */
 
     /* ── Markov chain ────────────────────────────────────────────── */
@@ -106,8 +101,6 @@ typedef struct {
     uint32_t markov_autonomous_cooldown_ms; /**< Min gap between auto calls     */
 
     /* ── Chaos mode ──────────────────────────────────────────────── */
-    uint32_t chaos_msg_count;    /**< Messages in window to trigger chaos      */
-    uint32_t chaos_window_ms;    /**< Sliding window for chaos detection (ms)  */
     uint32_t chaos_hold_ms;      /**< How long chaos persists after trigger    */
     uint32_t chaos_call_gap_ms;  /**< Pause between consecutive chaos calls    */
 
@@ -118,7 +111,7 @@ typedef struct {
     /* ── Meta ────────────────────────────────────────────────────── */
     /* ── Remote restart ─────────────────────────────────────────── */
     bool     restart_requested; /**< true → reboot at next config poll        */
-    uint32_t restart_token;      /**< Unique ID for this restart command        */
+    uint32_t restart_token;     /**< Unique token per restart command          */
 
     /* ── Meta ──────────────────────────────────────────────────── */
     bool     loaded;            /**< true after at least one successful fetch */

@@ -17,7 +17,7 @@
 #include "cJSON.h"
 
 #include "esp_system.h"
-#include "esp_attr.h"       /* RTC_NOINIT_ATTR */
+#include "esp_attr.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -73,17 +73,12 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .lux_flash_min_abs           = 15.0f,
 
     /* LED behaviour */
-    .lux_led_min                 = 0.0f,
-    .lux_led_max                 = 80.0f,
-    .lux_led_brightness_floor    = 0.04f,
-    .lux_led_brightness_ceil     = 1.0f,
     .vu_max_brightness           = 0.75f,
 
     /* ESP-NOW mesh */
     .espnow_lux_threshold        = 12.0f,
     .espnow_event_ttl_ms         = 30000,
     .espnow_sound_throttle_ms    = 3000,
-    .espnow_flood_count          = 5,
     .espnow_flood_window_ms      = 8000,
 
     /* Markov chain */
@@ -91,8 +86,6 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .markov_autonomous_cooldown_ms   = 15000,
 
     /* Chaos mode */
-    .chaos_msg_count                 = 12,
-    .chaos_window_ms                 = 6000,
     .chaos_hold_ms                   = 10000,
     .chaos_call_gap_ms               = 200,
 
@@ -221,17 +214,12 @@ static void apply_json(cJSON *root)
     CFG_FLOAT  (root, s_cfg.lux_flash_min_abs,     "LUX_FLASH_MIN_ABS");
 
     /* LED behaviour */
-    CFG_FLOAT  (root, s_cfg.lux_led_min,               "LUX_LED_MIN");
-    CFG_FLOAT  (root, s_cfg.lux_led_max,               "LUX_LED_MAX");
-    CFG_FLOAT  (root, s_cfg.lux_led_brightness_floor,  "LUX_LED_BRIGHTNESS_FLOOR");
-    CFG_FLOAT  (root, s_cfg.lux_led_brightness_ceil,   "LUX_LED_BRIGHTNESS_CEIL");
     CFG_FLOAT  (root, s_cfg.vu_max_brightness,         "VU_MAX_BRIGHTNESS");
 
     /* ESP-NOW mesh */
     CFG_FLOAT  (root, s_cfg.espnow_lux_threshold,        "ESPNOW_LUX_THRESHOLD");
     CFG_UINT32 (root, s_cfg.espnow_event_ttl_ms,         "ESPNOW_EVENT_TTL_MS");
     CFG_UINT32 (root, s_cfg.espnow_sound_throttle_ms,    "ESPNOW_SOUND_THROTTLE_MS");
-    CFG_UINT8  (root, s_cfg.espnow_flood_count,          "ESPNOW_FLOOD_COUNT");
     CFG_UINT32 (root, s_cfg.espnow_flood_window_ms,      "ESPNOW_FLOOD_WINDOW_MS");
 
     /* Markov chain */
@@ -239,8 +227,6 @@ static void apply_json(cJSON *root)
     CFG_UINT32 (root, s_cfg.markov_autonomous_cooldown_ms,  "MARKOV_AUTONOMOUS_COOLDOWN_MS");
 
     /* Chaos mode */
-    CFG_UINT32 (root, s_cfg.chaos_msg_count,    "CHAOS_MSG_COUNT");
-    CFG_UINT32 (root, s_cfg.chaos_window_ms,    "CHAOS_WINDOW_MS");
     CFG_UINT32 (root, s_cfg.chaos_hold_ms,      "CHAOS_HOLD_MS");
     CFG_UINT32 (root, s_cfg.chaos_call_gap_ms,  "CHAOS_CALL_GAP_MS");
 
