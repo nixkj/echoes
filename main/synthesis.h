@@ -17,6 +17,7 @@
 typedef struct {
     uint32_t sample_rate;
     size_t chunk_size;
+    float quelea_gain;   /**< Post-process gain for Quelea — set from remote config */
 } bird_synthesizer_t;
 
 /* ========================================================================

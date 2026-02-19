@@ -390,13 +390,11 @@ size_t generate_red_billed_quelea(bird_synthesizer_t *synth, audio_buffer_t *out
     out->num_samples = pos;
 
     /*
-     * Post-process gain: QUELEA_GAIN (default 2.5×) applied here so the
-     * level can be tuned via remote config without reflashing.
-     * Quelea bypasses the global VOLUME constant so this gain is the sole
-     * loudness control — intentionally louder than other birds to signal
-     * a network-wide flood event clearly above ambient noise.
+     * Post-process gain: synth->quelea_gain (default 2.5×, set from remote
+     * config via echoes.c before each call).  Quelea bypasses the global
+     * VOLUME constant so this is its sole loudness control.
      */
-    float quelea_gain = remote_config_get()->quelea_gain;
+    float quelea_gain = synth->quelea_gain;
     for (size_t i = 0; i < pos; i++) {
         int32_t v = (int32_t)((float)out->buffer[i] * quelea_gain);
         if (v >  32767) v =  32767;
@@ -465,6 +463,7 @@ size_t generate_paradise_flycatcher(bird_synthesizer_t *synth, audio_buffer_t *o
 void bird_mapper_init(bird_call_mapper_t *mapper, uint32_t sample_rate) {
     mapper->synth.sample_rate = sample_rate;
     mapper->synth.chunk_size = CHUNK_SIZE;
+    mapper->synth.quelea_gain = 2.5f;   /* default; overwritten by echoes.c from remote config */
 
     /* Default (neutral) lists — overridden by bird_mapper_update_for_lux() */
 

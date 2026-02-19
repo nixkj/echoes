@@ -664,6 +664,8 @@ void audio_detection_task(void *param) {
                              (unsigned long)cfg->voice_freq,
                              (unsigned long)cfg->birdsong_freq);
                 }
+                /* Keep synth parameters in sync with remote config */
+                g_bird_mapper.synth.quelea_gain = cfg->quelea_gain;
             }
 
             // Compute frequencies
