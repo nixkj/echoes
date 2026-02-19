@@ -27,7 +27,6 @@
 #include "driver/ledc.h"
 #include "esp_check.h"
 #include "nvs_flash.h"
-#include "esp_random.h"
 
 static const char *TAG = "MAIN";
 
@@ -81,52 +80,6 @@ void app_main(void)
     ESP_LOGI(TAG, "Connecting to WiFi...");
     bool wifi_connected = wifi_init_and_connect();
 
-    /* Staggered startup delay to avoid all OTA hitting the server at once (20s spread) */
-    vTaskDelay(pdMS_TO_TICKS(1000 + (esp_random() % 20000)));
-    
-    if (wifi_connected) {
-        ESP_LOGI(TAG, "WiFi connected successfully");
-
-        /* Check for firmware updates */
-        ESP_LOGI(TAG, "Checking for firmware updates...");
-        bool updated = ota_check_and_update();
-        
-	if (updated) {
-	    ESP_LOGI(TAG, "Update completed, device restarting...");
-	    vTaskDelay(pdMS_TO_TICKS(1000));
-	} else {
-	    // Better message
-	    const ota_state_t *ota_state = ota_get_state();
-	    if (ota_state->ota_status == OTA_STATUS_FAILED) {
-		ESP_LOGW(TAG, "Update available but failed - continuing");
-	    } else {
-		ESP_LOGI(TAG, "No update needed");
-	    }
-	}
-
-        /* Start periodic OTA check task (checks every 24 hours) */
-        // xTaskCreate(ota_task, "ota_task", 8192, NULL, 3, NULL);
-        
-        /* Optional: Set WiFi to light sleep mode to save power */
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // Light sleep
-        
-    } else {
-        ESP_LOGI(TAG, "WiFi connection failed - continuing without OTA and startup report");
-        
-        /* Add error to report for logging purposes */
-        startup_report.has_errors = true;
-        snprintf(startup_report.error_message, sizeof(startup_report.error_message),
-                 "WiFi connection failed");
-        
-        /* Flash blue LED to indicate no WiFi */
-        for (int i = 0; i < 3; i++) {
-            set_led(0, BRIGHT_FULL);
-            vTaskDelay(pdMS_TO_TICKS(200));
-            set_led(0, 0);
-            vTaskDelay(pdMS_TO_TICKS(200));
-        }
-    }
-
     /* Small delay to ensure all hardware is stable before sampling */
     vTaskDelay(pdMS_TO_TICKS(500));
 
@@ -172,6 +125,50 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "WiFi not connected — skipping startup report");
     }
+
+    if (wifi_connected) {
+        ESP_LOGI(TAG, "WiFi connected successfully");
+
+        /* Check for firmware updates */
+        ESP_LOGI(TAG, "Checking for firmware updates...");
+        bool updated = ota_check_and_update();
+        
+	if (updated) {
+	    ESP_LOGI(TAG, "Update completed, device restarting...");
+	    vTaskDelay(pdMS_TO_TICKS(1000));
+	} else {
+	    // Better message
+	    const ota_state_t *ota_state = ota_get_state();
+	    if (ota_state->ota_status == OTA_STATUS_FAILED) {
+		ESP_LOGW(TAG, "Update available but failed - continuing");
+	    } else {
+		ESP_LOGI(TAG, "No update needed");
+	    }
+	}
+
+        /* Start periodic OTA check task (checks every 24 hours) */
+        // xTaskCreate(ota_task, "ota_task", 8192, NULL, 3, NULL);
+        
+        /* Optional: Set WiFi to light sleep mode to save power */
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // Light sleep
+        
+    } else {
+        ESP_LOGI(TAG, "WiFi connection failed - continuing without OTA and startup report");
+        
+        /* Add error to report for logging purposes */
+        startup_report.has_errors = true;
+        snprintf(startup_report.error_message, sizeof(startup_report.error_message),
+                 "WiFi connection failed");
+        
+        /* Flash blue LED to indicate no WiFi */
+        for (int i = 0; i < 3; i++) {
+            set_led(0, BRIGHT_FULL);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            set_led(0, 0);
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+    }
+
     
     /* Initialise ESP-NOW mesh.
      * ESP-NOW is peer-to-peer and runs directly on the WiFi radio layer —

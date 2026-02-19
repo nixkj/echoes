@@ -21,7 +21,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "esp_random.h"
 #include "markov.h"
 #include <string.h>
 #include <math.h>
@@ -276,8 +275,6 @@ void espnow_mesh_broadcast_sound(detection_type_t detection)
         .lux       = 0.0f,
     };
 
-    /* Random back-off to reduce collisions */
-    vTaskDelay(pdMS_TO_TICKS(esp_random() % BROADCAST_JITTER_MS));
     esp_err_t err = esp_now_send(BROADCAST_MAC,
                                  (const uint8_t *)&msg,
                                  sizeof(msg));
@@ -308,8 +305,6 @@ void espnow_mesh_broadcast_light(float lux)
         .lux       = lux,
     };
 
-    /* Random back-off to reduce collisions */
-    vTaskDelay(pdMS_TO_TICKS(esp_random() % BROADCAST_JITTER_MS));
     esp_err_t err = esp_now_send(BROADCAST_MAC,
                                  (const uint8_t *)&msg,
                                  sizeof(msg));

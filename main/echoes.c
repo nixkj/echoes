@@ -471,6 +471,119 @@ static float smooth_vu_level(float current, float target, float smooth_factor)
  * DETECTION TASK
  * ======================================================================== */
 
+
+/* =========================================================================
+ * PLAYBACK — all four entry points defined here, before audio_detection_task
+ *
+ *  _play_locked()                        stream to I2S; caller holds mutex
+ *  play_bird_call()                      4 s wait; used by markov.c
+ *  generate_and_play_bird_call()         4 s wait; used by lux task
+ *  generate_and_play_bird_call_nowait()  0 ms; used by detection task
+ *                                        (never blocks i2s_channel_read)
+ * ======================================================================== */
+
+static void _play_locked(const char *bird_name, const audio_buffer_t *audio_buffer)
+{
+    ESP_LOGI(TAG, "🐦 Playing: %s (%zu samples)", bird_name, audio_buffer->num_samples);
+
+    int16_t global_peak = 1;
+    for (size_t i = 0; i < audio_buffer->num_samples; i++) {
+        int16_t av = audio_buffer->buffer[i] < 0 ? -audio_buffer->buffer[i]
+                                                  :  audio_buffer->buffer[i];
+        if (av > global_peak) global_peak = av;
+    }
+
+    float vol_scale = get_volume_for_lux(get_lux_level());
+    set_led(VU_MAX_BRIGHTNESS * vol_scale, BRIGHT_OFF);
+
+    size_t total_bytes = audio_buffer->num_samples * sizeof(int16_t);
+    size_t bytes_sent  = 0;
+    static int16_t s_scaled_chunk[CHUNK_SIZE];
+
+    while (bytes_sent < total_bytes) {
+        size_t bytes_to_send    = CHUNK_SIZE * sizeof(int16_t);
+        size_t samples_in_chunk = CHUNK_SIZE;
+        if (bytes_sent + bytes_to_send > total_bytes) {
+            bytes_to_send    = total_bytes - bytes_sent;
+            samples_in_chunk = bytes_to_send / sizeof(int16_t);
+        }
+        const int16_t *chunk_ptr = audio_buffer->buffer + (bytes_sent / sizeof(int16_t));
+        int16_t peak = 1;
+        for (size_t i = 0; i < samples_in_chunk; i++) {
+            int32_t scaled = (int32_t)(chunk_ptr[i] * vol_scale);
+            if (scaled >  32767) scaled =  32767;
+            if (scaled < -32768) scaled = -32768;
+            s_scaled_chunk[i] = (int16_t)scaled;
+            int16_t av = scaled < 0 ? (int16_t)-scaled : (int16_t)scaled;
+            if (av > peak) peak = av;
+        }
+        set_led(((float)peak / (float)global_peak) * VU_MAX_BRIGHTNESS * vol_scale, BRIGHT_OFF);
+
+        size_t bytes_written = 0;
+        esp_err_t ret = i2s_channel_write(spk_chan,
+                            (const uint8_t *)s_scaled_chunk,
+                            samples_in_chunk * sizeof(int16_t),
+                            &bytes_written,
+                            portMAX_DELAY);
+        if (ret != ESP_OK || bytes_written == 0) {
+            ESP_LOGE(TAG, "I2S write error: %s (written=%zu)", esp_err_to_name(ret), bytes_written);
+            break;
+        }
+        bytes_sent += bytes_written;
+    }
+    set_led(BRIGHT_OFF, BRIGHT_OFF);
+}
+
+void play_bird_call(const char *bird_name, const audio_buffer_t *audio_buffer)
+{
+    if (spk_chan == NULL) {
+        ESP_LOGW(TAG, "play_bird_call: no speaker — skipping '%s'", bird_name);
+        return;
+    }
+    if (s_playback_mutex == NULL ||
+        xSemaphoreTake(s_playback_mutex, pdMS_TO_TICKS(4000)) != pdTRUE) {
+        ESP_LOGW(TAG, "play_bird_call: speaker busy, skipping '%s'", bird_name);
+        return;
+    }
+    _play_locked(bird_name, audio_buffer);
+    xSemaphoreGive(s_playback_mutex);
+    vTaskDelay(pdMS_TO_TICKS(100));
+}
+
+void generate_and_play_bird_call(bird_call_mapper_t *mapper,
+                                 const char *function_name,
+                                 const char *display_name)
+{
+    if (spk_chan == NULL) return;
+    if (s_playback_mutex == NULL ||
+        xSemaphoreTake(s_playback_mutex, pdMS_TO_TICKS(4000)) != pdTRUE) {
+        ESP_LOGW(TAG, "generate_and_play: speaker busy, skipping '%s'", display_name);
+        return;
+    }
+    bird_mapper_generate_call(mapper, function_name, &g_audio_buffer);
+    _play_locked(display_name, &g_audio_buffer);
+    xSemaphoreGive(s_playback_mutex);
+    vTaskDelay(pdMS_TO_TICKS(100));
+}
+
+static void generate_and_play_bird_call_nowait(bird_call_mapper_t *mapper,
+                                               const char *function_name,
+                                               const char *display_name)
+{
+    if (spk_chan == NULL) return;
+    /* 0 ms: if the speaker is busy, skip immediately so i2s_channel_read
+     * in the detection loop is never starved.                            */
+    if (s_playback_mutex == NULL ||
+        xSemaphoreTake(s_playback_mutex, 0) != pdTRUE) {
+        ESP_LOGD(TAG, "Detection: speaker busy, skipping '%s'", display_name);
+        return;
+    }
+    bird_mapper_generate_call(mapper, function_name, &g_audio_buffer);
+    _play_locked(display_name, &g_audio_buffer);
+    xSemaphoreGive(s_playback_mutex);
+    vTaskDelay(pdMS_TO_TICKS(100));
+}
+
 void audio_detection_task(void *param) {
     int16_t *buffer = (int16_t*)malloc(BUFFER_SIZE * sizeof(int16_t));
     if (!buffer) {
@@ -557,8 +670,7 @@ void audio_detection_task(void *param) {
                         } else {
                             bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_CLAP);
                         }
-                        bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
-                        play_bird_call(bird.display_name, &g_audio_buffer);
+                        generate_and_play_bird_call_nowait(&g_bird_mapper, bird.function_name, bird.display_name);
                         
                         state->clap_count = 0;
                         state->debounce_counter = DEBOUNCE_BUFFERS;
@@ -582,8 +694,7 @@ void audio_detection_task(void *param) {
                         } else {
                             bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_WHISTLE);
                         }
-                        bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
-                        play_bird_call(bird.display_name, &g_audio_buffer);
+                        generate_and_play_bird_call_nowait(&g_bird_mapper, bird.function_name, bird.display_name);
                         
                         state->whistle_count = 0;
                         state->debounce_counter = DEBOUNCE_BUFFERS;
@@ -607,8 +718,7 @@ void audio_detection_task(void *param) {
                         } else {
                             bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_VOICE);
                         }
-                        bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
-                        play_bird_call(bird.display_name, &g_audio_buffer);
+                        generate_and_play_bird_call_nowait(&g_bird_mapper, bird.function_name, bird.display_name);
                         
                         state->voice_count = 0;
                         state->debounce_counter = DEBOUNCE_BUFFERS;
@@ -669,96 +779,7 @@ float get_volume_for_lux(float lux)
     return VOLUME_SCALE_MIN + t * (VOLUME_SCALE_MAX - VOLUME_SCALE_MIN);
 }
 
-void play_bird_call(const char *bird_name, const audio_buffer_t *audio_buffer) {
-    if (spk_chan == NULL) {
-        ESP_LOGW(TAG, "play_bird_call: no speaker (HW_CONFIG_MINIMAL) — skipping '%s'", bird_name);
-        return;
-    }
 
-    /* Acquire playback mutex — prevents lux-flash task or Markov autonomous
-     * calls from writing to spk_chan while we are already streaming.
-     * Block for up to 500 ms; if the channel is still busy by then, skip
-     * this call rather than stacking up a second simultaneous write.      */
-    if (s_playback_mutex == NULL ||
-        xSemaphoreTake(s_playback_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
-        ESP_LOGW(TAG, "play_bird_call: speaker busy, skipping '%s'", bird_name);
-        return;
-    }
-
-    ESP_LOGI(TAG, "🐦 Playing: %s (%zu samples)", bird_name, audio_buffer->num_samples);
-
-    /* Find global peak for VU brightness scaling */
-    int16_t global_peak = 1;
-    for (size_t i = 0; i < audio_buffer->num_samples; i++) {
-        int16_t abs_val = audio_buffer->buffer[i] < 0
-                          ? -audio_buffer->buffer[i]
-                          : audio_buffer->buffer[i];
-        if (abs_val > global_peak) global_peak = abs_val;
-    }
-
-    /* Compute lux-based volume multiplier once per call */
-    float vol_scale = get_volume_for_lux(get_lux_level());
-    ESP_LOGD(TAG, "  volume scale: %.2f (lux=%.1f)", vol_scale, get_lux_level());
-
-    set_led(VU_MAX_BRIGHTNESS * vol_scale, BRIGHT_OFF);
-
-    size_t total_bytes = audio_buffer->num_samples * sizeof(int16_t);
-    size_t bytes_sent  = 0;
-    const size_t chunk_bytes   = CHUNK_SIZE * sizeof(int16_t);
-    const size_t chunk_samples = CHUNK_SIZE;
-
-    /* Scaled chunk buffer — volume-adjusted samples written here before
-     * passing to i2s_channel_write so the original buffer stays intact. */
-    static int16_t s_scaled_chunk[CHUNK_SIZE];
-
-    while (bytes_sent < total_bytes) {
-        size_t bytes_to_send    = chunk_bytes;
-        size_t samples_in_chunk = chunk_samples;
-
-        if (bytes_sent + bytes_to_send > total_bytes) {
-            bytes_to_send    = total_bytes - bytes_sent;
-            samples_in_chunk = bytes_to_send / sizeof(int16_t);
-        }
-
-        /* Scale samples and compute VU peak in one pass */
-        const int16_t *chunk_ptr = audio_buffer->buffer + (bytes_sent / sizeof(int16_t));
-        int16_t peak = 1;
-        for (size_t i = 0; i < samples_in_chunk; i++) {
-            int32_t scaled = (int32_t)(chunk_ptr[i] * vol_scale);
-            /* Clamp to int16 range */
-            if (scaled >  32767) scaled =  32767;
-            if (scaled < -32768) scaled = -32768;
-            s_scaled_chunk[i] = (int16_t)scaled;
-            int16_t abs_val = scaled < 0 ? (int16_t)-scaled : (int16_t)scaled;
-            if (abs_val > peak) peak = abs_val;
-        }
-        float brightness = ((float)peak / (float)global_peak) * VU_MAX_BRIGHTNESS * vol_scale;
-        set_led(brightness, BRIGHT_OFF);
-
-        size_t bytes_written = 0;
-        esp_err_t ret = i2s_channel_write(spk_chan,
-                            (const uint8_t *)s_scaled_chunk,
-                            samples_in_chunk * sizeof(int16_t),
-                            &bytes_written,
-                            portMAX_DELAY);
-
-        if (ret != ESP_OK || bytes_written == 0) {
-            ESP_LOGE(TAG, "I2S write error: %s (written=%zu)", esp_err_to_name(ret), bytes_written);
-            break;
-        }
-
-        bytes_sent += bytes_written;
-        /* No vTaskDelay here — i2s_channel_write already yields to the
-         * scheduler when waiting for a free DMA descriptor.             */
-    }
-
-    set_led(BRIGHT_OFF, BRIGHT_OFF);
-    xSemaphoreGive(s_playback_mutex);
-
-    /* Brief post-playback pause so detection thresholds can re-settle
-     * before the next event is acted on.                               */
-    vTaskDelay(pdMS_TO_TICKS(100));
-}
 
 /* ========================================================================
  * LUX-BASED BIRD SELECTION
@@ -787,15 +808,16 @@ void lux_based_birds_task(void *param) {
 
         float delta     = lux - last_acted_lux;
         float raw_delta = (prev_lux >= 0.0f) ? (lux - prev_lux) : 0.0f;
+        float last_lux  = prev_lux;   /* save before overwriting — used in log below */
         prev_lux = lux;
 
-        /* Flash detection: a jump >= LUX_FLASH_THRESHOLD in a single 100 ms
+        /* Flash detection: a jump >= LUX_FLASH_THRESHOLD in a single poll
          * window (phone torch, lamp switching on/off) triggers an immediate
          * bird call without waiting for a sound event.                       */
         bool is_flash = (fabsf(raw_delta) >= LUX_FLASH_THRESHOLD);
 
         if (is_flash) {
-            ESP_LOGI(TAG, "⚡ Flash: %.1f → %.1f lux (Δ%.1f)", prev_lux, lux, raw_delta);
+            ESP_LOGI(TAG, "⚡ Flash: %.1f → %.1f lux (Δ%.1f)", last_lux, lux, raw_delta);
 
             /* Bright flash → WHISTLE (alert); sudden dark → VOICE (quiet) */
             detection_type_t flash_det = (raw_delta > 0.0f)
@@ -813,8 +835,7 @@ void lux_based_birds_task(void *param) {
                 } else {
                     bird = bird_mapper_get_bird(&g_bird_mapper, flash_det);
                 }
-                bird_mapper_generate_call(&g_bird_mapper, bird.function_name, &g_audio_buffer);
-                play_bird_call(bird.display_name, &g_audio_buffer);
+                generate_and_play_bird_call(&g_bird_mapper, bird.function_name, bird.display_name);
             }
 
             /* Force broadcast regardless of ESPNOW_LUX_THRESHOLD */

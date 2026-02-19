@@ -29,9 +29,6 @@
 /** Channel must match the channel used by the WiFi STA interface. */
 #define ESPNOW_CHANNEL          1
 
-/** Random jitter to avoid collisions on ESP-NOW */
-#define BROADCAST_JITTER_MS  200
-
 /**
  * Minimum time (ms) between consecutive sound broadcasts from this node.
  * Prevents flooding during rapid repeated detections.

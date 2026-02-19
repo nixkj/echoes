@@ -91,7 +91,9 @@
  */
 #define LUX_POLL_INTERVAL_MS    500     // ms between sensor reads
 #define LUX_CHANGE_THRESHOLD    1.0f    // lux — minimum change to act on
-#define LUX_FLASH_THRESHOLD     30.0f   // lux — jump that triggers instant response
+#define LUX_FLASH_THRESHOLD     30.0f   // lux — absolute fallback (when prev_lux unknown)
+#define LUX_FLASH_PERCENT       0.15f   // 15% relative change triggers flash (scales with ambient)
+#define LUX_FLASH_MIN_ABS       15.0f   // must also exceed this absolute minimum (filters micro-noise)
 
 /* Lux-to-LED brightness mapping
  *
@@ -240,6 +242,7 @@ void audio_detection_task(void *param);
 
 /* Playback */
 void play_bird_call(const char *bird_name, const audio_buffer_t *audio_buffer);
+void generate_and_play_bird_call(bird_call_mapper_t *mapper, const char *function_name, const char *display_name);
 
 /* Lux-based bird selection */
 void lux_based_birds_task(void *param);
