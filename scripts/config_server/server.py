@@ -355,6 +355,14 @@ def save_config(config):
 _config = load_config()
 _last_modified = datetime.now().isoformat()
 
+# Restart flag — held for RESTART_WINDOW_S seconds so all nodes can poll it
+RESTART_WINDOW_S = 90  # must be > poll interval (60 s)
+_restart_pending: bool = False
+_restart_expires: float = 0.0   # epoch seconds when flag auto-clears
+_restart_timestamp: str | None = None
+_restart_token: int = 0          # unique uint32 per restart command
+
+
 # ---------------------------------------------------------------------------
 # API ROUTES
 # ---------------------------------------------------------------------------
@@ -375,7 +383,6 @@ def get_config():
     flat["RESTART_TOKEN"] = _restart_token
     if _restart_pending:
         print(f"[INFO] RESTART_REQUESTED=true (token={_restart_token}) delivered to a node")
->>>>>>> 0d88dee (Introduce chaos mode, and fix boot request)
     return jsonify(flat)
 
 
@@ -428,6 +435,44 @@ def update_config():
     return jsonify({"updated": updated, "errors": errors, "version": _last_modified})
 
 
+@app.route("/restart", methods=["POST"])
+def request_restart():
+    """Queue a reboot — flag is held for RESTART_WINDOW_S s so all nodes can poll."""
+    global _restart_pending, _restart_expires, _restart_timestamp, _restart_token
+    _restart_pending = True
+    _restart_expires = time.time() + RESTART_WINDOW_S
+    _restart_timestamp = datetime.now().isoformat()
+    # Token is a truncated unix timestamp — unique per restart, fits in uint32
+    _restart_token = int(time.time()) & 0xFFFFFFFF
+    print(f"[INFO] Restart queued at {_restart_timestamp}, token={_restart_token}, expires in {RESTART_WINDOW_S} s")
+    return jsonify({"status": "restart_pending",
+                    "timestamp": _restart_timestamp,
+                    "token": _restart_token,
+                    "window_s": RESTART_WINDOW_S})
+
+
+@app.route("/restart/cancel", methods=["POST"])
+def cancel_restart():
+    """Cancel a pending restart before the window expires."""
+    global _restart_pending, _restart_expires, _restart_timestamp, _restart_token
+    was_pending = _restart_pending
+    _restart_pending = False
+    _restart_expires = 0.0
+    _restart_timestamp = None
+    _restart_token = 0
+    return jsonify({"status": "cancelled", "was_pending": was_pending})
+
+
+@app.route("/restart/status", methods=["GET"])
+def restart_status():
+    """Poll whether a restart is still pending and how long remains."""
+    remaining = max(0.0, _restart_expires - time.time()) if _restart_pending else 0.0
+    return jsonify({"pending": _restart_pending,
+                    "timestamp": _restart_timestamp,
+                    "remaining_s": int(remaining)})
+
+
+@app.route("/config/reset", methods=["POST"])
 def reset_config():
     """Reset all parameters to factory defaults."""
     global _config, _last_modified
@@ -569,6 +614,29 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     color: #0a0c0f;
     font-weight: 700;
   }
+  .btn-danger {
+    background: transparent;
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 8px 16px;
+    cursor: pointer;
+    border-radius: var(--radius);
+    letter-spacing: 0.05em;
+    transition: background 0.15s, color 0.15s;
+  }
+  .btn-danger:hover {
+    background: var(--danger);
+    color: var(--bg);
+  }
+  #restart-status {
+    font-size: 11px;
+    color: var(--warn);
+    font-family: var(--font-mono);
+    letter-spacing: 0.05em;
+  }
+
   .btn-primary:hover { background: #d8ff5a; box-shadow: var(--glow); }
   .btn-ghost {
     background: transparent;
@@ -836,6 +904,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button class="btn btn-ghost2" onclick="expandAll()">Expand all</button>
     <button class="btn btn-ghost" onclick="confirmReset()">Reset defaults</button>
     <button class="btn btn-primary" id="save-btn" onclick="saveAll()">Save changes</button>
+    <button class="btn btn-danger" id="restart-btn" onclick="requestRestart()"
+      title="Queue a reboot — nodes restart at next poll (within 60 s)">
+      ⟳ Restart all nodes
+    </button>
+    <span id="restart-status"></span>
   </div>
 
   <div id="param-sections"></div>
@@ -1053,6 +1126,54 @@ document.getElementById("filter-input").addEventListener("input", renderAll);
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveAll(); }
 });
+
+
+async function requestRestart() {
+  const btn = document.getElementById("restart-btn");
+  const status = document.getElementById("restart-status");
+  if (!confirm("Queue a restart for ALL nodes?\n\nEach node reboots at its next config poll (within 60 s).\nYou can cancel until the first node polls.")) return;
+  btn.disabled = true;
+  btn.textContent = "Queuing…";
+  try {
+    const r = await fetch("/restart", { method: "POST" });
+    const d = await r.json();
+    if (d.status === "restart_pending") {
+      showToast("Restart queued — nodes reboot within 90 s", "success");
+      status.textContent = "⏳ restart pending";
+      btn.textContent = "✕ Cancel restart";
+      btn.onclick = cancelRestart;
+      btn.disabled = false;
+    } else {
+      showToast("Unexpected server response", "error");
+      resetRestartBtn();
+    }
+  } catch(e) {
+    showToast("Network error: " + e.message, "error");
+    resetRestartBtn();
+  }
+}
+
+async function cancelRestart() {
+  const btn = document.getElementById("restart-btn");
+  const status = document.getElementById("restart-status");
+  try {
+    const r = await fetch("/restart/cancel", { method: "POST" });
+    const d = await r.json();
+    showToast(d.was_pending ? "Restart cancelled" : "No restart was pending", "info");
+  } catch(e) {
+    showToast("Cancel failed: " + e.message, "error");
+  }
+  resetRestartBtn();
+}
+
+function resetRestartBtn() {
+  const btn = document.getElementById("restart-btn");
+  const status = document.getElementById("restart-status");
+  btn.innerHTML = "⟳ Restart all nodes";
+  btn.onclick = requestRestart;
+  btn.disabled = false;
+  status.textContent = "";
+}
 
 loadConfig();
 </script>

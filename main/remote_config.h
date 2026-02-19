@@ -116,6 +116,11 @@ typedef struct {
     bool     sound_off;         /**< true → disable sound only; LEDs still run*/
 
     /* ── Meta ────────────────────────────────────────────────────── */
+    /* ── Remote restart ─────────────────────────────────────────── */
+    bool     restart_requested; /**< true → reboot at next config poll        */
+    uint32_t restart_token;      /**< Unique ID for this restart command        */
+
+    /* ── Meta ──────────────────────────────────────────────────── */
     bool     loaded;            /**< true after at least one successful fetch */
     uint32_t last_fetch_ms;     /**< Tick count of last successful fetch      */
 } remote_config_t;
