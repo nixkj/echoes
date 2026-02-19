@@ -52,6 +52,8 @@ void ota_validation_task(void *param)
 
 void app_main(void)
 {
+    set_led(0, BRIGHT_FULL);
+
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Echoes of the Machine");
     ESP_LOGI(TAG, "Firmware Version: %s", FIRMWARE_VERSION);

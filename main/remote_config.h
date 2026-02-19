@@ -105,6 +105,10 @@ typedef struct {
     uint32_t markov_idle_trigger_ms;        /**< Silence before autonomous call */
     uint32_t markov_autonomous_cooldown_ms; /**< Min gap between auto calls     */
 
+    /* ── Output switches ────────────────────────────────────────── */
+    bool     silent_mode;       /**< true → disable ALL output (LEDs + sound) */
+    bool     sound_off;         /**< true → disable sound only; LEDs still run*/
+
     /* ── Meta ────────────────────────────────────────────────────── */
     bool     loaded;            /**< true after at least one successful fetch */
     uint32_t last_fetch_ms;     /**< Tick count of last successful fetch      */

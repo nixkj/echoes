@@ -306,6 +306,18 @@ DEFAULT_CONFIG = {
         "type": "float",
         "description": "Peak LED brightness during bird-call playback VU meter animation. Lower values make the visual response more subtle.",
         "unit": "brightness (0–1)"
+    },
+    "SILENT_MODE": {
+        "value": False,
+        "type": "bool",
+        "description": "When ON, all output is suppressed — no sound and no LED activity. The device continues to listen and learn but produces no response. Use for maintenance or overnight quiet hours.",
+        "unit": "on / off"
+    },
+    "SOUND_OFF": {
+        "value": False,
+        "type": "bool",
+        "description": "When ON, bird-call audio is silenced but LEDs continue to operate normally (ambient glow and VU meter during detection). Useful in quiet settings where visual response is still wanted.",
+        "unit": "on / off"
     }
 }
 
@@ -379,11 +391,18 @@ def update_config():
             continue
         param = _config[key]
         try:
-            if param["type"] == "int":
+            if param["type"] == "bool":
+                if isinstance(new_val, bool):
+                    pass  # already correct type
+                elif isinstance(new_val, str):
+                    new_val = new_val.lower() in ("true", "1", "yes")
+                else:
+                    new_val = bool(new_val)
+            elif param["type"] == "int":
                 new_val = int(new_val)
             else:
                 new_val = float(new_val)
-            if new_val < param["min"] or new_val > param["max"]:
+            if param["type"] != "bool" and (new_val < param["min"] or new_val > param["max"]):
                 errors.append(f"{key}: value {new_val} out of range [{param['min']}, {param['max']}]")
                 continue
             _config[key] = dict(param)
@@ -742,6 +761,51 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .status-bar .spacer { flex: 1; }
 
   .hidden { display: none !important; }
+
+  /* ── TOGGLE SWITCH (bool params) ── */
+  .toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: none;
+    border: 1px solid var(--muted);
+    border-radius: var(--radius);
+    padding: 7px 14px;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .toggle-btn:hover { border-color: var(--text-dim); }
+  .toggle-track {
+    display: inline-block;
+    width: 32px; height: 16px;
+    border-radius: 8px;
+    background: var(--muted);
+    position: relative;
+    transition: background 0.2s;
+    flex-shrink: 0;
+  }
+  .toggle-thumb {
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: transform 0.2s, background 0.2s;
+  }
+  .toggle-label { color: var(--text-dim); transition: color 0.15s; }
+
+  .toggle-off .toggle-track { background: var(--muted); }
+  .toggle-off .toggle-thumb { transform: translateX(0); background: var(--text-dim); }
+  .toggle-off .toggle-label { color: var(--text-dim); }
+  .toggle-off { border-color: var(--muted); }
+
+  .toggle-on .toggle-track { background: var(--danger); }
+  .toggle-on .toggle-thumb { transform: translateX(16px); background: #fff; }
+  .toggle-on .toggle-label { color: var(--danger); font-weight: 700; }
+  .toggle-on { border-color: var(--danger); background: rgba(240,74,106,0.08); }
 </style>
 </head>
 <body>
@@ -780,6 +844,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <script>
 const SECTIONS = {
+  "Output Switches": ["SILENT_MODE","SOUND_OFF"],
   "Audio Detection": ["GAIN","WHISTLE_FREQ","VOICE_FREQ","WHISTLE_MULTIPLIER","VOICE_MULTIPLIER","CLAP_MULTIPLIER","WHISTLE_CONFIRM","VOICE_CONFIRM","CLAP_CONFIRM","DEBOUNCE_BUFFERS"],
   "Playback Volume": ["VOLUME","VOLUME_LUX_MIN","VOLUME_LUX_MAX","VOLUME_SCALE_MIN","VOLUME_SCALE_MAX"],
   "Light Sensor": ["LUX_POLL_INTERVAL_MS","LUX_CHANGE_THRESHOLD","LUX_FLASH_THRESHOLD","LUX_FLASH_PERCENT","LUX_FLASH_MIN_ABS"],
@@ -833,6 +898,32 @@ function makeCard(key, param) {
   card.id = "card-" + key;
 
   const currentVal = dirty[key] !== undefined ? dirty[key] : param.value;
+
+  if (param.type === "bool") {
+    const isOn = currentVal === true || currentVal === "true";
+    card.innerHTML = `
+      <div class="param-key">${key}</div>
+      <div class="param-unit">${param.unit}</div>
+      <div class="param-desc">${param.description}</div>
+      <div class="param-controls">
+        <button class="toggle-btn ${isOn ? 'toggle-on' : 'toggle-off'}" id="toggle-${key}">
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label">${isOn ? 'ON' : 'OFF'}</span>
+        </button>
+        <span class="param-default">default: OFF</span>
+      </div>
+    `;
+    const btn = card.querySelector(`#toggle-${key}`);
+    btn.addEventListener("click", () => {
+      const nowOn = btn.classList.contains("toggle-off");
+      btn.classList.toggle("toggle-on", nowOn);
+      btn.classList.toggle("toggle-off", !nowOn);
+      btn.querySelector(".toggle-label").textContent = nowOn ? "ON" : "OFF";
+      markDirty(key, nowOn);
+    });
+    return card;
+  }
+
   const isFloat = param.type === "float";
   const decimals = isFloat ? (param.step < 0.1 ? 3 : 2) : 0;
 

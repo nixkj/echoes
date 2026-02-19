@@ -52,7 +52,7 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .volume_lux_max              = 200.0f,
     .volume_scale_min            = 0.25f,
     .volume_scale_max            = 1.0f,
-    .quelea_gain                 = 1.5f,
+    .quelea_gain                 = 1.2f,
 
     /* Light sensor */
     .lux_poll_interval_ms        = 500,
@@ -80,6 +80,10 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .markov_autonomous_cooldown_ms   = 15000,
 
     /* Meta */
+    /* Output switches */
+    .silent_mode   = false,
+    .sound_off     = false,
+
     .loaded        = false,
     .last_fetch_ms = 0,
 };
@@ -151,6 +155,14 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
         } \
     } while(0)
 
+#define CFG_BOOL(json, field, key) \
+    do { \
+        cJSON *_item = cJSON_GetObjectItemCaseSensitive(json, key); \
+        if (_item && cJSON_IsBool(_item)) { \
+            (field) = (bool)cJSON_IsTrue(_item); \
+        } \
+    } while(0)
+
 static void apply_json(cJSON *root)
 {
     /* Audio detection */
@@ -205,6 +217,10 @@ static void apply_json(cJSON *root)
     /* Markov chain */
     CFG_UINT32 (root, s_cfg.markov_idle_trigger_ms,         "MARKOV_IDLE_TRIGGER_MS");
     CFG_UINT32 (root, s_cfg.markov_autonomous_cooldown_ms,  "MARKOV_AUTONOMOUS_COOLDOWN_MS");
+
+    /* Output switches */
+    CFG_BOOL   (root, s_cfg.silent_mode,  "SILENT_MODE");
+    CFG_BOOL   (root, s_cfg.sound_off,    "SOUND_OFF");
 }
 
 /* =========================================================================

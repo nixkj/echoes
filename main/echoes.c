@@ -303,6 +303,10 @@ void system_init(void) {
  * ======================================================================== */
 
 void set_led(float white_level, float blue_level) {
+    if (remote_config_get()->silent_mode) {
+        white_level = 0.0f;
+        blue_level  = 0.0f;
+    }
     uint32_t duty_white = (uint32_t)(65535.0f * white_level);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty_white);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
@@ -384,6 +388,8 @@ float get_lux_level(void)
         return -1.0f;
     }
     else if (g_system_state.light_sensor_type == LIGHT_SENSOR_ANALOG) {
+
+        if (adc_handle == NULL) return -1.0f;
 
         int adc_raw;
         esp_err_t ret = adc_oneshot_read(adc_handle,
@@ -496,6 +502,13 @@ static float smooth_vu_level(float current, float target, float smooth_factor)
 
 static void _play_locked(const char *bird_name, const audio_buffer_t *audio_buffer)
 {
+    const remote_config_t *_cfg = remote_config_get();
+    if (_cfg->silent_mode || _cfg->sound_off) {
+        ESP_LOGD(TAG, "Sound suppressed (%s): skipping '%s'",
+                 _cfg->silent_mode ? "silent_mode" : "sound_off", bird_name);
+        return;
+    }
+
     ESP_LOGI(TAG, "🐦 Playing: %s (%zu samples)", bird_name, audio_buffer->num_samples);
 
     int16_t global_peak = 1;
@@ -714,13 +727,7 @@ void audio_detection_task(void *param) {
                         ESP_LOGI(TAG, "👏 CLAP! (w:%.0f, v:%.0f)", mag_w, mag_v);
                         espnow_mesh_broadcast_sound(DETECTION_CLAP);
                         markov_on_event(&g_markov, DETECTION_CLAP, get_lux_level());
-                        
-                        bird_info_t bird;
-                        if (espnow_mesh_is_flooded()) {
-                            bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
-                        } else {
-                            bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_CLAP);
-                        }
+                        bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_CLAP);
                         generate_and_play_bird_call_nowait(&g_bird_mapper, bird.function_name, bird.display_name);
                         
                         state->clap_count = 0;
@@ -741,13 +748,7 @@ void audio_detection_task(void *param) {
                         ESP_LOGI(TAG, "🐦 BIRDSONG! (b:%.0f, w:%.0f, v:%.0f)", mag_b, mag_w, mag_v);
                         espnow_mesh_broadcast_sound(DETECTION_BIRDSONG);
                         markov_on_event(&g_markov, DETECTION_BIRDSONG, get_lux_level());
-
-                        bird_info_t bird;
-                        if (espnow_mesh_is_flooded()) {
-                            bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
-                        } else {
-                            bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_BIRDSONG);
-                        }
+                        bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_BIRDSONG);
                         generate_and_play_bird_call_nowait(&g_bird_mapper, bird.function_name, bird.display_name);
 
                         state->birdsong_count = 0;
@@ -764,13 +765,7 @@ void audio_detection_task(void *param) {
                         ESP_LOGI(TAG, "🎵 WHISTLE! (w:%.0f, v:%.0f)", mag_w, mag_v);
                         espnow_mesh_broadcast_sound(DETECTION_WHISTLE);
                         markov_on_event(&g_markov, DETECTION_WHISTLE, get_lux_level());
-                        
-                        bird_info_t bird;
-                        if (espnow_mesh_is_flooded()) {
-                            bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
-                        } else {
-                            bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_WHISTLE);
-                        }
+                        bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_WHISTLE);
                         generate_and_play_bird_call_nowait(&g_bird_mapper, bird.function_name, bird.display_name);
                         
                         state->whistle_count = 0;
@@ -786,13 +781,7 @@ void audio_detection_task(void *param) {
                         ESP_LOGI(TAG, "🗣️ VOICE! (w:%.0f, v:%.0f)", mag_w, mag_v);
                         espnow_mesh_broadcast_sound(DETECTION_VOICE);
                         markov_on_event(&g_markov, DETECTION_VOICE, get_lux_level());
-                        
-                        bird_info_t bird;
-                        if (espnow_mesh_is_flooded()) {
-                            bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
-                        } else {
-                            bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_VOICE);
-                        }
+                        bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, DETECTION_VOICE);
                         generate_and_play_bird_call_nowait(&g_bird_mapper, bird.function_name, bird.display_name);
                         
                         state->voice_count = 0;
@@ -907,12 +896,7 @@ void lux_based_birds_task(void *param) {
             if (has_audio_output()) {
                 float bias = markov_get_lux_bias(&g_markov);
                 bird_mapper_update_for_lux(&g_bird_mapper, lux + bias);
-                bird_info_t bird;
-                if (espnow_mesh_is_flooded()) {
-                    bird = (bird_info_t){"red_billed_quelea", "Red-billed Quelea"};
-                } else {
-                    bird = bird_mapper_get_bird(&g_bird_mapper, flash_det);
-                }
+                bird_info_t bird = bird_mapper_get_bird(&g_bird_mapper, flash_det);
                 generate_and_play_bird_call(&g_bird_mapper, bird.function_name, bird.display_name);
             }
 
@@ -952,6 +936,11 @@ void lux_based_birds_task(void *param) {
 bird_call_mapper_t *get_bird_mapper(void)
 {
     return &g_bird_mapper;
+}
+
+audio_buffer_t *get_audio_buffer(void)
+{
+    return &g_audio_buffer;
 }
 
 markov_chain_t *get_markov(void)
