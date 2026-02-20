@@ -198,6 +198,12 @@ bump_version() {
     local CURRENT_VERSION=$(get_current_version)
     print_info "Current version: $CURRENT_VERSION"
     
+    # Validate we actually got a version
+    if [ "$CURRENT_VERSION" == "unknown" ] || [ -z "$CURRENT_VERSION" ]; then
+        print_error "Could not read current version from main/ota.h"
+        return 1
+    fi
+    
     # Parse version
     IFS='.' read -r -a VERSION_PARTS <<< "$CURRENT_VERSION"
     MAJOR="${VERSION_PARTS[0]}"
@@ -222,13 +228,22 @@ bump_version() {
     
     NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
     
-    # Update header file
+    # Use LC_ALL=C to force byte-level sed behaviour regardless of the
+    # file's encoding.  Without this, a single non-ASCII character anywhere
+    # in ota.h (e.g. a UTF-8 ellipsis or multiplication sign in a comment)
+    # can cause sed to silently skip the substitution on macOS.
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS
-        sed -i '' "s/#define FIRMWARE_VERSION.*/#define FIRMWARE_VERSION    \"${NEW_VERSION}\"/" main/ota.h
+        LC_ALL=C sed -i '' "s/#define FIRMWARE_VERSION.*/#define FIRMWARE_VERSION    \"${NEW_VERSION}\"/" main/ota.h
     else
-        # Linux
-        sed -i "s/#define FIRMWARE_VERSION.*/#define FIRMWARE_VERSION    \"${NEW_VERSION}\"/" main/ota.h
+        LC_ALL=C sed -i "s/#define FIRMWARE_VERSION.*/#define FIRMWARE_VERSION    \"${NEW_VERSION}\"/" main/ota.h
+    fi
+    
+    # Verify the change actually took effect
+    local WRITTEN_VERSION=$(get_current_version)
+    if [ "$WRITTEN_VERSION" != "$NEW_VERSION" ]; then
+        print_error "Version update failed! File shows '$WRITTEN_VERSION', expected '$NEW_VERSION'"
+        print_info "Check main/ota.h for non-ASCII characters: grep -Pn '[^\\x00-\\x7F]' main/ota.h"
+        return 1
     fi
     
     print_success "Version updated: $CURRENT_VERSION → $NEW_VERSION"

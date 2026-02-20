@@ -10,6 +10,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 /* ========================================================================
  * CONFIGURATION
@@ -33,11 +35,11 @@
 /* OTA retry settings
  * ota_check_and_update() will attempt the full version-check + download cycle
  * up to OTA_MAX_ATTEMPTS times.  Each retry waits OTA_RETRY_BASE_DELAY_MS *
- * attempt number (linear backoff: 15 s, 30 s, 45 s …) so that a fleet of
+ * attempt number (linear backoff: 15 s, 30 s, 45 s...) so that a fleet of
  * devices that all fail together do not all retry in lockstep.
  */
 #define OTA_MAX_ATTEMPTS            3
-#define OTA_RETRY_BASE_DELAY_MS     15000   // 15 s × attempt index
+#define OTA_RETRY_BASE_DELAY_MS     15000   // 15 s x attempt index
 
 /* ========================================================================
  * TYPE DEFINITIONS
