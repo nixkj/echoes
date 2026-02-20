@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Simple Firmware Update Server for ESP32 Echoes System
+Echoes of the Machine - Firmware Update Server
 
-This script creates a basic HTTP server to host firmware files for OTA updates.
+Serves firmware files for ESP32 OTA updates.
 
 Usage:
     python3 firmware_server.py [port]
@@ -15,183 +15,285 @@ Directory structure:
     │   ├── version.txt
     │   └── echoes.bin
 
-Access URLs:
-    http://<your-ip>:8000/firmware/version.txt
-    http://<your-ip>:8000/firmware/echoes.bin
+Changes from v1:
+  - Threaded server (ThreadingMixIn) — handles all 50 nodes concurrently
+  - Chunked file streaming — .bin is sent in 64 KB chunks rather than loaded
+    entirely into RAM; 50 simultaneous downloads no longer exhaust memory
+  - Proper thread-safe logging (logging module) instead of bare print()
+  - Per-request logging for version.txt checks as well as binary downloads
+  - Download statistics: bytes sent, duration, average throughput per transfer
+  - Graceful shutdown on Ctrl-C with a final summary of total transfers
 """
 
 import http.server
 import socketserver
 import os
 import sys
+import threading
+import time
+import logging
 from datetime import datetime
 from pathlib import Path
 
-PORT = 8000 if len(sys.argv) < 2 else int(sys.argv[1])
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
-# Use $HOME/firmware_server as the base directory
-HOME = str(Path.home())
-BASE_DIR = os.path.join(HOME, "firmware_server")
+PORT      = 8000 if len(sys.argv) < 2 else int(sys.argv[1])
+HOME      = str(Path.home())
+BASE_DIR  = os.path.join(HOME, "firmware_server")
 FIRMWARE_DIR = os.path.join(BASE_DIR, "firmware")
 
-class FirmwareHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
-    """Custom request handler with logging and CORS support"""
-    
+CHUNK_SIZE = 64 * 1024   # 64 KB per read — keeps memory flat under load
+
+# ---------------------------------------------------------------------------
+# Logging (thread-safe by default in the logging module)
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+log = logging.getLogger("firmware")
+
+# ---------------------------------------------------------------------------
+# Transfer statistics (protected by a lock)
+# ---------------------------------------------------------------------------
+
+_stats_lock        = threading.Lock()
+_stats = {
+    "version_checks":   0,
+    "binary_downloads": 0,
+    "bytes_sent":       0,
+    "errors":           0,
+}
+
+# ---------------------------------------------------------------------------
+# Threaded server
+# ---------------------------------------------------------------------------
+
+class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    """Each request is handled in its own thread."""
+    daemon_threads    = True   # threads die with the main process
+    allow_reuse_address = True  # avoid "Address already in use" on restart
+
+
+# ---------------------------------------------------------------------------
+# Request handler
+# ---------------------------------------------------------------------------
+
+class FirmwareHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
+    """Serves firmware files with chunked streaming and detailed logging."""
+
+    # ------------------------------------------------------------------ #
+    # GET                                                                  #
+    # ------------------------------------------------------------------ #
+
     def do_GET(self):
-        """Handle GET requests with logging"""
-        # Add CORS headers for cross-origin requests
+        file_path = self._resolve_path()
+        if file_path is None:
+            self._send_404()
+            return
+
+        if not os.path.isfile(file_path):
+            self._send_404()
+            return
+
+        is_binary  = file_path.endswith(".bin")
+        is_version = file_path.endswith(".txt")
+
+        content_type = (
+            "application/octet-stream" if is_binary else
+            "text/plain"               if is_version else
+            "text/html"
+        )
+
+        file_size = os.path.getsize(file_path)
+        client_ip = self.client_address[0]
+
         self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        
-        # Determine content type
-        if self.path.endswith('.bin'):
-            self.send_header('Content-Type', 'application/octet-stream')
-        elif self.path.endswith('.txt'):
-            self.send_header('Content-Type', 'text/plain')
-        else:
-            self.send_header('Content-Type', 'text/html')
-        
-        # Get file path
-        file_path = self.translate_path(self.path)
-        
-        # Check if file exists
-        if os.path.exists(file_path) and os.path.isfile(file_path):
-            file_size = os.path.getsize(file_path)
-            self.send_header('Content-Length', str(file_size))
-            self.end_headers()
-            
-            # Send file content
-            with open(file_path, 'rb') as f:
-                self.wfile.write(f.read())
-            
-            # Log the download
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            print(f"[{timestamp}] {self.client_address[0]} - Downloaded: {self.path} ({file_size} bytes)")
-        else:
-            # File not found
-            self.send_error(404, "File not found")
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {self.client_address[0]} - 404: {self.path}")
-    
-    def do_OPTIONS(self):
-        """Handle OPTIONS requests for CORS preflight"""
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header("Content-Type",   content_type)
+        self.send_header("Content-Length", str(file_size))
+        self.send_header("Access-Control-Allow-Origin",  "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Cache-Control",  "no-cache")
         self.end_headers()
-    
-    def log_message(self, format, *args):
-        """Override default logging to reduce verbosity"""
-        # Only log errors
-        if args[1].startswith('4') or args[1].startswith('5'):
-            super().log_message(format, *args)
+
+        # ---- Chunked streaming ----------------------------------------
+        t_start    = time.monotonic()
+        bytes_sent = 0
+        try:
+            with open(file_path, "rb") as f:
+                while True:
+                    chunk = f.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    bytes_sent += len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            # Node disconnected mid-transfer (e.g. it already had this version)
+            log.warning(
+                f"{client_ip} disconnected after {bytes_sent:,} / {file_size:,} bytes"
+                f" of {self.path}"
+            )
+            with _stats_lock:
+                _stats["errors"] += 1
+            return
+
+        elapsed   = time.monotonic() - t_start
+        kbps      = (bytes_sent / 1024) / elapsed if elapsed > 0 else 0
+
+        # ---- Per-request log line -------------------------------------
+        if is_binary:
+            log.info(
+                f"DOWNLOAD  {client_ip:>15}  {self.path}"
+                f"  {bytes_sent/1024:.0f} KB  {elapsed:.1f}s  {kbps:.0f} KB/s"
+            )
+            with _stats_lock:
+                _stats["binary_downloads"] += 1
+                _stats["bytes_sent"]       += bytes_sent
+        elif is_version:
+            log.info(f"VERSION   {client_ip:>15}  {self.path}")
+            with _stats_lock:
+                _stats["version_checks"] += 1
+        else:
+            log.info(f"GET       {client_ip:>15}  {self.path}")
+
+    # ------------------------------------------------------------------ #
+    # OPTIONS (CORS preflight)                                             #
+    # ------------------------------------------------------------------ #
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin",  "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    # ------------------------------------------------------------------ #
+    # Helpers                                                              #
+    # ------------------------------------------------------------------ #
+
+    def _resolve_path(self):
+        """Map the URL path to an absolute filesystem path under BASE_DIR."""
+        # Prevent path traversal
+        safe = os.path.normpath(self.path.lstrip("/"))
+        if safe.startswith(".."):
+            return None
+        return os.path.join(BASE_DIR, safe)
+
+    def _send_404(self):
+        log.warning(f"404       {self.client_address[0]:>15}  {self.path}")
+        with _stats_lock:
+            _stats["errors"] += 1
+        self.send_error(404, "File not found")
+
+    def log_message(self, fmt, *args):
+        """Silence the default BaseHTTPServer access log — we do our own."""
+        pass
+
+    def log_error(self, fmt, *args):
+        log.warning(fmt % args)
+
+
+# ---------------------------------------------------------------------------
+# Filesystem helpers
+# ---------------------------------------------------------------------------
 
 def ensure_firmware_directory():
-    """Create firmware directory if it doesn't exist"""
-    if not os.path.exists(FIRMWARE_DIR):
-        os.makedirs(FIRMWARE_DIR, exist_ok=True)
-        print(f"Created {FIRMWARE_DIR}/ directory")
-        
-        # Create sample version.txt
-        version_file = os.path.join(FIRMWARE_DIR, "version.txt")
-        with open(version_file, 'w') as f:
+    os.makedirs(FIRMWARE_DIR, exist_ok=True)
+
+    version_file = os.path.join(FIRMWARE_DIR, "version.txt")
+    if not os.path.exists(version_file):
+        with open(version_file, "w") as f:
             f.write("1.0.0\n")
-        print(f"Created sample {version_file}")
-        
-        # Create README
-        readme_file = os.path.join(FIRMWARE_DIR, "README.txt")
-        with open(readme_file, 'w') as f:
-            f.write("""ESP32 Firmware Files
+        log.info(f"Created sample {version_file}")
+
+    binary_file = os.path.join(FIRMWARE_DIR, "echoes.bin")
+    if not os.path.exists(binary_file):
+        log.warning(f"Firmware binary not found: {binary_file}")
+        log.warning("Copy it with: cp build/echoes.bin " + binary_file)
+
+    readme_file = os.path.join(FIRMWARE_DIR, "README.txt")
+    if not os.path.exists(readme_file):
+        with open(readme_file, "w") as f:
+            f.write(f"""ESP32 Firmware Files
 ====================
 
 Place your firmware files in this directory:
 
-1. version.txt - Current firmware version (e.g., "1.0.1")
-2. echoes.bin - Compiled firmware binary
+  version.txt  — current firmware version string (e.g. "5.0.3")
+  echoes.bin   — compiled firmware binary
 
-To update firmware:
-1. Build your project: idf.py build
-2. Copy binary: cp build/echoes.bin {FIRMWARE_DIR}/echoes.bin
-3. Update version: echo "1.0.1" > {FIRMWARE_DIR}/version.txt
+To deploy a new build:
+  idf.py build
+  cp build/echoes.bin {FIRMWARE_DIR}/echoes.bin
+  echo "5.0.3" > {FIRMWARE_DIR}/version.txt
+""")
 
-ESP32 devices will check this server for updates.
-""".format(FIRMWARE_DIR=FIRMWARE_DIR))
-        print(f"Created {readme_file}")
-    else:
-        # Check if version.txt exists
-        version_file = os.path.join(FIRMWARE_DIR, "version.txt")
-        if not os.path.exists(version_file):
-            print(f"WARNING: {version_file} not found!")
-            print(f"Create it with: echo '1.0.0' > {version_file}")
-        
-        # Check if firmware binary exists
-        binary_file = os.path.join(FIRMWARE_DIR, "echoes.bin")
-        if not os.path.exists(binary_file):
-            print(f"WARNING: {binary_file} not found!")
-            print("Copy it from your build: cp build/echoes.bin " + FIRMWARE_DIR + "/echoes.bin")
 
 def get_local_ip():
-    """Get local IP address"""
     import socket
     try:
-        # Create a socket and connect to an external address
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
+        ip = s.getsockname()[0]
         s.close()
-        return local_ip
-    except:
+        return ip
+    except Exception:
         return "localhost"
 
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def main():
-    """Start the firmware server"""
-    print("=" * 60)
-    print("Echoes of the Machine - Firmware Update Server")
-    print("=" * 60)
-    
-    # Ensure firmware directory exists
     ensure_firmware_directory()
-    
-    # Get local IP
     local_ip = get_local_ip()
-    
-    # Change to base directory so server serves from there
+
+    # Serve from BASE_DIR so URL paths map directly to the filesystem
     os.chdir(BASE_DIR)
-    
-    # Start server
+
+    log.info("=" * 60)
+    log.info("Echoes of the Machine - Firmware Update Server")
+    log.info(f"Port        : {PORT}")
+    log.info(f"Base dir    : {BASE_DIR}")
+    log.info(f"Version URL : http://{local_ip}:{PORT}/firmware/version.txt")
+    log.info(f"Binary URL  : http://{local_ip}:{PORT}/firmware/echoes.bin")
+    log.info(f"ota.h lines :")
+    log.info(f'  #define OTA_URL     "http://{local_ip}:{PORT}/firmware/echoes.bin"')
+    log.info(f'  #define VERSION_URL "http://{local_ip}:{PORT}/firmware/version.txt"')
+    log.info("=" * 60)
+
     try:
-        with socketserver.TCPServer(("", PORT), FirmwareHTTPRequestHandler) as httpd:
-            print(f"\nServer running on port {PORT}")
-            print(f"Base directory: {BASE_DIR}")
-            print(f"\nAccess URLs:")
-            print(f"  Local:   http://localhost:{PORT}/firmware/")
-            print(f"  Network: http://{local_ip}:{PORT}/firmware/")
-            print(f"\nFirmware files:")
-            print(f"  Version: http://{local_ip}:{PORT}/firmware/version.txt")
-            print(f"  Binary:  http://{local_ip}:{PORT}/firmware/echoes.bin")
-            print(f"\nUpdate main/ota.h with these URLs:")
-            print(f"  #define OTA_URL         \"http://{local_ip}:{PORT}/firmware/echoes.bin\"")
-            print(f"  #define VERSION_URL     \"http://{local_ip}:{PORT}/firmware/version.txt\"")
-            print(f"\nPress Ctrl+C to stop the server")
-            print("=" * 60)
-            print("\nWaiting for requests...\n")
-            
-            # Serve forever
+        with ThreadedTCPServer(("", PORT), FirmwareHTTPRequestHandler) as httpd:
+            log.info(f"Threaded server listening — press Ctrl-C to stop")
             httpd.serve_forever()
-            
+
     except KeyboardInterrupt:
-        print("\n\nShutting down server...")
-        print("Server stopped.")
+        log.info("Shutting down...")
+
     except OSError as e:
-        if e.errno == 48 or e.errno == 98:  # Address already in use
-            print(f"\nERROR: Port {PORT} is already in use!")
-            print(f"Try a different port: python3 firmware_server.py 8001")
+        if e.errno in (48, 98):
+            log.error(f"Port {PORT} already in use — try: python3 firmware_server.py 8001")
         else:
-            print(f"\nERROR: {e}")
-    except Exception as e:
-        print(f"\nERROR: {e}")
+            log.error(f"OS error: {e}")
+        sys.exit(1)
+
+    finally:
+        with _stats_lock:
+            snap = dict(_stats)
+        log.info(
+            f"Session summary — "
+            f"version checks: {snap['version_checks']}  "
+            f"downloads: {snap['binary_downloads']}  "
+            f"bytes sent: {snap['bytes_sent']:,}  "
+            f"errors: {snap['errors']}"
+        )
+
 
 if __name__ == "__main__":
     main()
