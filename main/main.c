@@ -149,7 +149,7 @@ void app_main(void)
         /* -- Pre-create tasks in suspended state for OTA registration -- */
         TaskHandle_t h_audio  = NULL;
         TaskHandle_t h_lux    = NULL;
-        TaskHandle_t h_chaos  = NULL;
+        TaskHandle_t h_flock  = NULL;
 
         xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, &h_audio);
         if (h_audio)  vTaskSuspend(h_audio);
@@ -159,11 +159,11 @@ void app_main(void)
             if (h_lux)  vTaskSuspend(h_lux);
         }
 
-        xTaskCreate(chaos_task, "chaos", 4096, NULL, 4, &h_chaos);
-        if (h_chaos)  vTaskSuspend(h_chaos);
+        xTaskCreate(flock_task, "flock", 4096, NULL, 4, &h_flock);
+        if (h_flock)  vTaskSuspend(h_flock);
 
         /* Register handles so OTA can suspend/resume them around the download */
-        ota_register_tasks(h_chaos, h_lux, h_audio);
+        ota_register_tasks(h_flock, h_lux, h_audio);
 
         /* Confirm the running firmware is valid before attempting a new OTA update.
          *
@@ -213,7 +213,7 @@ void app_main(void)
         /* Resume application tasks now that OTA is resolved */
         if (h_audio)  vTaskResume(h_audio);
         if (h_lux)    vTaskResume(h_lux);
-        if (h_chaos)  vTaskResume(h_chaos);
+        if (h_flock)  vTaskResume(h_flock);
         ESP_LOGI(TAG, "Application tasks resumed");
 
         /* Enable modem sleep NOW — after OTA — so the download is never
@@ -259,7 +259,7 @@ void app_main(void)
             xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
         }
 
-        xTaskCreate(chaos_task, "chaos", 4096, NULL, 4, NULL);
+        xTaskCreate(flock_task, "flock", 4096, NULL, 4, NULL);
         ESP_LOGI(TAG, "Chaos mode task started");
     } else {
         ESP_LOGI(TAG, "Echoes of the Machine running (tasks already started)");

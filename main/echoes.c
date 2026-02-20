@@ -948,19 +948,20 @@ void lux_based_birds_task(void *param) {
 }
 
 /* ========================================================================
- * CHAOS MODE TASK
+ * FLOCK MODE TASK
  *
- * Monitors espnow_mesh_is_chaos().  While active, selects bird calls
- * randomly from the ENTIRE catalogue (all detection categories combined),
- * plays them back-to-back, and drives the white LED in a rapid strobe that
- * is independent of the normal VU meter.
+ * Monitors espnow_mesh_is_flock_mode().  While active, plays bird calls
+ * with the following split:
+ *   60 % → Red-billed Quelea  (colony signifier — the whole flock speaks)
+ *   40 % → random bird from the full catalogue (avoids repetition)
  *
- * The task yields back to the scheduler between each call so the audio
- * detection loop and other tasks are not starved.
+ * Each call is preceded by a rapid LED strobe.  The task yields between
+ * every call so audio detection and other tasks are not starved.
  * ======================================================================== */
 
-/* Full catalogue of every synthesised bird for random chaos selection.
- * Kept as a file-scope table so the compiler places it in DRAM once.      */
+/* Full catalogue of every synthesised bird.
+ * Forward-declared above so lux_based_birds_task can reference k_all_birds
+ * for flash events.  Defined here once.                                     */
 static const bird_info_t k_all_birds[] = {
     { "generate_piet_my_vrou",          "Piet-my-vrou"            },
     { "generate_cape_robin_chat",        "Cape Robin-Chat"         },
@@ -976,57 +977,66 @@ static const bird_info_t k_all_birds[] = {
 };
 /* NUM_ALL_BIRDS defined above as 11u — must match this table */
 
-void chaos_task(void *param)
+/* Index of Quelea in k_all_birds — used for the 60 % selection */
+#define QUELEA_IDX  9u
+
+void flock_task(void *param)
 {
     (void)param;
 
     if (!has_audio_output()) {
-        /* Minimal hardware: LED-only chaos — strobe indefinitely while active */
-        ESP_LOGI(TAG, "🌪️  Chaos task running (LED-only mode)");
-        bool was_chaos = false;
+        /* Minimal hardware: LED-only flock strobe */
+        ESP_LOGI(TAG, "🐦 Flock task running (LED-only mode)");
+        bool was_flock = false;
         while (1) {
-            bool chaos = espnow_mesh_is_chaos();
-            if (chaos) {
-                /* Rapid alternating strobe */
+            bool flock = espnow_mesh_is_flock_mode();
+            if (flock) {
                 set_led(BRIGHT_FULL, BRIGHT_OFF);
                 vTaskDelay(pdMS_TO_TICKS(60));
                 set_led(BRIGHT_OFF,  BRIGHT_OFF);
                 vTaskDelay(pdMS_TO_TICKS(60));
             } else {
-                if (was_chaos) {
-                    set_led(BRIGHT_OFF, BRIGHT_OFF);
-                }
+                if (was_flock) set_led(BRIGHT_OFF, BRIGHT_OFF);
                 vTaskDelay(pdMS_TO_TICKS(100));
             }
-            was_chaos = chaos;
+            was_flock = flock;
         }
     }
 
-    ESP_LOGI(TAG, "🌪️  Chaos task running (full audio mode)");
+    ESP_LOGI(TAG, "🐦 Flock task running (full audio mode)");
 
-    /* Seed the PRNG with the hardware timer for better randomness */
-    uint32_t last_bird_idx = 0xFFFFFFFF;
+    uint32_t last_random_idx = 0xFFFFFFFF;  /* avoid immediate repetition in 40 % path */
 
     while (1) {
-        if (!espnow_mesh_is_chaos()) {
-            /* Not in chaos — sleep and poll */
+        if (!espnow_mesh_is_flock_mode()) {
             vTaskDelay(pdMS_TO_TICKS(250));
             continue;
         }
 
         const remote_config_t *cfg = remote_config_get();
 
-        /* Pick a random bird, avoiding immediate repetition */
-        uint32_t idx;
-        do {
-            idx = (uint32_t)(esp_random() % NUM_ALL_BIRDS);
-        } while (idx == last_bird_idx && NUM_ALL_BIRDS > 1);
-        last_bird_idx = idx;
+        /* ---- 60 / 40 bird selection ----------------------------------- */
+        const bird_info_t *bird;
+        uint32_t roll = esp_random() % 100u;
 
-        const bird_info_t *bird = &k_all_birds[idx];
-        ESP_LOGI(TAG, "🌪️  Chaos: playing %s", bird->display_name);
+        if (roll < FLOCK_QUELEA_PERCENT) {
+            /* 60 % path — always Quelea */
+            bird = &k_all_birds[QUELEA_IDX];
+            ESP_LOGI(TAG, "🐦 Flock (Quelea 60%%): %s", bird->display_name);
+        } else {
+            /* 40 % path — random from full catalogue, skip Quelea and
+             * avoid repeating the previous random pick                   */
+            uint32_t idx;
+            do {
+                idx = esp_random() % NUM_ALL_BIRDS;
+            } while (idx == QUELEA_IDX ||
+                     (idx == last_random_idx && NUM_ALL_BIRDS > 2));
+            last_random_idx = idx;
+            bird = &k_all_birds[idx];
+            ESP_LOGI(TAG, "🐦 Flock (random 40%%): %s", bird->display_name);
+        }
 
-        /* Rapid LED flash before each call to signal chaos visually */
+        /* ---- LED strobe before call ----------------------------------- */
         set_led(BRIGHT_FULL, BRIGHT_OFF);
         vTaskDelay(pdMS_TO_TICKS(40));
         set_led(BRIGHT_OFF, BRIGHT_OFF);
@@ -1035,14 +1045,14 @@ void chaos_task(void *param)
         vTaskDelay(pdMS_TO_TICKS(40));
         set_led(BRIGHT_OFF, BRIGHT_OFF);
 
-        /* Generate and play — use the blocking variant so we don't overlap */
+        /* ---- Play (blocking) ------------------------------------------ */
         generate_and_play_bird_call(&g_bird_mapper,
                                     bird->function_name,
                                     bird->display_name);
 
-        /* Short gap between calls — configurable */
-        uint32_t gap = cfg->chaos_call_gap_ms;
-        if (gap < 50) gap = 50;   /* Safety floor */
+        /* ---- Inter-call gap ------------------------------------------- */
+        uint32_t gap = cfg->flock_call_gap_ms;
+        if (gap < 50) gap = 50;
         vTaskDelay(pdMS_TO_TICKS(gap));
     }
 }

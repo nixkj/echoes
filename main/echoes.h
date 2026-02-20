@@ -82,31 +82,33 @@
 #define VOLUME_SCALE_MIN        0.25f   // quietest multiplier (dark room)
 #define VOLUME_SCALE_MAX        1.0f    // loudest multiplier (bright room)
 
-/* ESP-NOW activity flood threshold
- * When ESPNOW_FLOOD_COUNT or more messages arrive within ESPNOW_FLOOD_WINDOW_MS,
- * espnow_mesh_is_flooded() returns true and bird selection switches to Quelea.
- * The state resets automatically when the message rate drops.
- */
-#define ESPNOW_FLOOD_COUNT      5       // messages that trigger flood state
-#define ESPNOW_FLOOD_WINDOW_MS  8000    // sliding window in ms
-
-/* ESP-NOW chaos mode threshold
- * When CHAOS_MSG_COUNT or more messages arrive within CHAOS_WINDOW_MS the
- * whole flock enters "chaos" mode: random bird calls are fired back-to-back
- * with frantic LED strobing.  Chaos mode requires a HIGHER message rate than
- * ordinary flood mode so the two states are clearly distinct.
+/* ESP-NOW flock mode
+ * A single unified activity threshold replaces the old separate "flood" and
+ * "chaos" states.  When FLOCK_MSG_COUNT or more messages arrive within
+ * FLOCK_WINDOW_MS, espnow_mesh_is_flock_mode() returns true and the flock
+ * task fires random bird calls with LED strobing.
  *
- * Chaos mode stays active for at least CHAOS_HOLD_MS after the last
+ * Bird selection during flock mode:
+ *   60 % of calls → Red-billed Quelea  (colony/flock signifier)
+ *   40 % of calls → random from the full catalogue
+ *
+ * Flock mode stays active for at least FLOCK_HOLD_MS after the last
  * qualifying burst, then decays back to normal automatically.
  *
- * CHAOS_CALL_GAP_MS  — minimum pause (ms) between consecutive chaos calls
- *                      (keeps the flock from sounding like a single sustained
- *                      tone; a short gap makes individual calls perceptible).
+ * FLOCK_CALL_GAP_MS — minimum pause (ms) between consecutive flock calls.
+ *
+ * Ring buffer sizing:
+ *   FLOCK_RING_MAX is fixed at compile time to the maximum fleet size (50).
+ *   The actual trigger count is FLOCK_MSG_COUNT, which defaults to 12 here
+ *   but can be overridden at runtime via remote_config (flock_msg_count).
+ *   FLOCK_MSG_COUNT must be <= FLOCK_RING_MAX.
  */
-#define CHAOS_MSG_COUNT         12      // messages in window to trigger chaos
-#define CHAOS_WINDOW_MS         6000    // sliding window in ms
-#define CHAOS_HOLD_MS           10000   // how long chaos persists after trigger
-#define CHAOS_CALL_GAP_MS       200     // inter-call silence during chaos
+#define FLOCK_RING_MAX          50      // compile-time ring buffer size — equals max fleet
+#define FLOCK_MSG_COUNT         12      // default messages-in-window to trigger flock mode
+#define FLOCK_WINDOW_MS         6000    // sliding window in ms
+#define FLOCK_HOLD_MS           10000   // how long flock mode persists after trigger
+#define FLOCK_CALL_GAP_MS       200     // inter-call silence during flock mode
+#define FLOCK_QUELEA_PERCENT    60      // % of flock calls that play Quelea (rest = random)
 
 /* Light sensor polling
  * LUX_POLL_INTERVAL_MS  : how often the sensor is read.  100 ms is the
@@ -278,8 +280,8 @@ void generate_and_play_bird_call(bird_call_mapper_t *mapper, const char *functio
 /* Lux-based bird selection */
 void lux_based_birds_task(void *param);
 
-/* Chaos mode — driven by ESP-NOW mesh message rate */
-void chaos_task(void *param);
+/* Flock mode — driven by ESP-NOW mesh message rate */
+void flock_task(void *param);
 
 /* Hardware Detection */
 hardware_config_t get_hardware_config(void);

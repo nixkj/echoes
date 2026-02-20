@@ -94,15 +94,18 @@ typedef struct {
     float    espnow_lux_threshold;      /**< Min lux change to broadcast      */
     uint32_t espnow_event_ttl_ms;       /**< Remote event TTL (ms)            */
     uint32_t espnow_sound_throttle_ms;  /**< Min gap between sound broadcasts */
-    uint32_t espnow_flood_window_ms;    /**< Flood detection window (ms)      */
+
+    /* ── Flock mode (unified activity threshold) ─────────────────── */
+    uint32_t flock_msg_count;   /**< Messages in window to trigger flock mode;
+                                     runtime override of FLOCK_MSG_COUNT.
+                                     Must be <= FLOCK_RING_MAX (50).         */
+    uint32_t flock_window_ms;   /**< Sliding window for flock detection (ms) */
+    uint32_t flock_hold_ms;     /**< How long flock mode persists after trigger */
+    uint32_t flock_call_gap_ms; /**< Pause between consecutive flock calls (ms) */
 
     /* ── Markov chain ────────────────────────────────────────────── */
     uint32_t markov_idle_trigger_ms;        /**< Silence before autonomous call */
     uint32_t markov_autonomous_cooldown_ms; /**< Min gap between auto calls     */
-
-    /* ── Chaos mode ──────────────────────────────────────────────── */
-    uint32_t chaos_hold_ms;      /**< How long chaos persists after trigger    */
-    uint32_t chaos_call_gap_ms;  /**< Pause between consecutive chaos calls    */
 
     /* ── Output switches ────────────────────────────────────────── */
     bool     silent_mode;       /**< true → disable ALL output (LEDs + sound) */

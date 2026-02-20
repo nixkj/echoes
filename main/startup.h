@@ -16,9 +16,22 @@
  * ======================================================================== */
 
 #define STARTUP_REPORT_URL      "http://192.168.101.2:8001/startup"
-#define STARTUP_SLEEP_MIN_MS    0
-#define STARTUP_SLEEP_MAX_MS    30000   // 30 s — staggers 50 devices across the boot window
-#define STARTUP_HTTP_TIMEOUT_MS 5000  // 3 second timeout (was 5 seconds)
+#define STARTUP_SLEEP_MIN_MS        0
+#define STARTUP_SLEEP_MAX_MS        30000   // 30 s — staggers 50 devices across the boot window
+#define STARTUP_HTTP_TIMEOUT_MS     10000   // 10 s per attempt — gives congested AP time to respond
+
+/* Retry settings for startup_send_report().
+ * Exponential backoff: delay before attempt N = STARTUP_RETRY_BASE_MS * 2^(N-1)
+ *   Attempt 1 → immediate
+ *   Attempt 2 → 2 000 ms
+ *   Attempt 3 → 4 000 ms
+ *   Attempt 4 → 8 000 ms
+ * Total worst-case wait before giving up: ~24 s + (4 × 10 s timeout) = ~64 s.
+ * This is acceptable during the jitter window (up to 30 s) which runs in parallel
+ * on the device — the report send and jitter sleep do not block each other.
+ */
+#define STARTUP_MAX_RETRIES         4
+#define STARTUP_RETRY_BASE_MS       2000    // base for exponential backoff (ms)
 
 /* ========================================================================
  * TYPE DEFINITIONS

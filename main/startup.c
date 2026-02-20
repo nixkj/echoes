@@ -240,52 +240,61 @@ esp_err_t startup_send_report(const startup_report_t *report)
     // Set POST data
     esp_http_client_set_post_field(client, post_data, len);
     
-    // Perform HTTP request with retry on timeout
+    // Perform HTTP request with exponential backoff retry.
+    // Delay before attempt N (0-indexed): STARTUP_RETRY_BASE_MS * 2^N
+    //   Attempt 0 → immediate
+    //   Attempt 1 → 2 000 ms
+    //   Attempt 2 → 4 000 ms
+    //   Attempt 3 → 8 000 ms
     esp_err_t err = ESP_FAIL;
-    int retry_count = 0;
-    const int max_retries = 3;
-    
-    while (retry_count < max_retries) {
+    int attempt = 0;
+
+    while (attempt < STARTUP_MAX_RETRIES) {
+        if (attempt > 0) {
+            uint32_t delay_ms = (uint32_t)STARTUP_RETRY_BASE_MS << (attempt - 1);  // 2^(attempt-1) * base
+            ESP_LOGW(TAG, "Startup report retry %d/%d — waiting %lu ms before next attempt",
+                     attempt, STARTUP_MAX_RETRIES - 1, delay_ms);
+            vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        }
+
         err = esp_http_client_perform(client);
-        
+
         if (err == ESP_OK) {
             int status_code = esp_http_client_get_status_code(client);
             int content_length = esp_http_client_get_content_length(client);
-            
-            ESP_LOGI(TAG, "HTTP POST Status = %d, content_length = %d",
-                     status_code, content_length);
-            
+
+            ESP_LOGI(TAG, "HTTP POST status=%d content_length=%d", status_code, content_length);
+
             if (status_code >= 200 && status_code < 300) {
-                ESP_LOGI(TAG, "Startup report sent successfully");
+                ESP_LOGI(TAG, "Startup report sent successfully (attempt %d)", attempt + 1);
                 break;
             } else {
-                ESP_LOGW(TAG, "Server returned status code: %d", status_code);
+                // Server replied with an error status — no point retrying
+                ESP_LOGW(TAG, "Server returned status %d — not retrying", status_code);
                 err = ESP_FAIL;
                 break;
             }
         } else if (err == ESP_ERR_HTTP_EAGAIN) {
-            retry_count++;
-            if (retry_count < max_retries) {
-                ESP_LOGW(TAG, "Timeout, retrying (%d/%d)...", retry_count, max_retries);
-                vTaskDelay(pdMS_TO_TICKS(500));  // Wait 500ms before retry
-            } else {
-                ESP_LOGW(TAG, "Startup report timeout after %d retries (server may not be running)", max_retries);
-                // Don't treat this as a critical error - system can still function
-                err = ESP_OK;  // Return OK so system continues
-            }
+            // Timeout — worth retrying
+            ESP_LOGW(TAG, "Startup report timed out (attempt %d/%d)",
+                     attempt + 1, STARTUP_MAX_RETRIES);
         } else {
-            ESP_LOGE(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
+            // Hard error (DNS, TCP refused, etc.) — no point retrying
+            ESP_LOGE(TAG, "HTTP POST failed: %s — not retrying", esp_err_to_name(err));
             break;
         }
+
+        attempt++;
     }
-    
+
     esp_http_client_cleanup(client);
-    
-    // If timeout, return OK anyway (non-critical failure)
+
+    // Timeouts are non-fatal — the system operates fine without a startup report.
     if (err == ESP_ERR_HTTP_EAGAIN) {
-        ESP_LOGI(TAG, "Continuing without startup report (non-critical)");
+        ESP_LOGW(TAG, "Startup report not delivered after %d attempts — continuing",
+                 STARTUP_MAX_RETRIES);
         return ESP_OK;
     }
-    
+
     return err;
 }

@@ -307,13 +307,22 @@ DEFAULT_CONFIG = {
         "description": "Minimum time between consecutive sound-event broadcasts from this node. Prevents flooding the mesh during rapid repeated detections.",
         "unit": "ms"
     },
-    "ESPNOW_FLOOD_WINDOW_MS": {
-        "value": 8000,
+    "FLOCK_MSG_COUNT": {
+        "value": 12,
+        "min": 2,
+        "max": 50,
+        "step": 1,
+        "type": "int",
+        "description": "Number of ESP-NOW messages that must arrive within FLOCK_WINDOW_MS to trigger flock mode. Max 50 (one per node). Lower values make the flock more reactive; higher values require a denser burst.",
+        "unit": "messages"
+    },
+    "FLOCK_WINDOW_MS": {
+        "value": 6000,
         "min": 1000,
         "max": 60000,
         "step": 500,
         "type": "int",
-        "description": "Sliding time window (ms) used for flood detection. If ESPNOW_FLOOD_COUNT messages arrive within this window, flood state is activated.",
+        "description": "Sliding time window (ms) in which FLOCK_MSG_COUNT messages must arrive to trigger flock mode.",
         "unit": "ms"
     },
     "MARKOV_IDLE_TRIGGER_MS": {
@@ -334,22 +343,22 @@ DEFAULT_CONFIG = {
         "description": "Minimum gap (ms) between consecutive autonomous Markov-triggered calls. Prevents the chain from firing repeatedly during a long quiet period.",
         "unit": "ms"
     },
-    "CHAOS_HOLD_MS": {
+    "FLOCK_HOLD_MS": {
         "value": 10000,
         "min": 1000,
         "max": 120000,
         "step": 1000,
         "type": "int",
-        "description": "How long (ms) chaos mode persists after the last qualifying burst before automatically decaying back to normal.",
+        "description": "How long (ms) flock mode persists after the last qualifying burst before automatically decaying back to normal.",
         "unit": "ms"
     },
-    "CHAOS_CALL_GAP_MS": {
+    "FLOCK_CALL_GAP_MS": {
         "value": 200,
         "min": 50,
         "max": 2000,
         "step": 50,
         "type": "int",
-        "description": "Minimum silence gap (ms) between consecutive bird calls during chaos mode. Keeps individual calls perceptible rather than blending into a sustained tone.",
+        "description": "Minimum silence gap (ms) between consecutive bird calls during flock mode. Keeps individual calls perceptible rather than blending into a sustained tone.",
         "unit": "ms"
     },
     "VU_MAX_BRIGHTNESS": {
@@ -1061,9 +1070,9 @@ const SECTIONS = {
   "Playback Volume": ["VOLUME","VOLUME_LUX_MIN","VOLUME_LUX_MAX","VOLUME_SCALE_MIN","VOLUME_SCALE_MAX","QUELEA_GAIN"],
   "Light Sensor": ["LUX_POLL_INTERVAL_MS","LUX_CHANGE_THRESHOLD","LUX_FLASH_THRESHOLD","LUX_FLASH_PERCENT","LUX_FLASH_MIN_ABS"],
   "LED Behaviour": ["VU_MAX_BRIGHTNESS"],
-  "ESP-NOW Mesh": ["ESPNOW_LUX_THRESHOLD","ESPNOW_EVENT_TTL_MS","ESPNOW_SOUND_THROTTLE_MS","ESPNOW_FLOOD_WINDOW_MS"],
+  "ESP-NOW Mesh": ["ESPNOW_LUX_THRESHOLD","ESPNOW_EVENT_TTL_MS","ESPNOW_SOUND_THROTTLE_MS"],
   "Markov Chain": ["MARKOV_IDLE_TRIGGER_MS","MARKOV_AUTONOMOUS_COOLDOWN_MS"],
-  "Chaos Mode": ["CHAOS_HOLD_MS","CHAOS_CALL_GAP_MS"]
+  "Flock Mode": ["FLOCK_MSG_COUNT","FLOCK_WINDOW_MS","FLOCK_HOLD_MS","FLOCK_CALL_GAP_MS"]
 };
 
 let fullConfig = {};

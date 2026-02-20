@@ -79,15 +79,16 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .espnow_lux_threshold        = 12.0f,
     .espnow_event_ttl_ms         = 30000,
     .espnow_sound_throttle_ms    = 3000,
-    .espnow_flood_window_ms      = 8000,
+
+    /* Flock mode */
+    .flock_msg_count             = 12,
+    .flock_window_ms             = 6000,
+    .flock_hold_ms               = 10000,
+    .flock_call_gap_ms           = 200,
 
     /* Markov chain */
     .markov_idle_trigger_ms          = 45000,
     .markov_autonomous_cooldown_ms   = 15000,
-
-    /* Chaos mode */
-    .chaos_hold_ms                   = 10000,
-    .chaos_call_gap_ms               = 200,
 
     /* Remote restart */
     .restart_requested           = false,
@@ -223,15 +224,16 @@ static void apply_json(cJSON *root)
     CFG_FLOAT  (root, s_cfg.espnow_lux_threshold,        "ESPNOW_LUX_THRESHOLD");
     CFG_UINT32 (root, s_cfg.espnow_event_ttl_ms,         "ESPNOW_EVENT_TTL_MS");
     CFG_UINT32 (root, s_cfg.espnow_sound_throttle_ms,    "ESPNOW_SOUND_THROTTLE_MS");
-    CFG_UINT32 (root, s_cfg.espnow_flood_window_ms,      "ESPNOW_FLOOD_WINDOW_MS");
+
+    /* Flock mode */
+    CFG_UINT32 (root, s_cfg.flock_msg_count,    "FLOCK_MSG_COUNT");
+    CFG_UINT32 (root, s_cfg.flock_window_ms,    "FLOCK_WINDOW_MS");
+    CFG_UINT32 (root, s_cfg.flock_hold_ms,      "FLOCK_HOLD_MS");
+    CFG_UINT32 (root, s_cfg.flock_call_gap_ms,  "FLOCK_CALL_GAP_MS");
 
     /* Markov chain */
     CFG_UINT32 (root, s_cfg.markov_idle_trigger_ms,         "MARKOV_IDLE_TRIGGER_MS");
     CFG_UINT32 (root, s_cfg.markov_autonomous_cooldown_ms,  "MARKOV_AUTONOMOUS_COOLDOWN_MS");
-
-    /* Chaos mode */
-    CFG_UINT32 (root, s_cfg.chaos_hold_ms,      "CHAOS_HOLD_MS");
-    CFG_UINT32 (root, s_cfg.chaos_call_gap_ms,  "CHAOS_CALL_GAP_MS");
 
     /* Output switches */
     CFG_BOOL   (root, s_cfg.silent_mode,  "SILENT_MODE");

@@ -43,21 +43,16 @@ static QueueHandle_t       s_rx_queue        = NULL;
 /* Last lux value we broadcast — used to suppress redundant transmissions */
 static float               s_last_tx_lux     = -1000.0f;
 
-/* ---- ESP-NOW flood detection ------------------------------------------ */
-/* Ring buffer of arrival timestamps for the last ESPNOW_FLOOD_COUNT msgs   */
-#define FLOOD_RING_SIZE     ESPNOW_FLOOD_COUNT
-static uint32_t            s_rx_times[FLOOD_RING_SIZE] = {0};
-static uint8_t             s_rx_head = 0;       /* next slot to write       */
-static bool                s_flooded = false;   /* current flood state       */
-
-/* ---- ESP-NOW chaos detection ------------------------------------------ */
-/* Separate, larger ring buffer tracking the last CHAOS_MSG_COUNT arrivals.
- * Chaos fires when ALL of those messages arrived within CHAOS_WINDOW_MS.   */
-#define CHAOS_RING_SIZE     CHAOS_MSG_COUNT
-static uint32_t            s_chaos_times[CHAOS_RING_SIZE] = {0};
-static uint8_t             s_chaos_head      = 0;
-static bool                s_chaos_active    = false;
-static uint32_t            s_chaos_last_ms   = 0;   /* last trigger time    */
+/* ---- ESP-NOW flock mode detection ------------------------------------- */
+/* Oversized ring buffer — FLOCK_RING_MAX slots (one per node in the fleet).
+ * The actual trigger count is read at runtime from remote_config so it can
+ * be tuned without reflashing.  Only the oldest FLOCK_MSG_COUNT slot is
+ * ever compared against the window; the extra slots are simply unused.     */
+static uint32_t            s_rx_times[FLOCK_RING_MAX] = {0};
+static uint8_t             s_rx_head     = 0;       /* next slot to write   */
+static bool                s_flock_mode  = false;   /* current flock state  */
+static bool                s_flock_active = false;
+static uint32_t            s_flock_last_ms = 0;     /* last trigger time    */
 
 /* Timestamp (ms) of the last remote event that influenced our bird set */
 static uint32_t            s_last_remote_event_ms = 0;
@@ -92,15 +87,11 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info,
     const espnow_msg_t *msg = (const espnow_msg_t *)data;
     if (msg->magic != ESPNOW_MAGIC) return;
 
-    /* Record arrival timestamp for flood detection */
+    /* Record arrival timestamp for flock mode detection */
     {
         uint32_t now = (uint32_t)(xTaskGetTickCountFromISR() * portTICK_PERIOD_MS);
         s_rx_times[s_rx_head] = now;
-        s_rx_head = (s_rx_head + 1) % FLOOD_RING_SIZE;
-
-        /* Also record for chaos detection (independent, larger ring) */
-        s_chaos_times[s_chaos_head] = now;
-        s_chaos_head = (s_chaos_head + 1) % CHAOS_RING_SIZE;
+        s_rx_head = (s_rx_head + 1) % FLOCK_RING_MAX;
     }
 
     /* Post a copy to the processing queue (non-blocking) */
@@ -334,67 +325,52 @@ void espnow_mesh_broadcast_light(float lux)
     }
 }
 
-bool espnow_mesh_is_flooded(void)
+bool espnow_mesh_is_flock_mode(void)
 {
-    /* Check whether the oldest timestamp in the ring is within the flood
-     * window.  When the ring is full (FLOOD_COUNT messages have arrived)
-     * and the oldest one is less than espnow_flood_window_ms ago, we're flooded. */
-    uint32_t flood_window = remote_config_get()->espnow_flood_window_ms;
-    uint32_t now = millis();
-    /* The slot AFTER head is the oldest entry in the ring */
-    uint8_t oldest_slot = s_rx_head;   /* head has just been bumped past oldest */
+    /* Read the runtime trigger count from remote config, clamped to the
+     * compile-time ring buffer size so we never read out-of-bounds.        */
+    uint32_t flock_count  = remote_config_get()->flock_msg_count;
+    if (flock_count < 2)              flock_count = 2;
+    if (flock_count > FLOCK_RING_MAX) flock_count = FLOCK_RING_MAX;
+
+    uint32_t flock_window = remote_config_get()->flock_window_ms;
+    uint32_t now          = millis();
+
+    /* The oldest relevant slot is the one that was written (flock_count)
+     * messages ago.  Because s_rx_head always points to the NEXT write slot,
+     * we walk back flock_count positions in the ring.                       */
+    uint8_t oldest_slot = (uint8_t)
+        ((s_rx_head + FLOCK_RING_MAX - (uint8_t)flock_count) % FLOCK_RING_MAX);
     uint32_t oldest = s_rx_times[oldest_slot];
 
-    /* oldest == 0 means the ring hasn't filled yet */
-    bool flooded = (oldest != 0) &&
-                   ((now - oldest) <= flood_window);
+    /* oldest == 0 means the ring hasn't been filled enough yet */
+    bool newly_triggered = (oldest != 0) &&
+                           ((now - oldest) <= flock_window);
 
-    if (flooded != s_flooded) {
-        s_flooded = flooded;
-        ESP_LOGI(TAG, "Flood state → %s", flooded ? "FLOODED (Quelea)" : "normal");
+    if (newly_triggered) {
+        s_flock_last_ms = now;
+        if (!s_flock_active) {
+            s_flock_active = true;
+            ESP_LOGI(TAG, "🐦 FLOCK MODE entered (%lu msgs / %lu ms window)",
+                     flock_count, flock_window);
+        }
+    } else if (s_flock_active) {
+        if ((now - s_flock_last_ms) >= remote_config_get()->flock_hold_ms) {
+            s_flock_active = false;
+            ESP_LOGI(TAG, "🐦 FLOCK MODE exited (hold expired)");
+        }
     }
-    return s_flooded;
+
+    if (s_flock_active != s_flock_mode) {
+        s_flock_mode = s_flock_active;
+    }
+
+    return s_flock_active;
 }
 
 markov_chain_t *espnow_mesh_get_markov(void)
 {
     return s_markov;
-}
-
-bool espnow_mesh_is_chaos(void)
-{
-    /* Chaos fires when the oldest entry in the CHAOS_RING_SIZE-slot ring
-     * was recorded within CHAOS_WINDOW_MS ago — meaning all CHAOS_MSG_COUNT
-     * messages arrived within that window.
-     *
-     * We also enforce a hold time (CHAOS_HOLD_MS) so the state stays active
-     * for a minimum duration after each qualifying burst.                   */
-    uint32_t now = millis();
-
-    /* Oldest slot is the one s_chaos_head is about to overwrite next */
-    uint8_t  oldest_slot = s_chaos_head;
-    uint32_t oldest      = s_chaos_times[oldest_slot];
-
-    /* Ring hasn't filled yet if oldest == 0 — can't have enough messages */
-    bool newly_triggered = (oldest != 0) &&
-                           ((now - oldest) <= (uint32_t)CHAOS_WINDOW_MS);
-
-    if (newly_triggered) {
-        s_chaos_last_ms = now;
-        if (!s_chaos_active) {
-            s_chaos_active = true;
-            ESP_LOGI(TAG, "🌪️  CHAOS MODE entered (%d msgs / %d ms window)",
-                     CHAOS_MSG_COUNT, CHAOS_WINDOW_MS);
-        }
-    } else if (s_chaos_active) {
-        /* Check hold-time expiry */
-        if ((now - s_chaos_last_ms) >= remote_config_get()->chaos_hold_ms) {
-            s_chaos_active = false;
-            ESP_LOGI(TAG, "🌪️  CHAOS MODE exited (hold expired)");
-        }
-    }
-
-    return s_chaos_active;
 }
 
 void espnow_mesh_tick(void)

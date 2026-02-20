@@ -123,25 +123,15 @@ void espnow_mesh_tick(void);
 markov_chain_t *espnow_mesh_get_markov(void);
 
 /**
- * @brief Returns true when incoming ESP-NOW message rate exceeds the flood
- *        threshold (ESPNOW_FLOOD_COUNT messages within ESPNOW_FLOOD_WINDOW_MS).
+ * @brief Returns true when the network is in "flock mode".
  *
- * When flooded, the calling code should override bird selection with Quelea
- * to signal network-wide activity.  The flag resets automatically once the
- * message rate drops below the threshold.
+ * Flock mode fires when FLOCK_MSG_COUNT (default 12, overridable via
+ * remote_config.flock_msg_count) messages arrive within FLOCK_WINDOW_MS.
+ * While active, the flock_task plays bird calls with a 60 % Quelea /
+ * 40 % random split and drives the LED into a rapid strobe.
+ *
+ * The state self-clears after FLOCK_HOLD_MS of inactivity.
  */
-bool espnow_mesh_is_flooded(void);
-
-/**
- * @brief Returns true when the network is in "chaos" mode.
- *
- * Chaos requires a significantly higher message rate than ordinary flood mode
- * (CHAOS_MSG_COUNT messages within CHAOS_WINDOW_MS, as defined in echoes.h).
- * While true, the calling code should play random bird calls from the full
- * catalogue and drive the LED into a frantic strobe pattern.
- *
- * The state self-clears after CHAOS_HOLD_MS of silence.
- */
-bool espnow_mesh_is_chaos(void);
+bool espnow_mesh_is_flock_mode(void);
 
 #endif /* ESPNOW_MESH_H */
