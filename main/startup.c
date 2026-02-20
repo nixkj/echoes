@@ -13,7 +13,6 @@
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_mac.h"
-#include "esp_random.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -36,19 +35,6 @@ esp_err_t startup_get_mac_address(char *mac_str)
     }
     
     return ret;
-}
-
-/**
- * @brief Generate random sleep duration in milliseconds
- */
-static uint32_t generate_random_sleep_duration(void)
-{
-    uint32_t range = STARTUP_SLEEP_MAX_MS - STARTUP_SLEEP_MIN_MS;
-    uint32_t random_val = esp_random();
-    uint32_t duration = STARTUP_SLEEP_MIN_MS + (random_val % (range + 1));
-    
-    ESP_LOGI(TAG, "Generated random sleep duration: %lu ms", duration);
-    return duration;
 }
 
 /* ========================================================================
@@ -87,67 +73,6 @@ esp_err_t startup_capture_identity(startup_report_t *report, hardware_config_t h
 
     ESP_LOGI(TAG, "Device MAC: %s  Node type: %s", report->mac_address, report->node_type);
     return ESP_OK;
-}
-
-esp_err_t startup_jitter_and_sample(startup_report_t *report)
-{
-    if (!report) return ESP_ERR_INVALID_ARG;
-
-    /* Random jitter sleep with light sampling */
-    report->sleep_duration_ms = generate_random_sleep_duration();
-
-    const uint32_t sample_interval_ms = 100;
-    uint32_t num_samples = report->sleep_duration_ms / sample_interval_ms;
-    if (num_samples == 0) num_samples = 1;
-
-    ESP_LOGI(TAG, "Jitter sleep %lu ms, taking %lu light samples",
-             report->sleep_duration_ms, num_samples);
-
-    float light_sum = 0.0f;
-    uint32_t valid_samples = 0;
-
-    for (uint32_t i = 0; i < num_samples; i++) {
-        float lux = get_lux_level();
-        if (lux >= 0.0f && lux == lux) {
-            light_sum += lux;
-            valid_samples++;
-        } else {
-            ESP_LOGW(TAG, "Invalid light reading at sample %lu: %f", i, lux);
-        }
-        if (i < num_samples - 1) {
-            vTaskDelay(pdMS_TO_TICKS(sample_interval_ms));
-        }
-    }
-
-    if (valid_samples > 0) {
-        report->avg_light_level = light_sum / valid_samples;
-        report->light_samples   = valid_samples;
-        ESP_LOGI(TAG, "Average light level: %.2f lux (%lu valid samples)",
-                 report->avg_light_level, valid_samples);
-    } else {
-        report->avg_light_level = -1.0f;
-        report->light_samples   = 0;
-        report->has_errors      = true;
-        snprintf(report->error_message, sizeof(report->error_message),
-                 "No valid light sensor readings");
-        ESP_LOGW(TAG, "No valid light sensor readings obtained");
-    }
-
-    /* Sleep out any remaining jitter time */
-    uint32_t elapsed = num_samples * sample_interval_ms;
-    if (elapsed < report->sleep_duration_ms) {
-        vTaskDelay(pdMS_TO_TICKS(report->sleep_duration_ms - elapsed));
-    }
-
-    return ESP_OK;
-}
-
-esp_err_t startup_sleep_and_sample(startup_report_t *report, hardware_config_t hw_config)
-{
-    /* Legacy wrapper — prefer the two-step API in new code */
-    esp_err_t ret = startup_capture_identity(report, hw_config);
-    if (ret != ESP_OK) return ret;
-    return startup_jitter_and_sample(report);
 }
 
 /**
@@ -196,18 +121,12 @@ esp_err_t startup_send_report(const startup_report_t *report)
         "\"mac\":\"%s\","
         "\"firmware\":\"%s\","
         "\"node_type\":\"%s\","
-        "\"avg_light\":%.2f,"
-        "\"light_samples\":%lu,"
-        "\"sleep_duration_ms\":%lu,"
         "\"has_errors\":%s,"
         "\"error_message\":\"%s\""
         "}",
         report->mac_address,
-	FIRMWARE_VERSION,
+        FIRMWARE_VERSION,
         report->node_type,
-        report->avg_light_level,
-        report->light_samples,
-        report->sleep_duration_ms,
         report->has_errors ? "true" : "false",
         report->error_message
     );
@@ -251,8 +170,8 @@ esp_err_t startup_send_report(const startup_report_t *report)
 
     while (attempt < STARTUP_MAX_RETRIES) {
         if (attempt > 0) {
-            uint32_t delay_ms = (uint32_t)STARTUP_RETRY_BASE_MS << (attempt - 1);  // 2^(attempt-1) * base
-            ESP_LOGW(TAG, "Startup report retry %d/%d — waiting %lu ms before next attempt",
+            uint32_t delay_ms = (uint32_t)STARTUP_RETRY_BASE_MS << (attempt - 1);
+            ESP_LOGW(TAG, "Startup report retry %d/%d — waiting %lu ms",
                      attempt, STARTUP_MAX_RETRIES - 1, delay_ms);
             vTaskDelay(pdMS_TO_TICKS(delay_ms));
         }
@@ -269,17 +188,14 @@ esp_err_t startup_send_report(const startup_report_t *report)
                 ESP_LOGI(TAG, "Startup report sent successfully (attempt %d)", attempt + 1);
                 break;
             } else {
-                // Server replied with an error status — no point retrying
                 ESP_LOGW(TAG, "Server returned status %d — not retrying", status_code);
                 err = ESP_FAIL;
                 break;
             }
         } else if (err == ESP_ERR_HTTP_EAGAIN) {
-            // Timeout — worth retrying
             ESP_LOGW(TAG, "Startup report timed out (attempt %d/%d)",
                      attempt + 1, STARTUP_MAX_RETRIES);
         } else {
-            // Hard error (DNS, TCP refused, etc.) — no point retrying
             ESP_LOGE(TAG, "HTTP POST failed: %s — not retrying", esp_err_to_name(err));
             break;
         }
@@ -289,7 +205,6 @@ esp_err_t startup_send_report(const startup_report_t *report)
 
     esp_http_client_cleanup(client);
 
-    // Timeouts are non-fatal — the system operates fine without a startup report.
     if (err == ESP_ERR_HTTP_EAGAIN) {
         ESP_LOGW(TAG, "Startup report not delivered after %d attempts — continuing",
                  STARTUP_MAX_RETRIES);

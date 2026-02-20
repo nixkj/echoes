@@ -69,17 +69,17 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(500));
 
     // Hardware config already detected in system_init — fetch it now so
-    // startup_sleep_and_sample can embed the correct node_type in the report.
+    // hw_config is needed to embed the correct node_type in the report.
     hardware_config_t hw_config = get_hardware_config();
 
-    /* ── Step 1: capture identity immediately (non-blocking) ── */
+    /* Capture identity and send report before doing anything else */
     ESP_LOGI(TAG, "Capturing device identity...");
     esp_err_t startup_err = startup_capture_identity(&startup_report, hw_config);
     if (startup_err != ESP_OK) {
         ESP_LOGW(TAG, "Identity capture failed: %s", esp_err_to_name(startup_err));
     }
 
-    /* ── Step 2: send the initial report right away ── */
+
     if (wifi_connected) {
         ESP_LOGI(TAG, "Sending startup report...");
         esp_err_t report_err = startup_send_report(&startup_report);
@@ -96,13 +96,6 @@ void app_main(void)
         }
     } else {
         ESP_LOGI(TAG, "WiFi not connected — skipping startup report");
-    }
-
-    /* ── Step 3: jitter sleep + light sampling (up to 30 s) ── */
-    ESP_LOGI(TAG, "Starting jitter sleep with light sampling...");
-    esp_err_t jitter_err = startup_jitter_and_sample(&startup_report);
-    if (jitter_err != ESP_OK) {
-        ESP_LOGW(TAG, "Jitter sampling had issues: %s", esp_err_to_name(jitter_err));
     }
 
     // Initialize audio hardware
@@ -149,7 +142,7 @@ void app_main(void)
         /* -- Pre-create tasks in suspended state for OTA registration -- */
         TaskHandle_t h_audio  = NULL;
         TaskHandle_t h_lux    = NULL;
-        TaskHandle_t h_flock  = NULL;
+        TaskHandle_t h_chaos  = NULL;
 
         xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, &h_audio);
         if (h_audio)  vTaskSuspend(h_audio);
@@ -159,11 +152,11 @@ void app_main(void)
             if (h_lux)  vTaskSuspend(h_lux);
         }
 
-        xTaskCreate(flock_task, "flock", 4096, NULL, 4, &h_flock);
-        if (h_flock)  vTaskSuspend(h_flock);
+        xTaskCreate(chaos_task, "chaos", 4096, NULL, 4, &h_chaos);
+        if (h_chaos)  vTaskSuspend(h_chaos);
 
         /* Register handles so OTA can suspend/resume them around the download */
-        ota_register_tasks(h_flock, h_lux, h_audio);
+        ota_register_tasks(h_chaos, h_lux, h_audio);
 
         /* Confirm the running firmware is valid before attempting a new OTA update.
          *
@@ -213,7 +206,7 @@ void app_main(void)
         /* Resume application tasks now that OTA is resolved */
         if (h_audio)  vTaskResume(h_audio);
         if (h_lux)    vTaskResume(h_lux);
-        if (h_flock)  vTaskResume(h_flock);
+        if (h_chaos)  vTaskResume(h_chaos);
         ESP_LOGI(TAG, "Application tasks resumed");
 
         /* Enable modem sleep NOW — after OTA — so the download is never
@@ -259,7 +252,7 @@ void app_main(void)
             xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
         }
 
-        xTaskCreate(flock_task, "flock", 4096, NULL, 4, NULL);
+        xTaskCreate(chaos_task, "chaos", 4096, NULL, 4, NULL);
         ESP_LOGI(TAG, "Chaos mode task started");
     } else {
         ESP_LOGI(TAG, "Echoes of the Machine running (tasks already started)");
@@ -271,9 +264,6 @@ void app_main(void)
     ESP_LOGI(TAG, "Startup Summary:");
     ESP_LOGI(TAG, "  MAC: %s", startup_report.mac_address);
     ESP_LOGI(TAG, "  Node Type: %s", startup_report.node_type);
-    ESP_LOGI(TAG, "  Sleep Duration: %lu ms", startup_report.sleep_duration_ms);
-    ESP_LOGI(TAG, "  Avg Light Level: %.2f lux (%lu samples)",
-             startup_report.avg_light_level, startup_report.light_samples);
     ESP_LOGI(TAG, "  Errors: %s", startup_report.has_errors ? "YES" : "NO");
     if (startup_report.has_errors) {
         ESP_LOGI(TAG, "  Error Message: %s", startup_report.error_message);
