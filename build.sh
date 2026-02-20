@@ -17,6 +17,7 @@ FIRMWARE_DIR="${HOME}/firmware_server/firmware"
 PROJECT_DIR="$(pwd)"
 BUILD_DIR="${PROJECT_DIR}/build"
 BINARY_NAME="echoes.bin"
+OTA_H="${PROJECT_DIR}/main/ota.h"   # Absolute path — never ambiguous
 
 # Functions
 print_header() {
@@ -53,8 +54,8 @@ check_idf() {
 
 # Extract version from header file
 get_current_version() {
-    if [ -f "main/ota.h" ]; then
-        VERSION=$(grep "#define FIRMWARE_VERSION" main/ota.h | cut -d'"' -f2)
+    if [ -f "${OTA_H}" ]; then
+        VERSION=$(grep "#define FIRMWARE_VERSION" "${OTA_H}" | cut -d'"' -f2)
         echo "$VERSION"
     else
         echo "unknown"
@@ -66,7 +67,7 @@ build_firmware() {
     print_header "Building Firmware"
     
     local VERSION=$(get_current_version)
-    print_info "Version: $VERSION"
+    print_info "Version: $VERSION (from ${OTA_H})"
     
     # Clean build (optional)
     if [ "$1" == "clean" ]; then
@@ -228,21 +229,25 @@ bump_version() {
     
     NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
     
+    # Show exactly which file we're editing so mismatches are obvious
+    print_info "Editing: ${OTA_H}"
+
     # Use LC_ALL=C to force byte-level sed behaviour regardless of the
     # file's encoding.  Without this, a single non-ASCII character anywhere
     # in ota.h (e.g. a UTF-8 ellipsis or multiplication sign in a comment)
     # can cause sed to silently skip the substitution on macOS.
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        LC_ALL=C sed -i '' "s/#define FIRMWARE_VERSION.*/#define FIRMWARE_VERSION    \"${NEW_VERSION}\"/" main/ota.h
+        LC_ALL=C sed -i '' "s/#define FIRMWARE_VERSION.*/#define FIRMWARE_VERSION    \"${NEW_VERSION}\"/" "${OTA_H}"
     else
-        LC_ALL=C sed -i "s/#define FIRMWARE_VERSION.*/#define FIRMWARE_VERSION    \"${NEW_VERSION}\"/" main/ota.h
+        LC_ALL=C sed -i "s/#define FIRMWARE_VERSION.*/#define FIRMWARE_VERSION    \"${NEW_VERSION}\"/" "${OTA_H}"
     fi
     
     # Verify the change actually took effect
     local WRITTEN_VERSION=$(get_current_version)
     if [ "$WRITTEN_VERSION" != "$NEW_VERSION" ]; then
         print_error "Version update failed! File shows '$WRITTEN_VERSION', expected '$NEW_VERSION'"
-        print_info "Check main/ota.h for non-ASCII characters: grep -Pn '[^\\x00-\\x7F]' main/ota.h"
+        print_info "File being edited: ${OTA_H}"
+        print_info "Check for non-ASCII characters: grep -Pn '[^\\x00-\\x7F]' \"${OTA_H}\""
         return 1
     fi
     
