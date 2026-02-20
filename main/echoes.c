@@ -988,7 +988,7 @@ void chaos_task(void *param)
             bool chaos = espnow_mesh_is_chaos();
             if (chaos) {
                 /* Rapid alternating strobe */
-                set_led(BRIGHT_FULL, BRIGHT_FULL);
+                set_led(BRIGHT_FULL, BRIGHT_OFF);
                 vTaskDelay(pdMS_TO_TICKS(60));
                 set_led(BRIGHT_OFF,  BRIGHT_OFF);
                 vTaskDelay(pdMS_TO_TICKS(60));
@@ -1027,7 +1027,7 @@ void chaos_task(void *param)
         ESP_LOGI(TAG, "🌪️  Chaos: playing %s", bird->display_name);
 
         /* Rapid LED flash before each call to signal chaos visually */
-        set_led(BRIGHT_FULL, BRIGHT_FULL);
+        set_led(BRIGHT_FULL, BRIGHT_OFF);
         vTaskDelay(pdMS_TO_TICKS(40));
         set_led(BRIGHT_OFF, BRIGHT_OFF);
         vTaskDelay(pdMS_TO_TICKS(40));
