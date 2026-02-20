@@ -17,7 +17,7 @@
 
 #define STARTUP_REPORT_URL      "http://192.168.101.2:8001/startup"
 #define STARTUP_SLEEP_MIN_MS    0
-#define STARTUP_SLEEP_MAX_MS    5000
+#define STARTUP_SLEEP_MAX_MS    30000   // 30 s — staggers 50 devices across the boot window
 #define STARTUP_HTTP_TIMEOUT_MS 5000  // 3 second timeout (was 5 seconds)
 
 /* ========================================================================
@@ -39,13 +39,40 @@ typedef struct {
  * ======================================================================== */
 
 /**
+ * @brief Capture identity fields immediately on boot (non-blocking).
+ *
+ * Fills mac_address, node_type, and firmware version into the report struct
+ * so startup_send_report() can be called right away — before the jitter sleep.
+ * avg_light_level, light_samples, and sleep_duration_ms are zeroed and will
+ * be populated by startup_jitter_and_sample().
+ *
+ * @param report     Pointer to startup_report_t structure to fill
+ * @param hw_config  Hardware configuration, used to set node_type string
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t startup_capture_identity(startup_report_t *report, hardware_config_t hw_config);
+
+/**
+ * @brief Perform the random jitter sleep while sampling the light sensor.
+ *
+ * Call this AFTER startup_send_report() so the initial report reaches the
+ * server immediately.  On return, report->avg_light_level,
+ * report->light_samples, and report->sleep_duration_ms are populated.
+ *
+ * @param report  Pointer to the same startup_report_t passed to
+ *                startup_capture_identity().
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t startup_jitter_and_sample(startup_report_t *report);
+
+/**
  * @brief Perform startup sequence with random sleep and light sampling
- * 
- * This function:
- * - Generates a random sleep duration (0-5 seconds)
- * - Samples light sensor during sleep period
- * - Collects system information (MAC, node type, errors)
- * 
+ *
+ * @deprecated  Prefer the two-step startup_capture_identity() +
+ *              startup_jitter_and_sample() so the initial report is sent
+ *              before the jitter delay.  This wrapper calls both in sequence
+ *              for backwards compatibility.
+ *
  * @param report     Pointer to startup_report_t structure to fill
  * @param hw_config  Hardware configuration, used to set node_type string
  * @return ESP_OK on success, error code otherwise

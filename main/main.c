@@ -93,27 +93,14 @@ void app_main(void)
     // startup_sleep_and_sample can embed the correct node_type in the report.
     hardware_config_t hw_config = get_hardware_config();
 
-    /* Perform startup sleep and light sensor sampling */
-    ESP_LOGI(TAG, "Starting random sleep period with light sampling...");
-    esp_err_t startup_err = startup_sleep_and_sample(&startup_report, hw_config);
-    
+    /* ── Step 1: capture identity immediately (non-blocking) ── */
+    ESP_LOGI(TAG, "Capturing device identity...");
+    esp_err_t startup_err = startup_capture_identity(&startup_report, hw_config);
     if (startup_err != ESP_OK) {
-        ESP_LOGW(TAG, "Startup sampling had issues: %s", esp_err_to_name(startup_err));
-        // Note: startup_report will already have error information filled in
+        ESP_LOGW(TAG, "Identity capture failed: %s", esp_err_to_name(startup_err));
     }
 
-    // Initialize audio hardware
-    ESP_LOGI(TAG, "Initializing audio hardware...");
-    ESP_ERROR_CHECK(i2s_microphone_init());
-    
-    if (hw_config == HW_CONFIG_FULL) {
-        ESP_LOGI(TAG, "Full hardware detected - initializing speaker");
-        ESP_ERROR_CHECK(i2s_speaker_init());
-    } else {
-        ESP_LOGI(TAG, "Minimal hardware detected - speaker disabled, LED VU mode");
-    }
-
-    /* Send startup report — only if WiFi is available */
+    /* ── Step 2: send the initial report right away ── */
     if (wifi_connected) {
         ESP_LOGI(TAG, "Sending startup report...");
         esp_err_t report_err = startup_send_report(&startup_report);
@@ -132,6 +119,25 @@ void app_main(void)
         ESP_LOGI(TAG, "WiFi not connected — skipping startup report");
     }
 
+    /* ── Step 3: jitter sleep + light sampling (up to 30 s) ── */
+    ESP_LOGI(TAG, "Starting jitter sleep with light sampling...");
+    esp_err_t jitter_err = startup_jitter_and_sample(&startup_report);
+    if (jitter_err != ESP_OK) {
+        ESP_LOGW(TAG, "Jitter sampling had issues: %s", esp_err_to_name(jitter_err));
+    }
+
+    // Initialize audio hardware
+    ESP_LOGI(TAG, "Initializing audio hardware...");
+    ESP_ERROR_CHECK(i2s_microphone_init());
+    
+    if (hw_config == HW_CONFIG_FULL) {
+        ESP_LOGI(TAG, "Full hardware detected - initializing speaker");
+        ESP_ERROR_CHECK(i2s_speaker_init());
+    } else {
+        ESP_LOGI(TAG, "Minimal hardware detected - speaker disabled, LED VU mode");
+    }
+
+
     if (wifi_connected) {
         ESP_LOGI(TAG, "WiFi connected successfully");
 
@@ -145,29 +151,71 @@ void app_main(void)
                      esp_err_to_name(cfg_err));
         }
 
-        /* Check for firmware updates */
+        /* Check for firmware updates.
+         *
+         * We create the application tasks BEFORE calling ota_check_and_update()
+         * so that their handles can be passed to ota_register_tasks().  The OTA
+         * code suspends these tasks during the download to reduce RF contention,
+         * then resumes them on failure (on success the device restarts).
+         *
+         * Tasks are created in a suspended state (via xTaskCreate followed by
+         * vTaskSuspend) — they will not run until ota_check_and_update() returns
+         * (either after a successful update+restart, or after all retry attempts
+         * are exhausted).  We resume them explicitly below.
+         *
+         * NOTE: lux_based_birds_task is only created for full hardware, so its
+         * handle may be NULL — ota_register_tasks() accepts NULL safely.
+         */
+
+        /* -- Pre-create tasks in suspended state for OTA registration -- */
+        TaskHandle_t h_audio  = NULL;
+        TaskHandle_t h_lux    = NULL;
+        TaskHandle_t h_chaos  = NULL;
+
+        xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, &h_audio);
+        if (h_audio)  vTaskSuspend(h_audio);
+
+        if (hw_config == HW_CONFIG_FULL) {
+            xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, &h_lux);
+            if (h_lux)  vTaskSuspend(h_lux);
+        }
+
+        xTaskCreate(chaos_task, "chaos", 4096, NULL, 4, &h_chaos);
+        if (h_chaos)  vTaskSuspend(h_chaos);
+
+        /* Register handles so OTA can suspend/resume them around the download */
+        ota_register_tasks(h_chaos, h_lux, h_audio);
+
+        /* Check for updates — retries internally up to OTA_MAX_ATTEMPTS times */
         ESP_LOGI(TAG, "Checking for firmware updates...");
         bool updated = ota_check_and_update();
-        
-	if (updated) {
-	    ESP_LOGI(TAG, "Update completed, device restarting...");
-	    vTaskDelay(pdMS_TO_TICKS(1000));
-	} else {
-	    // Better message
-	    const ota_state_t *ota_state = ota_get_state();
-	    if (ota_state->ota_status == OTA_STATUS_FAILED) {
-		ESP_LOGW(TAG, "Update available but failed - continuing");
-	    } else {
-		ESP_LOGI(TAG, "No update needed");
-	    }
-	}
 
-        /* Start periodic OTA check task (checks every 24 hours) */
-        // xTaskCreate(ota_task, "ota_task", 8192, NULL, 3, NULL);
-        
-        /* Optional: Set WiFi to light sleep mode to save power */
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // Light sleep
-        
+        if (updated) {
+            ESP_LOGI(TAG, "Update completed, device restarting...");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        } else {
+            const ota_state_t *ota_state = ota_get_state();
+            if (ota_state->ota_status == OTA_STATUS_FAILED) {
+                ESP_LOGW(TAG, "Update available but failed after all retries - continuing");
+            } else {
+                ESP_LOGI(TAG, "No update needed");
+            }
+        }
+
+        /* Resume application tasks now that OTA is resolved */
+        if (h_audio)  vTaskResume(h_audio);
+        if (h_lux)    vTaskResume(h_lux);
+        if (h_chaos)  vTaskResume(h_chaos);
+        ESP_LOGI(TAG, "Application tasks resumed");
+
+        /* Enable modem sleep NOW — after OTA — so the download is never
+         * disrupted by the radio sleeping between DTIM beacons.           */
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+
+        /* Start remote config polling task (60-second interval) */
+        xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);
+        ESP_LOGI(TAG, "Remote config polling task started");
+
     } else {
         ESP_LOGI(TAG, "WiFi connection failed - continuing without OTA and startup report");
         
@@ -193,26 +241,20 @@ void app_main(void)
      * this point regardless of whether the AP connection succeeded.        */
     espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
 
-    /* Start detection task */
-    ESP_LOGI(TAG, "Starting Echoes of the Machine...");
-    xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, NULL);
-    
-    /* Start lux-based bird selection task - only for full hardware */
-    if (hw_config == HW_CONFIG_FULL) {
-        xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
-    }
+    /* Start application tasks — only when WiFi was NOT connected (when WiFi
+     * IS connected the tasks were already created and resumed above).      */
+    if (!wifi_connected) {
+        ESP_LOGI(TAG, "Starting Echoes of the Machine (no-WiFi path)...");
+        xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, NULL);
 
-    /* Chaos mode task — runs on ALL hardware configurations.
-     * On minimal hardware (no speaker) it drives the LED strobe only.
-     * Stack is slightly larger because chaos_task calls generate_and_play_bird_call
-     * which synthesises into the shared audio buffer.                          */
-    xTaskCreate(chaos_task, "chaos", 4096, NULL, 4, NULL);
-    ESP_LOGI(TAG, "Chaos mode task started");
+        if (hw_config == HW_CONFIG_FULL) {
+            xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
+        }
 
-    /* Start remote config polling task (60-second interval) */
-    if (wifi_connected) {
-        xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);
-        ESP_LOGI(TAG, "Remote config polling task started");
+        xTaskCreate(chaos_task, "chaos", 4096, NULL, 4, NULL);
+        ESP_LOGI(TAG, "Chaos mode task started");
+    } else {
+        ESP_LOGI(TAG, "Echoes of the Machine running (tasks already started)");
     }
     
     ESP_LOGI(TAG, "System started successfully!");

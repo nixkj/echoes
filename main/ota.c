@@ -27,6 +27,12 @@
 
 static const char *TAG = "OTA";
 
+/* Task handles so we can suspend noisy tasks during the OTA download.
+ * Populated by ota_register_tasks() called from main.c after task creation. */
+static TaskHandle_t s_chaos_task_handle   = NULL;
+static TaskHandle_t s_lux_task_handle     = NULL;
+static TaskHandle_t s_audio_task_handle   = NULL;
+
 /* Structure to hold received HTTP data */
 typedef struct {
     char *buffer;
@@ -302,6 +308,21 @@ bool ota_perform_update(const char *url)
     s_ota_state.ota_status = OTA_STATUS_DOWNLOADING;
     s_ota_state.download_progress_percent = 0;
 
+    /* Suspend background tasks that generate ESP-NOW and I2S traffic.
+     * Keeping the radio quiet during download reduces TCP retransmissions
+     * on congested channels.  Tasks are resumed on failure or after restart
+     * is called (success path calls esp_restart() so resume is not needed). */
+    if (s_chaos_task_handle)   vTaskSuspend(s_chaos_task_handle);
+    if (s_lux_task_handle)     vTaskSuspend(s_lux_task_handle);
+    if (s_audio_task_handle)   vTaskSuspend(s_audio_task_handle);
+    ESP_LOGI(TAG, "Background tasks suspended for OTA download");
+
+    /* Disable WiFi power saving for the duration of the download.
+     * WIFI_PS_MIN_MODEM lets the radio sleep between DTIM beacons; during
+     * a sustained TCP stream that introduces latency spikes which can look
+     * like packet loss and trigger unnecessary retransmissions.             */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
     /* Blink blue LED during update */
     set_led(0, BRIGHT_MID);
 
@@ -362,6 +383,7 @@ bool ota_perform_update(const char *url)
 
     /* Download and write firmware */
     int binary_file_length = 0;
+    int consecutive_empty  = 0;       /* guard against infinite zero-read loops */
     char *buffer = malloc(4096);
     if (buffer == NULL) {
         ESP_LOGE(TAG, "Failed to allocate buffer");
@@ -374,9 +396,11 @@ bool ota_perform_update(const char *url)
     while (1) {
         int data_read = esp_http_client_read(client, buffer, 4096);
         if (data_read < 0) {
-            ESP_LOGE(TAG, "Error: SSL data read error");
+            ESP_LOGE(TAG, "Error reading HTTP data (data_read=%d)", data_read);
+            err = ESP_FAIL;
             break;
         } else if (data_read > 0) {
+            consecutive_empty = 0;
             err = esp_ota_write(ota_handle, (const void *)buffer, data_read);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(err));
@@ -395,12 +419,20 @@ bool ota_perform_update(const char *url)
                 vTaskDelay(pdMS_TO_TICKS(10));
                 set_led(0, BRIGHT_MID);
             }
-        } else if (data_read == 0) {
-            /* Connection closed */
+        } else {
+            /* data_read == 0: server hasn't sent more data yet OR connection closed. */
             if (esp_http_client_is_complete_data_received(client)) {
-                ESP_LOGI(TAG, "Connection closed, all data received");
+                ESP_LOGI(TAG, "Download complete (%d bytes)", binary_file_length);
                 break;
             }
+            /* Not complete — guard against spinning forever on a stalled connection */
+            consecutive_empty++;
+            if (consecutive_empty > 100) {
+                ESP_LOGE(TAG, "Stalled download after %d bytes — aborting", binary_file_length);
+                err = ESP_FAIL;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));  /* brief yield before re-polling */
         }
     }
 
@@ -413,6 +445,13 @@ bool ota_perform_update(const char *url)
     if (binary_file_length == 0 || err != ESP_OK) {
         ESP_LOGE(TAG, "Download failed");
         esp_ota_abort(ota_handle);
+
+        /* Restore power save and background tasks on failure */
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        if (s_chaos_task_handle)   vTaskResume(s_chaos_task_handle);
+        if (s_lux_task_handle)     vTaskResume(s_lux_task_handle);
+        if (s_audio_task_handle)   vTaskResume(s_audio_task_handle);
+        ESP_LOGI(TAG, "Background tasks resumed after failed download");
 
         /* Indicate failure with rapid blue blink */
         for (int i = 0; i < 5; i++) {
@@ -433,6 +472,12 @@ bool ota_perform_update(const char *url)
         } else {
             ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
         }
+
+        /* Restore power save and background tasks on failure */
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        if (s_chaos_task_handle)   vTaskResume(s_chaos_task_handle);
+        if (s_lux_task_handle)     vTaskResume(s_lux_task_handle);
+        if (s_audio_task_handle)   vTaskResume(s_audio_task_handle);
 
         /* Indicate failure with rapid blue blink */
         for (int i = 0; i < 5; i++) {
@@ -465,6 +510,15 @@ bool ota_perform_update(const char *url)
     return true;
 }
 
+void ota_register_tasks(TaskHandle_t chaos, TaskHandle_t lux, TaskHandle_t audio)
+{
+    s_chaos_task_handle = chaos;
+    s_lux_task_handle   = lux;
+    s_audio_task_handle = audio;
+    ESP_LOGI(TAG, "OTA registered %d task handle(s) for suspension during download",
+             (chaos ? 1 : 0) + (lux ? 1 : 0) + (audio ? 1 : 0));
+}
+
 bool ota_check_and_update(void)
 {
     if (!s_ota_state.wifi_connected) {
@@ -472,36 +526,59 @@ bool ota_check_and_update(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "Checking for firmware updates...");
-    ESP_LOGI(TAG, "Current version: %s", s_ota_state.current_version);
-    
-    s_ota_state.ota_status = OTA_STATUS_CHECKING;
-    
-    /* Fetch available version from server */
-    char available_version[32];
-    if (!fetch_version_string(available_version, sizeof(available_version))) {
-        ESP_LOGE(TAG, "Failed to fetch version information");
-        s_ota_state.ota_status = OTA_STATUS_FAILED;
-        return false;
-    }
-    
-    strncpy(s_ota_state.available_version, available_version, sizeof(s_ota_state.available_version) - 1);
-    ESP_LOGI(TAG, "Available version: %s", s_ota_state.available_version);
-    
-    /* Compare versions */
-    int version_diff = compare_versions(available_version, s_ota_state.current_version);
-    
-    if (version_diff > 0) {
-        ESP_LOGI(TAG, "New firmware available! Updating from %s to %s", 
+    ESP_LOGI(TAG, "Checking for firmware updates (current: %s)", s_ota_state.current_version);
+
+    /* Retry loop — attempts the full version-check + download cycle up to
+     * OTA_MAX_ATTEMPTS times.  Linear backoff (15 s, 30 s, 45 s …) spreads
+     * retries across time so a fleet of devices does not all hammer the AP
+     * simultaneously after a transient failure.                            */
+    for (int attempt = 1; attempt <= OTA_MAX_ATTEMPTS; attempt++) {
+
+        s_ota_state.ota_status = OTA_STATUS_CHECKING;
+
+        /* ── Step 1: fetch version ──────────────────────────────────── */
+        char available_version[32];
+        if (!fetch_version_string(available_version, sizeof(available_version))) {
+            ESP_LOGW(TAG, "Attempt %d/%d: failed to fetch version string",
+                     attempt, OTA_MAX_ATTEMPTS);
+            goto retry;
+        }
+
+        strncpy(s_ota_state.available_version, available_version,
+                sizeof(s_ota_state.available_version) - 1);
+        ESP_LOGI(TAG, "Attempt %d/%d: available version = %s",
+                 attempt, OTA_MAX_ATTEMPTS, available_version);
+
+        /* ── Step 2: compare ────────────────────────────────────────── */
+        if (compare_versions(available_version, s_ota_state.current_version) <= 0) {
+            ESP_LOGI(TAG, "Firmware is up to date (%s)", s_ota_state.current_version);
+            s_ota_state.ota_status = OTA_STATUS_NO_UPDATE;
+            return false;
+        }
+
+        ESP_LOGI(TAG, "New firmware available: %s → %s",
                  s_ota_state.current_version, available_version);
-        
-        /* Perform OTA update */
-        return ota_perform_update(OTA_URL);
-    } else {
-        ESP_LOGI(TAG, "Firmware is up to date");
-        s_ota_state.ota_status = OTA_STATUS_NO_UPDATE;
-        return false;
+
+        /* ── Step 3: download + flash ───────────────────────────────── */
+        if (ota_perform_update(OTA_URL)) {
+            return true;   /* esp_restart() is called inside; won't return */
+        }
+
+        ESP_LOGW(TAG, "Attempt %d/%d: OTA download/flash failed",
+                 attempt, OTA_MAX_ATTEMPTS);
+
+retry:
+        if (attempt < OTA_MAX_ATTEMPTS) {
+            uint32_t delay_ms = (uint32_t)attempt * OTA_RETRY_BASE_DELAY_MS;
+            ESP_LOGI(TAG, "Retrying in %lu s…", (unsigned long)(delay_ms / 1000));
+            s_ota_state.ota_status = OTA_STATUS_FAILED;
+            vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        }
     }
+
+    ESP_LOGE(TAG, "OTA failed after %d attempts", OTA_MAX_ATTEMPTS);
+    s_ota_state.ota_status = OTA_STATUS_FAILED;
+    return false;
 }
 
 const ota_state_t* ota_get_state(void)

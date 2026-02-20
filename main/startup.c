@@ -55,15 +55,13 @@ static uint32_t generate_random_sleep_duration(void)
  * MAIN FUNCTIONS
  * ======================================================================== */
 
-esp_err_t startup_sleep_and_sample(startup_report_t *report, hardware_config_t hw_config)
+esp_err_t startup_capture_identity(startup_report_t *report, hardware_config_t hw_config)
 {
-    if (!report) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    // Initialize report structure
+    if (!report) return ESP_ERR_INVALID_ARG;
+
     memset(report, 0, sizeof(startup_report_t));
-    /* Derive node_type from detected hardware rather than a compile-time string */
+
+    /* Node type from detected hardware */
     switch (hw_config) {
         case HW_CONFIG_FULL:
             strncpy(report->node_type, "echoes-full", sizeof(report->node_type) - 1);
@@ -75,9 +73,9 @@ esp_err_t startup_sleep_and_sample(startup_report_t *report, hardware_config_t h
             strncpy(report->node_type, "echoes-unknown", sizeof(report->node_type) - 1);
             break;
     }
-    report->node_type[sizeof(report->node_type) - 1] = '\0';  /* guarantee NUL */
-    
-    // Get MAC address
+    report->node_type[sizeof(report->node_type) - 1] = '\0';
+
+    /* MAC address */
     esp_err_t ret = startup_get_mac_address(report->mac_address);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get MAC address: %s", esp_err_to_name(ret));
@@ -86,67 +84,70 @@ esp_err_t startup_sleep_and_sample(startup_report_t *report, hardware_config_t h
                  "MAC read failed: %s", esp_err_to_name(ret));
         return ret;
     }
-    
-    ESP_LOGI(TAG, "Device MAC: %s", report->mac_address);
-    
-    // Generate random sleep duration
+
+    ESP_LOGI(TAG, "Device MAC: %s  Node type: %s", report->mac_address, report->node_type);
+    return ESP_OK;
+}
+
+esp_err_t startup_jitter_and_sample(startup_report_t *report)
+{
+    if (!report) return ESP_ERR_INVALID_ARG;
+
+    /* Random jitter sleep with light sampling */
     report->sleep_duration_ms = generate_random_sleep_duration();
-    
-    // Calculate sampling parameters
-    const uint32_t sample_interval_ms = 100;  // Sample every 100ms
+
+    const uint32_t sample_interval_ms = 100;
     uint32_t num_samples = report->sleep_duration_ms / sample_interval_ms;
-    
-    if (num_samples == 0) {
-        num_samples = 1;  // At least one sample
-    }
-    
-    ESP_LOGI(TAG, "Sleeping for %lu ms, taking %lu light samples",
+    if (num_samples == 0) num_samples = 1;
+
+    ESP_LOGI(TAG, "Jitter sleep %lu ms, taking %lu light samples",
              report->sleep_duration_ms, num_samples);
-    
-    // Sample light sensor during sleep period
+
     float light_sum = 0.0f;
     uint32_t valid_samples = 0;
-    
+
     for (uint32_t i = 0; i < num_samples; i++) {
-        // Get light level
         float lux = get_lux_level();
-        
-        // Check if reading is valid (not negative, not NaN)
-        if (lux >= 0.0f && lux == lux) {  // lux == lux checks for NaN
+        if (lux >= 0.0f && lux == lux) {
             light_sum += lux;
             valid_samples++;
         } else {
             ESP_LOGW(TAG, "Invalid light reading at sample %lu: %f", i, lux);
         }
-        
-        // Sleep until next sample (or end of sleep period)
         if (i < num_samples - 1) {
             vTaskDelay(pdMS_TO_TICKS(sample_interval_ms));
         }
     }
-    
-    // Calculate average
+
     if (valid_samples > 0) {
         report->avg_light_level = light_sum / valid_samples;
-        report->light_samples = valid_samples;
+        report->light_samples   = valid_samples;
         ESP_LOGI(TAG, "Average light level: %.2f lux (%lu valid samples)",
                  report->avg_light_level, valid_samples);
     } else {
-        report->avg_light_level = -1.0f;  // Indicate no valid readings
-        report->light_samples = 0;
-        report->has_errors = true;
+        report->avg_light_level = -1.0f;
+        report->light_samples   = 0;
+        report->has_errors      = true;
         snprintf(report->error_message, sizeof(report->error_message),
                  "No valid light sensor readings");
         ESP_LOGW(TAG, "No valid light sensor readings obtained");
     }
-    
-    // Sleep for any remaining time
+
+    /* Sleep out any remaining jitter time */
     uint32_t elapsed = num_samples * sample_interval_ms;
     if (elapsed < report->sleep_duration_ms) {
         vTaskDelay(pdMS_TO_TICKS(report->sleep_duration_ms - elapsed));
     }
-    
+
     return ESP_OK;
+}
+
+esp_err_t startup_sleep_and_sample(startup_report_t *report, hardware_config_t hw_config)
+{
+    /* Legacy wrapper — prefer the two-step API in new code */
+    esp_err_t ret = startup_capture_identity(report, hw_config);
+    if (ret != ESP_OK) return ret;
+    return startup_jitter_and_sample(report);
 }
 
 /**

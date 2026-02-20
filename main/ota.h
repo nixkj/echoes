@@ -22,13 +22,22 @@
 #define WIFI_TIMEOUT_MS     20000  // 20 second timeout
 
 /* OTA Configuration */
-#define FIRMWARE_VERSION    "4.4.1"
+#define FIRMWARE_VERSION    "4.3.0"
 #define OTA_URL             "http://192.168.101.2:8000/firmware/echoes.bin"
 #define VERSION_URL         "http://192.168.101.2:8000/firmware/version.txt"
 
 /* Update check settings */
 #define OTA_CHECK_INTERVAL_MS    (24 * 60 * 60 * 1000)  // Check once per day
 #define OTA_BUFFER_SIZE          4096
+
+/* OTA retry settings
+ * ota_check_and_update() will attempt the full version-check + download cycle
+ * up to OTA_MAX_ATTEMPTS times.  Each retry waits OTA_RETRY_BASE_DELAY_MS *
+ * attempt number (linear backoff: 15 s, 30 s, 45 s …) so that a fleet of
+ * devices that all fail together do not all retry in lockstep.
+ */
+#define OTA_MAX_ATTEMPTS            3
+#define OTA_RETRY_BASE_DELAY_MS     15000   // 15 s × attempt index
 
 /* ========================================================================
  * TYPE DEFINITIONS
@@ -72,6 +81,22 @@ bool wifi_is_connected(void);
  * @brief Disconnect from WiFi
  */
 void wifi_disconnect(void);
+
+/**
+ * @brief Register task handles that will be suspended during OTA download.
+ *
+ * Suspending the chaos, lux, and audio detection tasks during a firmware
+ * download reduces ESP-NOW and I2S radio traffic competing with the TCP
+ * stream.  Pass NULL for any handle that does not exist on this node.
+ *
+ * Call this from app_main after xTaskCreate() returns the handles, but
+ * before ota_check_and_update() is invoked.
+ *
+ * @param chaos  Handle of chaos_task  (or NULL)
+ * @param lux    Handle of lux_based_birds_task (or NULL)
+ * @param audio  Handle of audio_detection_task (or NULL)
+ */
+void ota_register_tasks(TaskHandle_t chaos, TaskHandle_t lux, TaskHandle_t audio);
 
 /**
  * @brief Check for firmware update and install if available
