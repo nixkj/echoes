@@ -498,8 +498,6 @@ bird_info_t bird_mapper_get_bird(bird_call_mapper_t *mapper,
                                   detection_type_t detection_type) {
     bird_info_t *bird_list;
     uint8_t list_len;
-    uint32_t r = esp_random();        // Get 32-bit random number
-    uint32_t index = r % 5;             // Range: 0–4
     
     switch (detection_type) {
         case DETECTION_WHISTLE:
@@ -521,8 +519,13 @@ bird_info_t bird_mapper_get_bird(bird_call_mapper_t *mapper,
         default:
             return (bird_info_t){"", "Unknown"};
     }
-    
-    return bird_list[index % list_len];
+
+    if (list_len == 0) return (bird_info_t){"", "Unknown"};
+
+    /* Modulo directly against list_len — the previous code did (r % 5) % list_len
+     * which skewed selection toward lower indices whenever list_len < 5.       */
+    uint32_t index = esp_random() % list_len;
+    return bird_list[index];
 }
 
 size_t bird_mapper_generate_call(bird_call_mapper_t *mapper,

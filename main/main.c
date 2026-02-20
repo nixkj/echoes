@@ -31,27 +31,9 @@
 
 static const char *TAG = "MAIN";
 
-// Task for delayed firmware update validation
-void ota_validation_task(void *param)
-{
-    // Wait for system to run successfully for 2 minutes
-    ESP_LOGI(TAG, "OTA validation: Waiting 2 minutes before marking valid...");
-    vTaskDelay(pdMS_TO_TICKS(120000));  // 2 minutes
-    
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    esp_ota_img_states_t ota_state;
-    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
-        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-            ESP_LOGI(TAG, "System stable for 2 minutes - marking firmware as valid");
-            esp_ota_mark_app_valid_cancel_rollback();
-        }
-    }
-    
-    vTaskDelete(NULL);  // Task done
-}
-
 void app_main(void)
 {
+    led_init();
     set_led(0, BRIGHT_FULL);
 
     ESP_LOGI(TAG, "========================================");
@@ -72,9 +54,6 @@ void app_main(void)
     /* Initialise remote config with defaults (works even without WiFi) */
     remote_config_init();
 
-    /* Initialize LEDs FIRST (needed for ALL status feedback including OTA) */
-    led_init();
-    
     /* Initialize system hardware (including light sensor detection) */
     ESP_LOGI(TAG, "Initializing system...");
     system_init();
@@ -186,6 +165,35 @@ void app_main(void)
         /* Register handles so OTA can suspend/resume them around the download */
         ota_register_tasks(h_chaos, h_lux, h_audio);
 
+        /* Confirm the running firmware is valid before attempting a new OTA update.
+         *
+         * If this image was installed via OTA it will be in ESP_OTA_IMG_PENDING_VERIFY.
+         * esp_ota_begin() refuses to flash while the running partition is unconfirmed
+         * (ESP_ERR_OTA_ROLLBACK_INVALID_STATE).
+         *
+         * We wait here for up to 2 minutes.  If the system stays alive that long it has
+         * proven stability and we mark valid, then proceed to check for updates.
+         * If the firmware crashes before 2 minutes the bootloader will automatically
+         * roll back to the previous image on the next boot — which is the intended
+         * safety behaviour.                                                          */
+        {
+            const esp_partition_t *running = esp_ota_get_running_partition();
+            esp_ota_img_states_t img_state;
+            if (esp_ota_get_state_partition(running, &img_state) == ESP_OK &&
+                img_state == ESP_OTA_IMG_PENDING_VERIFY) {
+
+                ESP_LOGI(TAG, "OTA validation: new firmware detected — waiting 2 min to confirm stability...");
+                vTaskDelay(pdMS_TO_TICKS(120000));   /* 2 minutes */
+
+                /* Re-check state in case something reset it during the wait */
+                if (esp_ota_get_state_partition(running, &img_state) == ESP_OK &&
+                    img_state == ESP_OTA_IMG_PENDING_VERIFY) {
+                    ESP_LOGI(TAG, "System stable — marking firmware valid");
+                    esp_ota_mark_app_valid_cancel_rollback();
+                }
+            }
+        }
+
         /* Check for updates — retries internally up to OTA_MAX_ATTEMPTS times */
         ESP_LOGI(TAG, "Checking for firmware updates...");
         bool updated = ota_check_and_update();
@@ -275,7 +283,4 @@ void app_main(void)
     set_led(BRIGHT_FULL, 0);
     vTaskDelay(pdMS_TO_TICKS(500));
     set_led(0, 0);
-
-    // Start task that will validate firmware after delay
-    xTaskCreate(ota_validation_task, "ota_validate", 2048, NULL, 2, NULL);
 }

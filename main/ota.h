@@ -24,7 +24,7 @@
 #define WIFI_TIMEOUT_MS     20000  // 20 second timeout
 
 /* OTA Configuration */
-#define FIRMWARE_VERSION    "5.0.0"
+#define FIRMWARE_VERSION    "5.0.2"
 #define OTA_URL             "http://192.168.101.2:8000/firmware/echoes.bin"
 #define VERSION_URL         "http://192.168.101.2:8000/firmware/version.txt"
 
