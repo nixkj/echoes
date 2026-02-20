@@ -252,7 +252,7 @@ void app_main(void)
         }
 
         xTaskCreate(flock_task, "flock", 4096, NULL, 4, NULL);
-        ESP_LOGI(TAG, "Chaos mode task started");
+        ESP_LOGI(TAG, "Flock task started");
     } else {
         ESP_LOGI(TAG, "Echoes of the Machine running (tasks already started)");
     }

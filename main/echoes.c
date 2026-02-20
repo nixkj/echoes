@@ -854,9 +854,9 @@ float get_volume_for_lux(float lux)
  * LUX-BASED BIRD SELECTION
  * ======================================================================== */
 
-/* Forward declaration — full definition is in chaos_task section below */
+/* Forward declaration — full definition is in flock_task section below */
 static const bird_info_t k_all_birds[];
-#define NUM_ALL_BIRDS  11u   /* must match the table in chaos_task section */
+#define NUM_ALL_BIRDS  11u   /* must match the table in flock_task section */
 
 void lux_based_birds_task(void *param) {
     if (g_system_state.light_sensor_type == LIGHT_SENSOR_NONE) {
@@ -885,11 +885,13 @@ void lux_based_birds_task(void *param) {
         float last_lux  = prev_lux;
         prev_lux = lux;
 
-        /* Flash detection using remote config thresholds */
+        /* Flash detection using remote config thresholds.
+         * Note: last_lux holds the previous reading; prev_lux has already
+         * been updated to the current lux value above.                      */
         bool is_flash = (fabsf(raw_delta) >= cfg->lux_flash_threshold) ||
                         (fabsf(raw_delta) >= cfg->lux_flash_min_abs &&
-                         prev_lux > 0.0f &&
-                         fabsf(raw_delta) >= prev_lux * cfg->lux_flash_percent);
+                         last_lux > 0.0f &&
+                         fabsf(raw_delta) >= last_lux * cfg->lux_flash_percent);
 
         if (is_flash) {
             ESP_LOGI(TAG, "⚡ Flash: %.1f → %.1f lux (Δ%.1f)", last_lux, lux, raw_delta);
@@ -963,17 +965,17 @@ void lux_based_birds_task(void *param) {
  * Forward-declared above so lux_based_birds_task can reference k_all_birds
  * for flash events.  Defined here once.                                     */
 static const bird_info_t k_all_birds[] = {
-    { "generate_piet_my_vrou",          "Piet-my-vrou"            },
-    { "generate_cape_robin_chat",        "Cape Robin-Chat"         },
-    { "generate_southern_boubou",        "Southern Boubou"         },
-    { "generate_red_eyed_dove",          "Red-eyed Dove"           },
-    { "generate_glossy_starling",        "Glossy Starling"         },
-    { "generate_spotted_eagle_owl",      "Spotted Eagle-Owl"       },
-    { "generate_fork_tailed_drongo",     "Fork-tailed Drongo"      },
-    { "generate_cape_canary",            "Cape Canary"             },
-    { "generate_southern_masked_weaver", "Southern Masked Weaver"  },
-    { "generate_red_billed_quelea",      "Red-billed Quelea"       },
-    { "generate_paradise_flycatcher",    "Paradise Flycatcher"     },
+    { "piet_my_vrou",          "Piet-my-vrou"            },
+    { "cape_robin_chat",        "Cape Robin-Chat"         },
+    { "southern_boubou",        "Southern Boubou"         },
+    { "red_eyed_dove",          "Red-eyed Dove"           },
+    { "glossy_starling",        "Glossy Starling"         },
+    { "spotted_eagle_owl",      "Spotted Eagle-Owl"       },
+    { "fork_tailed_drongo",     "Fork-tailed Drongo"      },
+    { "cape_canary",            "Cape Canary"             },
+    { "southern_masked_weaver", "Southern Masked Weaver"  },
+    { "red_billed_quelea",      "Red-billed Quelea"       },
+    { "paradise_flycatcher",    "Paradise Flycatcher"     },
 };
 /* NUM_ALL_BIRDS defined above as 11u — must match this table */
 

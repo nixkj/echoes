@@ -29,7 +29,7 @@ static const char *TAG = "OTA";
 
 /* Task handles so we can suspend noisy tasks during the OTA download.
  * Populated by ota_register_tasks() called from main.c after task creation. */
-static TaskHandle_t s_chaos_task_handle   = NULL;
+static TaskHandle_t s_flock_task_handle   = NULL;
 static TaskHandle_t s_lux_task_handle     = NULL;
 static TaskHandle_t s_audio_task_handle   = NULL;
 
@@ -312,7 +312,7 @@ bool ota_perform_update(const char *url)
      * Keeping the radio quiet during download reduces TCP retransmissions
      * on congested channels.  Tasks are resumed on failure or after restart
      * is called (success path calls esp_restart() so resume is not needed). */
-    if (s_chaos_task_handle)   vTaskSuspend(s_chaos_task_handle);
+    if (s_flock_task_handle)   vTaskSuspend(s_flock_task_handle);
     if (s_lux_task_handle)     vTaskSuspend(s_lux_task_handle);
     if (s_audio_task_handle)   vTaskSuspend(s_audio_task_handle);
     ESP_LOGI(TAG, "Background tasks suspended for OTA download");
@@ -448,7 +448,7 @@ bool ota_perform_update(const char *url)
 
         /* Restore power save and background tasks on failure */
         esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-        if (s_chaos_task_handle)   vTaskResume(s_chaos_task_handle);
+        if (s_flock_task_handle)   vTaskResume(s_flock_task_handle);
         if (s_lux_task_handle)     vTaskResume(s_lux_task_handle);
         if (s_audio_task_handle)   vTaskResume(s_audio_task_handle);
         ESP_LOGI(TAG, "Background tasks resumed after failed download");
@@ -475,7 +475,7 @@ bool ota_perform_update(const char *url)
 
         /* Restore power save and background tasks on failure */
         esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-        if (s_chaos_task_handle)   vTaskResume(s_chaos_task_handle);
+        if (s_flock_task_handle)   vTaskResume(s_flock_task_handle);
         if (s_lux_task_handle)     vTaskResume(s_lux_task_handle);
         if (s_audio_task_handle)   vTaskResume(s_audio_task_handle);
 
@@ -510,13 +510,13 @@ bool ota_perform_update(const char *url)
     return true;
 }
 
-void ota_register_tasks(TaskHandle_t chaos, TaskHandle_t lux, TaskHandle_t audio)
+void ota_register_tasks(TaskHandle_t flock, TaskHandle_t lux, TaskHandle_t audio)
 {
-    s_chaos_task_handle = chaos;
+    s_flock_task_handle = flock;
     s_lux_task_handle   = lux;
     s_audio_task_handle = audio;
     ESP_LOGI(TAG, "OTA registered %d task handle(s) for suspension during download",
-             (chaos ? 1 : 0) + (lux ? 1 : 0) + (audio ? 1 : 0));
+             (flock ? 1 : 0) + (lux ? 1 : 0) + (audio ? 1 : 0));
 }
 
 bool ota_check_and_update(void)

@@ -31,7 +31,7 @@
 /* Detection frequencies */
 #define WHISTLE_FREQ        2000
 #define VOICE_FREQ          200
-#define BIRDSONG_FREQ       8000   /**< High-freq Goertzel bin for melodic birdsong */
+#define BIRDSONG_FREQ       3500   /**< Goertzel bin for melodic birdsong detection */
 
 /* Adaptive threshold parameters */
 #define ALPHA               0.98f       // Smoothing factor
@@ -84,7 +84,7 @@
 
 /* ESP-NOW flock mode
  * A single unified activity threshold replaces the old separate "flood" and
- * "chaos" states.  When FLOCK_MSG_COUNT or more messages arrive within
+ * "flock" states.  When FLOCK_MSG_COUNT or more messages arrive within
  * FLOCK_WINDOW_MS, espnow_mesh_is_flock_mode() returns true and the flock
  * task fires random bird calls with LED strobing.
  *
@@ -301,4 +301,4 @@ audio_buffer_t *get_audio_buffer(void);
 typedef struct markov_chain_t markov_chain_t;
 markov_chain_t *get_markov(void);
 
-#endif /* SA_BIRD_SYSTEM_H */
+#endif /* ECHOES_H */

@@ -463,7 +463,7 @@ size_t generate_paradise_flycatcher(bird_synthesizer_t *synth, audio_buffer_t *o
 void bird_mapper_init(bird_call_mapper_t *mapper, uint32_t sample_rate) {
     mapper->synth.sample_rate = sample_rate;
     mapper->synth.chunk_size = CHUNK_SIZE;
-    mapper->synth.quelea_gain = 1.2f;   /* default; overwritten by echoes.c from remote config */   /* default; overwritten by echoes.c from remote config */
+    mapper->synth.quelea_gain = 1.2f;   /* default; overwritten by echoes.c from remote config */
 
     /* Default (neutral) lists — overridden by bird_mapper_update_for_lux() */
 

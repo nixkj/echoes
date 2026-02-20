@@ -266,6 +266,22 @@ bool espnow_mesh_init(bird_call_mapper_t *mapper, markov_chain_t *mc)
     }
 
     ESP_LOGI(TAG, "ESP-NOW mesh initialised (broadcast-only)");
+
+    /* Seed local lux now so blend_lux() has a valid reference immediately,
+     * even if the lux broadcast task hasn't fired yet.  A negative result
+     * (sensor not ready) leaves s_local_lux at its default -1000.0f and
+     * blend_lux() will fall back to the remote value until the first real
+     * reading arrives.                                                      */
+    {
+        /* get_lux_level() is declared in echoes.h which is already included
+         * via espnow_mesh.h → echoes.h.                                     */
+        float initial_lux = get_lux_level();
+        if (initial_lux >= 0.0f) {
+            s_local_lux = initial_lux;
+            ESP_LOGI(TAG, "Initial local lux seeded: %.1f", s_local_lux);
+        }
+    }
+
     return true;
 }
 

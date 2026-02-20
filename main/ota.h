@@ -24,7 +24,7 @@
 #define WIFI_TIMEOUT_MS     20000  // 20 second timeout
 
 /* OTA Configuration */
-#define FIRMWARE_VERSION    "5.1.3"
+#define FIRMWARE_VERSION    "5.2.0"
 #define OTA_URL             "http://192.168.101.2:8000/firmware/echoes.bin"
 #define VERSION_URL         "http://192.168.101.2:8000/firmware/version.txt"
 
@@ -87,18 +87,18 @@ void wifi_disconnect(void);
 /**
  * @brief Register task handles that will be suspended during OTA download.
  *
- * Suspending the chaos, lux, and audio detection tasks during a firmware
+ * Suspending the flock, lux, and audio detection tasks during a firmware
  * download reduces ESP-NOW and I2S radio traffic competing with the TCP
  * stream.  Pass NULL for any handle that does not exist on this node.
  *
  * Call this from app_main after xTaskCreate() returns the handles, but
  * before ota_check_and_update() is invoked.
  *
- * @param chaos  Handle of chaos_task  (or NULL)
+ * @param flock  Handle of flock_task  (or NULL)
  * @param lux    Handle of lux_based_birds_task (or NULL)
  * @param audio  Handle of audio_detection_task (or NULL)
  */
-void ota_register_tasks(TaskHandle_t chaos, TaskHandle_t lux, TaskHandle_t audio);
+void ota_register_tasks(TaskHandle_t flock, TaskHandle_t lux, TaskHandle_t audio);
 
 /**
  * @brief Check for firmware update and install if available

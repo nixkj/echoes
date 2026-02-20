@@ -44,16 +44,22 @@ light_band_t markov_lux_to_band(float lux)
 uint8_t markov_make_state(detection_type_t detection, light_band_t band)
 {
     /* Map detection_type_t to a 0-based index:
-     *   DETECTION_NONE    → 0  (IDLE row)
-     *   DETECTION_WHISTLE → 1
-     *   DETECTION_VOICE   → 2
-     *   DETECTION_CLAP    → 3               */
+     *   DETECTION_NONE     → 0  (IDLE row)
+     *   DETECTION_WHISTLE  → 1
+     *   DETECTION_VOICE    → 2
+     *   DETECTION_CLAP     → 3
+     *   DETECTION_BIRDSONG → 0  (IDLE row — the Markov state space has four
+     *                            sound rows; birdsong is not modelled as a
+     *                            separate row.  Birdsong events still update
+     *                            the chain via markov_on_event() but are
+     *                            treated as ambient/idle transitions so they
+     *                            do not inflate whistle/voice/clap counts.)  */
     uint8_t d;
     switch (detection) {
         case DETECTION_WHISTLE: d = 1; break;
         case DETECTION_VOICE:   d = 2; break;
         case DETECTION_CLAP:    d = 3; break;
-        default:                d = 0; break;  /* IDLE */
+        default:                d = 0; break;  /* IDLE (includes BIRDSONG) */
     }
     return MARKOV_STATE(d, (uint8_t)band);
 }

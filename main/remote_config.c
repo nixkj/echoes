@@ -94,7 +94,10 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .restart_requested           = false,
     .restart_token               = 0,
 
-    /* Quiet hours (17:00 → 08:00, disabled until server confirms) */
+    /* Quiet hours (17:00 → 08:00).
+     * Enabled by default, but remote_config_is_quiet_hours() will not
+     * activate silence until server_epoch_s is populated by a successful
+     * config fetch (server_epoch_s == 0 at boot → function returns false). */
     .quiet_hours_enabled         = true,
     .quiet_hour_start            = 17,
     .quiet_hour_end              = 8,
