@@ -344,8 +344,6 @@ I (xxx) MAIN: System started successfully!
 
 All contributors should be credited in any reuse, citation, or derivative work.
 
----
-
 ## License
 
 ### Code
@@ -354,8 +352,6 @@ All software components in this repository are licensed under the **MIT License*
 
 You are free to use, modify, distribute, and build upon this code, including for commercial purposes, provided the original copyright notice and license are included.
 
----
-
 ### Documentation, Prompts, and Media
 
 Textual materials, prompt designs, exhibition documentation, and accompanying media are licensed under the **Creative Commons Attribution 4.0 International (CC BY 4.0)**.
@@ -363,8 +359,6 @@ Textual materials, prompt designs, exhibition documentation, and accompanying me
 Suggested attribution format:
 
 > Nixon, K. J., & Filinich Orozco, R. (2026). *Echoes of the Machine*. University of the Witwatersrand, Johannesburg.
-
----
 
 ## LLM-Assisted Development Statement
 
@@ -376,14 +370,10 @@ This project incorporates Large Language Model (LLM) assistance in the developme
 
 This statement supports transparency, reproducibility, and academic integrity.
 
----
-
 ## Institutional Context
 
 Developed within the academic context of the **University of the Witwatersrand, Johannesburg**.
 Unless otherwise stated, the views expressed are those of the authors and do not necessarily reflect those of the institution.
-
----
 
 ## Citation
 
