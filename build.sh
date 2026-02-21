@@ -46,7 +46,7 @@ print_info() {
 check_idf() {
     if [ -z "$IDF_PATH" ]; then
         print_error "ESP-IDF environment not set up!"
-        print_info "Run: . \$HOME/esp/esp-idf-v5.4.1/export.sh"
+        print_info "Run: . \$HOME/esp/esp-idf-v5.5.2/export.sh"
         exit 1
     fi
     print_success "ESP-IDF environment ready"

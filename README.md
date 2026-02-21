@@ -410,7 +410,7 @@ I (xxx) MAIN: System started successfully!
 
 ## Version History
 
-**5.3.0** — Current
+**5.3.1** — Current
 - General tidy up of documentation and code with repo going public
 - WiFi credentials moved to `idf.py menuconfig` (Kconfig) — no longer stored in source
 - Status dashboard to see the state of all nodes

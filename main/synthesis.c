@@ -37,21 +37,26 @@ size_t generate_tone(bird_synthesizer_t *synth, int16_t *buffer, size_t offset,
                      float vibrato_rate, float vibrato_depth) {
     float duration_s = duration_ms / 1000.0f;
     size_t num_samples = (size_t)(synth->sample_rate * duration_s);
-    
+
+    /* Phase accumulator: integrates instantaneous frequency each sample so
+     * vibrato modulation produces smooth FM with no phase discontinuities. */
+    float phase = 0.0f;
+    const float phase_inc_base = 2.0f * M_PI / synth->sample_rate;
+
     for (size_t i = 0; i < num_samples; i++) {
         float t = (float)i / synth->sample_rate;
-        
+
         float freq_mod = freq;
-        if (vibrato_rate > 0) {
+        if (vibrato_rate > 0.0f) {
             freq_mod = freq * (1.0f + vibrato_depth * sinf(2.0f * M_PI * vibrato_rate * t));
         }
-        
+        phase += phase_inc_base * freq_mod;
+
         float env = envelope(t, duration_s, 0.02f, 0.05f);
-        float sample_f = 32767.0f * amplitude * VOLUME * env * 
-                       sinf(2.0f * M_PI * freq_mod * t);
+        float sample_f = 32767.0f * amplitude * VOLUME * env * sinf(phase);
         buffer[offset + i] = (int16_t)sample_f;
     }
-    
+
     return num_samples;
 }
 
@@ -60,18 +65,25 @@ size_t generate_sweep(bird_synthesizer_t *synth, int16_t *buffer, size_t offset,
                       float amplitude) {
     float duration_s = duration_ms / 1000.0f;
     size_t num_samples = (size_t)(synth->sample_rate * duration_s);
-    
+
+    /* Phase accumulator: integrates instantaneous frequency each sample.
+     * Using sinf(2π * freq * t) with a time-varying freq causes phase
+     * discontinuities because freq*t is not the integral of freq dt.
+     * Accumulating phase correctly produces a smooth, click-free sweep. */
+    float phase = 0.0f;
+    const float phase_inc_base = 2.0f * M_PI / synth->sample_rate;
+
     for (size_t i = 0; i < num_samples; i++) {
         float t = (float)i / synth->sample_rate;
         float progress = t / duration_s;
         float freq = start_freq + (end_freq - start_freq) * progress;
-        
+        phase += phase_inc_base * freq;
+
         float env = envelope(t, duration_s, 0.01f, 0.03f);
-        float sample_f = 32767.0f * amplitude * VOLUME * env * 
-                       sinf(2.0f * M_PI * freq * t);
+        float sample_f = 32767.0f * amplitude * VOLUME * env * sinf(phase);
         buffer[offset + i] = (int16_t)sample_f;
     }
-    
+
     return num_samples;
 }
 
@@ -80,17 +92,23 @@ size_t generate_tremolo(bird_synthesizer_t *synth, int16_t *buffer, size_t offse
                         float trem_depth, float amplitude) {
     float duration_s = duration_ms / 1000.0f;
     size_t num_samples = (size_t)(synth->sample_rate * duration_s);
-    
+
+    /* Phase accumulator for the carrier: base_freq is constant here so the
+     * accumulator vs sinf(2π*f*t) difference is negligible, but kept
+     * consistent with generate_tone/generate_sweep for correctness. */
+    float phase = 0.0f;
+    const float phase_inc = 2.0f * M_PI * base_freq / synth->sample_rate;
+
     for (size_t i = 0; i < num_samples; i++) {
         float t = (float)i / synth->sample_rate;
-        
+        phase += phase_inc;
+
         float am = 1.0f - trem_depth * (1.0f - (1.0f + sinf(2.0f * M_PI * trem_rate * t)) / 2.0f);
         float env = envelope(t, duration_s, 0.02f, 0.05f);
-        float sample_f = 32767.0f * amplitude * VOLUME * env * am * 
-                       sinf(2.0f * M_PI * base_freq * t);
+        float sample_f = 32767.0f * amplitude * VOLUME * env * am * sinf(phase);
         buffer[offset + i] = (int16_t)sample_f;
     }
-    
+
     return num_samples;
 }
 
@@ -286,11 +304,14 @@ static size_t _quelea_sweep(bird_synthesizer_t *synth, int16_t *buf, size_t off,
 {
     float dur = ms / 1000.0f;
     size_t n   = (size_t)(synth->sample_rate * dur);
+    float phase = 0.0f;
+    const float phase_inc_base = 2.0f * M_PI / synth->sample_rate;
     for (size_t i = 0; i < n; i++) {
         float t    = (float)i / synth->sample_rate;
         float freq = f0 + (f1 - f0) * (t / dur);
         float env  = envelope(t, dur, 0.01f, 0.03f);
-        buf[off + i] = (int16_t)(32767.0f * amp * env * sinf(2.0f * M_PI * freq * t));
+        phase += phase_inc_base * freq;
+        buf[off + i] = (int16_t)(32767.0f * amp * env * sinf(phase));
     }
     return n;
 }
@@ -300,11 +321,14 @@ static size_t _quelea_tremolo(bird_synthesizer_t *synth, int16_t *buf, size_t of
 {
     float dur = ms / 1000.0f;
     size_t n   = (size_t)(synth->sample_rate * dur);
+    float phase = 0.0f;
+    const float phase_inc = 2.0f * M_PI * freq / synth->sample_rate;
     for (size_t i = 0; i < n; i++) {
         float t  = (float)i / synth->sample_rate;
         float am = 1.0f - tdepth * (1.0f - (1.0f + sinf(2.0f * M_PI * trate * t)) / 2.0f);
         float env = envelope(t, dur, 0.02f, 0.05f);
-        buf[off + i] = (int16_t)(32767.0f * amp * env * am * sinf(2.0f * M_PI * freq * t));
+        phase += phase_inc;
+        buf[off + i] = (int16_t)(32767.0f * amp * env * am * sinf(phase));
     }
     return n;
 }

@@ -159,12 +159,20 @@ esp_err_t startup_send_report(const startup_report_t *report)
     // Set POST data
     esp_http_client_set_post_field(client, post_data, len);
     
-    // Perform HTTP request with exponential backoff retry.
-    // Delay before attempt N (0-indexed): STARTUP_RETRY_BASE_MS * 2^N
-    //   Attempt 0 → immediate
-    //   Attempt 1 → 2 000 ms
-    //   Attempt 2 → 4 000 ms
-    //   Attempt 3 → 8 000 ms
+    /* Perform HTTP request.
+     *
+     * Retry policy: only ESP_ERR_HTTP_EAGAIN (connection timeout) is retried
+     * with exponential backoff.  Hard errors (connection refused, DNS failure,
+     * etc.) are not retried — they are unlikely to resolve quickly and the
+     * boot sequence should not be held up.  Server-side non-2xx responses are
+     * also not retried (the server received the data; the error is its own).
+     *
+     * Backoff delays (0-indexed attempt N): STARTUP_RETRY_BASE_MS * 2^(N-1)
+     *   Attempt 0 → immediate
+     *   Attempt 1 → 2 000 ms
+     *   Attempt 2 → 4 000 ms
+     *   Attempt 3 → 8 000 ms
+     */
     esp_err_t err = ESP_FAIL;
     int attempt = 0;
 
@@ -188,19 +196,24 @@ esp_err_t startup_send_report(const startup_report_t *report)
                 ESP_LOGI(TAG, "Startup report sent successfully (attempt %d)", attempt + 1);
                 break;
             } else {
+                /* Non-2xx: server received the request but rejected it.
+                 * No point retrying — treat as a permanent failure.     */
                 ESP_LOGW(TAG, "Server returned status %d — not retrying", status_code);
                 err = ESP_FAIL;
                 break;
             }
         } else if (err == ESP_ERR_HTTP_EAGAIN) {
+            /* Timeout — worth retrying in case the server is temporarily
+             * unreachable.  Increment attempt and loop.                 */
             ESP_LOGW(TAG, "Startup report timed out (attempt %d/%d)",
                      attempt + 1, STARTUP_MAX_RETRIES);
+            attempt++;
+            continue;
         } else {
+            /* Hard transport error (refused, DNS failure, etc.) — not retried. */
             ESP_LOGE(TAG, "HTTP POST failed: %s — not retrying", esp_err_to_name(err));
             break;
         }
-
-        attempt++;
     }
 
     esp_http_client_cleanup(client);

@@ -159,16 +159,6 @@ bool wifi_is_connected(void)
     return s_ota_state.wifi_connected;
 }
 
-void wifi_disconnect(void)
-{
-    if (s_ota_state.wifi_connected) {
-        ESP_LOGI(TAG, "Disconnecting WiFi...");
-        esp_wifi_disconnect();
-        esp_wifi_stop();
-        s_ota_state.wifi_connected = false;
-    }
-}
-
 /* ========================================================================
  * OTA FUNCTIONS
  * ======================================================================== */
@@ -282,16 +272,25 @@ static bool fetch_version_string(char *version_buffer, size_t buffer_size)
  * @brief Compare version strings
  * @param v1 Version string 1 (e.g., "1.2.3")
  * @param v2 Version string 2
- * @return positive if v1 > v2, 0 if equal, negative if v1 < v2
+ * @return positive if v1 > v2, 0 if equal, negative if v1 < v2, -1 if malformed
  */
 static int compare_versions(const char *v1, const char *v2)
 {
     int v1_major = 0, v1_minor = 0, v1_patch = 0;
     int v2_major = 0, v2_minor = 0, v2_patch = 0;
-    
-    sscanf(v1, "%d.%d.%d", &v1_major, &v1_minor, &v1_patch);
-    sscanf(v2, "%d.%d.%d", &v2_major, &v2_minor, &v2_patch);
-    
+
+    /* Check sscanf return values — a malformed version string (e.g. an HTTP
+     * error page snippet) would silently leave variables at 0, making the
+     * comparison report "up to date" and suppressing a valid OTA update.   */
+    if (sscanf(v1, "%d.%d.%d", &v1_major, &v1_minor, &v1_patch) != 3) {
+        ESP_LOGE(TAG, "Malformed version string v1: '%s'", v1);
+        return -1;
+    }
+    if (sscanf(v2, "%d.%d.%d", &v2_major, &v2_minor, &v2_patch) != 3) {
+        ESP_LOGE(TAG, "Malformed version string v2: '%s'", v2);
+        return -1;
+    }
+
     if (v1_major != v2_major) return v1_major - v2_major;
     if (v1_minor != v2_minor) return v1_minor - v2_minor;
     return v1_patch - v2_patch;
@@ -494,6 +493,23 @@ bool ota_perform_update(const char *url)
     err = esp_ota_set_boot_partition(update_partition);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
+
+        /* Restore power save and resume background tasks — same cleanup as
+         * the esp_ota_end() failure path above.                            */
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        if (s_flock_task_handle)   vTaskResume(s_flock_task_handle);
+        if (s_lux_task_handle)     vTaskResume(s_lux_task_handle);
+        if (s_audio_task_handle)   vTaskResume(s_audio_task_handle);
+        ESP_LOGI(TAG, "Background tasks resumed after failed boot partition set");
+
+        /* Indicate failure with rapid blue blink */
+        for (int i = 0; i < 5; i++) {
+            set_led(0, BRIGHT_FULL);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            set_led(0, 0);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+
         return false;
     }
 

@@ -86,9 +86,11 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info,
     const espnow_msg_t *msg = (const espnow_msg_t *)data;
     if (msg->magic != ESPNOW_MAGIC) return;
 
-    /* Record arrival timestamp for flock mode detection */
+    /* Record arrival timestamp for flock mode detection.
+     * on_data_recv is called from the WiFi task context, not a true ISR,
+     * so the standard xTaskGetTickCount() is correct here.               */
     {
-        uint32_t now = (uint32_t)(xTaskGetTickCountFromISR() * portTICK_PERIOD_MS);
+        uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         s_rx_times[s_rx_head] = now;
         s_rx_head = (s_rx_head + 1) % FLOCK_RING_MAX;
     }

@@ -467,22 +467,21 @@ static float calculate_vu_level(const int16_t *buffer, size_t num_samples)
 /**
  * @brief Smooth VU meter updates with hysteresis (prevents rapid flickering)
  */
-static float smooth_vu_level(float current, float target, float smooth_factor)
+static float smooth_vu_level(float current, float target)
 {
-    (void)smooth_factor;  // Unused - kept for API compatibility
-    
-    // If target is zero (dead zone), turn off immediately
+    /* Off immediately on silence — no trailing glow in the dead zone. */
     if (target == 0.0f) {
         return 0.0f;
     }
-    
-    // If we're off and target is on, turn on immediately
+
+    /* Jump on immediately from silence so the first beat is never missed. */
     if (current == 0.0f && target > 0.0f) {
         return target;
     }
-    
-    // For level changes, use fast transitions
-    const float FAST_SMOOTH = 0.3f;  // Fast response for level changes
+
+    /* Fast blend for level changes — 0.3 on current keeps a little inertia
+     * to prevent single-frame flicker between adjacent stepped levels.     */
+    const float FAST_SMOOTH = 0.3f;
     return current * FAST_SMOOTH + target * (1.0f - FAST_SMOOTH);
 }
 
@@ -810,7 +809,7 @@ void audio_detection_task(void *param) {
             float target_vu = calculate_vu_level(buffer, num_samples);
             
             // Apply hysteresis to prevent flickering
-            vu_level = smooth_vu_level(vu_level, target_vu, 0.0f);  // 3rd param unused but kept for compatibility
+            vu_level = smooth_vu_level(vu_level, target_vu);
             
             // Update white LED to show audio level
             // Blue LED stays off in minimal mode
@@ -856,7 +855,7 @@ float get_volume_for_lux(float lux)
 
 /* Forward declaration — full definition is in flock_task section below */
 static const bird_info_t k_all_birds[];
-#define NUM_ALL_BIRDS  11u   /* must match the table in flock_task section */
+#define NUM_ALL_BIRDS  11u
 
 void lux_based_birds_task(void *param) {
     if (g_system_state.light_sensor_type == LIGHT_SENSOR_NONE) {
@@ -885,9 +884,7 @@ void lux_based_birds_task(void *param) {
         float last_lux  = prev_lux;
         prev_lux = lux;
 
-        /* Flash detection using remote config thresholds.
-         * Note: last_lux holds the previous reading; prev_lux has already
-         * been updated to the current lux value above.                      */
+        /* Flash detection using remote config thresholds. */
         bool is_flash = (fabsf(raw_delta) >= cfg->lux_flash_threshold) ||
                         (fabsf(raw_delta) >= cfg->lux_flash_min_abs &&
                          last_lux > 0.0f &&
@@ -977,7 +974,11 @@ static const bird_info_t k_all_birds[] = {
     { "red_billed_quelea",      "Red-billed Quelea"       },
     { "paradise_flycatcher",    "Paradise Flycatcher"     },
 };
-/* NUM_ALL_BIRDS defined above as 11u — must match this table */
+/* Verify NUM_ALL_BIRDS matches the table at compile time.
+ * If you add or remove a bird, update the #define above — this assert
+ * will catch any mismatch before it becomes a runtime bug.             */
+_Static_assert(sizeof(k_all_birds) / sizeof(k_all_birds[0]) == NUM_ALL_BIRDS,
+               "NUM_ALL_BIRDS does not match k_all_birds table — update the #define");
 
 /* Index of Quelea in k_all_birds — used for the 60 % selection */
 #define QUELEA_IDX  9u

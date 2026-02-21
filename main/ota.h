@@ -22,7 +22,7 @@
 #define WIFI_TIMEOUT_MS     20000  // 20 second timeout
 
 /* OTA Configuration */
-#define FIRMWARE_VERSION    "5.3.0"
+#define FIRMWARE_VERSION    "5.3.1"
 #define OTA_URL             "http://192.168.101.2:8000/firmware/echoes.bin"
 #define VERSION_URL         "http://192.168.101.2:8000/firmware/version.txt"
 
@@ -76,11 +76,6 @@ bool wifi_init_and_connect(void);
  * @return true if connected, false otherwise
  */
 bool wifi_is_connected(void);
-
-/**
- * @brief Disconnect from WiFi
- */
-void wifi_disconnect(void);
 
 /**
  * @brief Register task handles that will be suspended during OTA download.
