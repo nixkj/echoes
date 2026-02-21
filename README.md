@@ -1,8 +1,6 @@
 # Echoes of the Machine
 
-**Ken Nixon & Renzo Filinich Orozco**
-
-**University of the Witwatersrand**
+**Ken Nixon & Renzo Filinich Orozco, University of the Witwatersrand**
 
 A cross-disciplinary interactive art exhibition exploring cybernetics and feedback, as well as machine-assisted code generation.
 
