@@ -410,10 +410,6 @@ You are free to use, modify, distribute, and build upon this code, including for
 
 Textual materials, prompt designs, exhibition documentation, and accompanying media are licensed under the **Creative Commons Attribution 4.0 International (CC BY 4.0)**.
 
-Suggested attribution format:
-
-> Nixon, K. J., & Filinich Orozco, R. (2026). *Echoes of the Machine*. University of the Witwatersrand, Johannesburg. https://github.com/nixkj/echoes
-
 ## LLM-Assisted Development Statement
 
 This project incorporates Large Language Model (LLM) assistance in the development of selected code components and textual materials.
@@ -429,9 +425,9 @@ This statement supports transparency, reproducibility, and academic integrity.
 Developed within the academic context of the **University of the Witwatersrand, Johannesburg**.
 Unless otherwise stated, the views expressed are those of the authors and do not necessarily reflect those of the institution.
 
-## Citation
+## Citation / Attribution
 
-If you reference or build upon this work, please cite:
+If you reference or build upon this work, please cite or attribute:
 
 > Nixon, K., & Filinich Orozco, R. (2026). *Echoes of the Machine*. University of the Witwatersrand. https://github.com/nixkj/echoes
 
