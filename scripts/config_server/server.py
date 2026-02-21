@@ -451,8 +451,74 @@ _restart_token: int = 0          # unique uint32 per restart command
 
 
 # ---------------------------------------------------------------------------
+# NODE REGISTRY  — tracks every ESP32 that has ever contacted this server
+# ---------------------------------------------------------------------------
+# Keyed by MAC address (string).  Each entry:
+#   { mac, node_type, firmware, first_seen, last_seen, poll_count }
+# `last_seen` is updated on:
+#   - POST /startup   (device boot)
+#   - GET  /config    (device 60-s poll)  — MAC extracted from X-Device-MAC header
+#
+# The registry is in-memory only; it resets when the server restarts.
+# Persistent storage (e.g. JSON file) can be added trivially if needed.
+
+import threading
+_nodes_lock = threading.Lock()
+_nodes: dict = {}   # mac → node dict
+
+def _node_checkin(mac: str, node_type: str = "", firmware: str = "", source: str = "config"):
+    """Record or update a node contact. Thread-safe."""
+    if not mac or mac == "unknown":
+        return
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    now_ts  = time.time()
+    with _nodes_lock:
+        if mac in _nodes:
+            _nodes[mac]["last_seen"]    = now_iso
+            _nodes[mac]["last_seen_ts"] = now_ts
+            _nodes[mac]["poll_count"]  += 1
+            if node_type:
+                _nodes[mac]["node_type"] = node_type
+            if firmware:
+                _nodes[mac]["firmware"]  = firmware
+        else:
+            _nodes[mac] = {
+                "mac":          mac,
+                "node_type":    node_type or "unknown",
+                "firmware":     firmware  or "unknown",
+                "first_seen":   now_iso,
+                "last_seen":    now_iso,
+                "last_seen_ts": now_ts,
+                "poll_count":   1,
+                "source":       source,
+            }
+
+
+# ---------------------------------------------------------------------------
 # API ROUTES
 # ---------------------------------------------------------------------------
+
+@app.route("/startup", methods=["POST"])
+def startup_report():
+    """Receive startup report from a node (boot event)."""
+    data = request.get_json(force=True, silent=True) or {}
+    mac       = data.get("mac", "unknown")
+    node_type = data.get("node_type", "")
+    firmware  = data.get("firmware", "")
+    has_errors = data.get("has_errors", False)
+    error_msg  = data.get("error_message", "")
+    print(f"[STARTUP] {mac}  type={node_type}  fw={firmware}  errors={has_errors}  msg={error_msg!r}")
+    _node_checkin(mac, node_type=node_type, firmware=firmware, source="startup")
+    return jsonify({"status": "ok", "mac": mac}), 200
+
+
+@app.route("/nodes", methods=["GET"])
+def get_nodes():
+    """Return list of all known nodes with last-seen timestamps."""
+    with _nodes_lock:
+        node_list = list(_nodes.values())
+    return jsonify(node_list)
+
 
 @app.route("/config", methods=["GET"])
 def get_config():
@@ -463,6 +529,10 @@ def get_config():
         _restart_pending = False
         _restart_timestamp = None
         print("[INFO] Restart window expired — flag cleared")
+    # Track node poll — MAC passed in custom header by the device
+    mac = request.headers.get("X-Device-MAC", "")
+    if mac:
+        _node_checkin(mac, source="config")
     flat = {k: v["value"] for k, v in _config.items()}
     flat["_server_time"] = time.time()
     flat["_version"] = _last_modified
@@ -692,6 +762,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     margin-bottom: 8px;
     opacity: 0.8;
   }
+  .logo-eyebrow a {
+    color: var(--accent2);
+    text-decoration: none;
+    margin-left: 18px;
+    opacity: 0.7;
+    transition: opacity 0.15s;
+  }
+  .logo-eyebrow a:hover { opacity: 1; }
   h1 {
     font-family: var(--font-head);
     font-size: clamp(22px, 4vw, 38px);
@@ -1025,7 +1103,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div class="layout">
   <header>
     <div class="logo-block">
-      <div class="logo-eyebrow">ESP32 Mesh Installation</div>
+      <div class="logo-eyebrow">ESP32 Mesh Installation <a href="/fleet">◉ Fleet Monitor →</a></div>
       <h1>Echoes of the <span>Machine</span></h1>
     </div>
     <div class="header-meta">
@@ -1343,6 +1421,408 @@ setInterval(updateQuietHoursBanner, 60000);
 </script>
 </body>
 </html>"""
+
+
+FLEET_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Echoes — Fleet Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:        #0b0d0c;
+    --surface:   #111413;
+    --border:    #1c201c;
+    --green:     #3ddc5e;
+    --green-bg:  #0d2e18;
+    --amber:     #e0a020;
+    --amber-bg:  #2e1e04;
+    --red:       #e03a3a;
+    --red-bg:    #2e0d0d;
+    --grey:      #2e3530;
+    --text:      #c4d0c4;
+    --muted:     #46564a;
+    --label:     #7a9a7e;
+    --mono:      'Share Tech Mono', monospace;
+    --sans:      'Barlow Condensed', sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 20px 24px 28px;
+    background-image: radial-gradient(ellipse 70% 35% at 50% 0%, rgba(61,220,94,0.035) 0%, transparent 60%);
+  }
+
+  /* ── Nav ── */
+  nav {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--muted);
+    margin-bottom: 20px;
+    display: flex;
+    gap: 20px;
+  }
+  nav a { color: var(--muted); text-decoration: none; transition: color 0.15s; }
+  nav a:hover { color: var(--green); }
+  nav a.active { color: var(--green); }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 14px;
+    margin-bottom: 20px;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .brand-title {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: #deeade;
+    line-height: 1;
+  }
+  .brand-sub {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 5px;
+  }
+
+  /* ── Stat pills ── */
+  .stats { display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap; }
+  .stat { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+  .stat-value { font-family: var(--mono); font-size: 24px; line-height: 1; }
+  .stat-label { font-size: 9px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); }
+  .sv-green { color: var(--green); }
+  .sv-amber { color: var(--amber); }
+  .sv-red   { color: var(--red);   }
+  .sv-grey  { color: var(--muted); }
+
+  /* ── Ticker ── */
+  .ticker {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--label);
+    margin-bottom: 14px;
+  }
+  .ticker-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: blink 2s ease-in-out infinite;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  /* ── Grid wrapper ── */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 16px;
+  }
+  .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 14px;
+  }
+  .panel-title {
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .legend {
+    display: flex; gap: 14px;
+    font-family: var(--mono); font-size: 9px; color: var(--muted);
+  }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .ld { width: 7px; height: 7px; border-radius: 50%; }
+  .ld-g{background:var(--green)} .ld-a{background:var(--amber)}
+  .ld-r{background:var(--red)}   .ld-x{background:var(--muted)}
+
+  /* ── Node dot grid ── */
+  .node-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 18px);
+    gap: 6px;
+  }
+
+  /* ── Single node dot ── */
+  .nd {
+    position: relative;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    cursor: default;
+    transition: transform 0.12s ease;
+    flex-shrink: 0;
+  }
+  .nd:hover { transform: scale(1.5); z-index: 20; }
+
+  .nd.online  { background: var(--green); box-shadow: 0 0 6px rgba(61,220,94,.5); animation: pulse-g 2.8s ease-in-out infinite; }
+  .nd.stale   { background: var(--amber); box-shadow: 0 0 6px rgba(224,160,32,.4); animation: pulse-a 2s ease-in-out infinite; }
+  .nd.offline { background: var(--red);   box-shadow: 0 0 6px rgba(224,58,58,.4);  animation: pulse-r 1.5s ease-in-out infinite; }
+  .nd.never   { background: var(--grey);  border: 1px solid var(--border); }
+
+  @keyframes pulse-g { 0%,100%{box-shadow:0 0 4px rgba(61,220,94,.4)} 50%{box-shadow:0 0 10px rgba(61,220,94,.8)} }
+  @keyframes pulse-a { 0%,100%{box-shadow:0 0 4px rgba(224,160,32,.3)} 50%{box-shadow:0 0 9px rgba(224,160,32,.7)} }
+  @keyframes pulse-r { 0%,100%{box-shadow:0 0 4px rgba(224,58,58,.3); opacity:1} 50%{box-shadow:0 0 10px rgba(224,58,58,.7); opacity:.7} }
+
+  /* ── Tooltip ── */
+  .tt {
+    display: none;
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 9px);
+    transform: translateX(-50%);
+    background: #080b09;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 9px 11px;
+    width: 210px;
+    z-index: 100;
+    pointer-events: none;
+    box-shadow: 0 6px 20px rgba(0,0,0,.7);
+    font-family: var(--mono);
+  }
+  /* Flip for bottom rows */
+  .nd:nth-child(n+121) .tt,
+  .nd:nth-last-child(-n+10) .tt {
+    bottom: auto;
+    top: calc(100% + 9px);
+  }
+  .nd:hover .tt { display: block; }
+
+  .tt-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 7px;
+    margin-bottom: 7px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tt-id   { font-size: 12px; color: #e8f0e8; }
+  .tt-badge {
+    font-size: 8px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    padding: 1px 5px;
+    border-radius: 2px;
+  }
+  .online  .tt-badge { color: var(--green); background: var(--green-bg); }
+  .stale   .tt-badge { color: var(--amber); background: var(--amber-bg); }
+  .offline .tt-badge { color: var(--red);   background: var(--red-bg);   }
+  .never   .tt-badge { color: var(--muted); background: #1a1e1a;         }
+
+  .tt-row { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; font-size: 10px; }
+  .tt-key { color: var(--muted); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+  .tt-val { color: var(--text); text-align: right; word-break: break-all; }
+
+  .tt-ts {
+    margin-top: 7px;
+    padding-top: 7px;
+    border-top: 1px solid var(--border);
+    font-size: 9px;
+    color: var(--label);
+    line-height: 1.5;
+  }
+
+  /* ── Footer ── */
+  footer {
+    margin-top: 16px;
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  #clock { color: var(--label); }
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="/">⚙ Config</a>
+  <a href="/fleet" class="active">◉ Fleet</a>
+</nav>
+
+<header>
+  <div>
+    <div class="brand-title">Fleet Monitor</div>
+    <div class="brand-sub">Echoes of the Machine · 192.168.101.2:8002 · poll 60s</div>
+  </div>
+  <div class="stats">
+    <div class="stat"><span class="stat-value sv-green" id="s-online">—</span><span class="stat-label">Online</span></div>
+    <div class="stat"><span class="stat-value sv-amber" id="s-stale">—</span><span class="stat-label">Stale</span></div>
+    <div class="stat"><span class="stat-value sv-red"   id="s-offline">—</span><span class="stat-label">Offline</span></div>
+    <div class="stat"><span class="stat-value sv-grey"  id="s-never">—</span><span class="stat-label">Never seen</span></div>
+  </div>
+</header>
+
+<div class="ticker">
+  <div class="ticker-dot"></div>
+  <span id="ticker-text">Polling /nodes…</span>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span class="panel-title" id="panel-title">Node grid</span>
+    <div class="legend">
+      <div class="legend-item"><div class="ld ld-g"></div>Online &lt;90s</div>
+      <div class="legend-item"><div class="ld ld-a"></div>Stale &lt;180s</div>
+      <div class="legend-item"><div class="ld ld-r"></div>Offline</div>
+      <div class="legend-item"><div class="ld ld-x"></div>Never seen</div>
+    </div>
+  </div>
+  <div class="node-grid" id="grid"></div>
+</div>
+
+<footer>
+  <span>Echoes of the Machine · Fleet Monitor · config server 8002 · startup server 8001</span>
+  <span id="clock"></span>
+</footer>
+
+<script>
+const STALE_S   = 90;
+const OFFLINE_S = 180;
+const FLEET_SIZE = 50;      // expected max fleet; pads grid to this count
+const REFRESH_MS = 15000;
+
+function classify(node) {
+  if (!node || !node.last_seen_ts) return 'never';
+  const age = Date.now() / 1000 - node.last_seen_ts;
+  if (age < STALE_S)   return 'online';
+  if (age < OFFLINE_S) return 'stale';
+  return 'offline';
+}
+
+function statusLabel(cls) {
+  return {online:'ONLINE', stale:'STALE', offline:'OFFLINE', never:'NO DATA'}[cls];
+}
+
+function ageStr(node) {
+  if (!node || !node.last_seen_ts) return '—';
+  const s = Math.floor(Date.now() / 1000 - node.last_seen_ts);
+  if (s < 60)   return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ' + (s%60) + 's ago';
+  return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm ago';
+}
+
+function fmtTs(iso) {
+  if (!iso) return 'never';
+  // iso is already local server time (datetime.now().isoformat())
+  const d = new Date(iso.replace(' ','T'));
+  const pad = n => String(n).padStart(2,'0');
+  return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) +
+         '  ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+function render(nodes) {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+
+  // Sort: offline first, then stale, then online, then fill unknown slots
+  const cls_order = {offline:0, stale:1, online:2, never:3};
+  nodes.sort((a,b) => cls_order[classify(a)] - cls_order[classify(b)]);
+
+  // Pad to FLEET_SIZE with empty placeholder slots
+  const slots = [...nodes];
+  while (slots.length < FLEET_SIZE) slots.push(null);
+
+  let online=0, stale=0, offline=0, never=0;
+
+  slots.forEach((node, i) => {
+    const cls = classify(node);
+    if (cls === 'online')  online++;
+    else if (cls === 'stale')   stale++;
+    else if (cls === 'offline') offline++;
+    else                        never++;
+
+    const dot = document.createElement('div');
+    dot.className = 'nd ' + cls;
+
+    const mac   = node ? node.mac        : '—';
+    const type  = node ? node.node_type  : '—';
+    const fw    = node ? node.firmware   : '—';
+    const polls = node ? node.poll_count : 0;
+    const first = node ? fmtTs(node.first_seen) : '—';
+    const last  = node ? fmtTs(node.last_seen)  : '—';
+
+    dot.innerHTML = `
+      <div class="tt">
+        <div class="tt-head">
+          <span class="tt-id">${mac}</span>
+          <span class="tt-badge">${statusLabel(cls)}</span>
+        </div>
+        <div class="tt-row"><span class="tt-key">Type</span><span class="tt-val">${type}</span></div>
+        <div class="tt-row"><span class="tt-key">Firmware</span><span class="tt-val">${fw}</span></div>
+        <div class="tt-row"><span class="tt-key">Polls</span><span class="tt-val">${polls}</span></div>
+        <div class="tt-row"><span class="tt-key">Age</span><span class="tt-val">${ageStr(node)}</span></div>
+        <div class="tt-ts">
+          First seen<br>${first}<br><br>
+          Last poll<br>${last}
+        </div>
+      </div>`;
+    grid.appendChild(dot);
+  });
+
+  document.getElementById('s-online').textContent  = online;
+  document.getElementById('s-stale').textContent   = stale;
+  document.getElementById('s-offline').textContent = offline;
+  document.getElementById('s-never').textContent   = never;
+  document.getElementById('panel-title').textContent =
+    `Node grid — ${nodes.length} registered / ${FLEET_SIZE} expected`;
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/nodes');
+    const nodes = await r.json();
+    render(nodes);
+    document.getElementById('ticker-text').textContent =
+      `Live · ${nodes.length} nodes registered · refreshing every ${REFRESH_MS/1000}s`;
+  } catch(e) {
+    document.getElementById('ticker-text').textContent = 'Server unreachable — retrying…';
+  }
+}
+
+function updateClock() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  document.getElementById('clock').textContent =
+    d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + '  ' +
+    pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + ' LOCAL';
+}
+
+poll();
+setInterval(poll, REFRESH_MS);
+setInterval(updateClock, 1000);
+updateClock();
+</script>
+</body>
+</html>"""
+
+
+@app.route("/fleet", methods=["GET"])
+def fleet_dashboard():
+    return render_template_string(FLEET_TEMPLATE)
 
 
 @app.route("/", methods=["GET"])
