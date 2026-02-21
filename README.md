@@ -28,6 +28,8 @@ A cross-disciplinary interactive art exhibition exploring cybernetics and feedba
 - BH1750 I2C light sensor **or** ALS-PT19 analog light sensor
 - Prototype board, Capacitor, Power supply connector, Header pin female 3 way, 5 way, 6 way, 8 way, 15 way
 - Power supply or 5V USB
+- Wi-Fi Access Point
+- Raspberry Pi for OTA, report logging and configuration servers
 
 ### Hardware Configurations
 
