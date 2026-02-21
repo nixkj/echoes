@@ -26,7 +26,7 @@ A cross-disciplinary interactive art exhibition exploring cybernetics and feedba
 - White LED (GPIO 13)
 - Blue LED (GPIO 2) (on ESP32-DEV board)
 - BH1750 I2C light sensor **or** ALS-PT19 analog light sensor
-- Prototype board, Capacitor, Power supply connector, Headers (Header pin female 3 way, 5 way, 6 way, 8 way, 15 way)
+- Prototype board, Capacitor, Power supply connector, Header pin female 3 way, 5 way, 6 way, 8 way, 15 way
 - Power supply or 5V USB
 
 ### Hardware Configurations
