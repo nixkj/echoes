@@ -412,7 +412,7 @@ Textual materials, prompt designs, exhibition documentation, and accompanying me
 
 Suggested attribution format:
 
-> Nixon, K. J., & Filinich Orozco, R. (2026). *Echoes of the Machine*. University of the Witwatersrand, Johannesburg.
+> Nixon, K. J., & Filinich Orozco, R. (2026). *Echoes of the Machine*. University of the Witwatersrand, Johannesburg. https://github.com/nixkj/echoes
 
 ## LLM-Assisted Development Statement
 
@@ -433,6 +433,6 @@ Unless otherwise stated, the views expressed are those of the authors and do not
 
 If you reference or build upon this work, please cite:
 
-> Nixon, K., & Filinich Orozco, R. (2026). *Echoes of the Machine*. University of the Witwatersrand.
+> Nixon, K., & Filinich Orozco, R. (2026). *Echoes of the Machine*. University of the Witwatersrand. https://github.com/nixkj/echoes
 
 ---
