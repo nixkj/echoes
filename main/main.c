@@ -216,6 +216,26 @@ void app_main(void)
         xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);
         ESP_LOGI(TAG, "Remote config polling task started");
 
+        /* OPTIONAL: periodic OTA polling task (disabled by default).
+         *
+         * The default workflow above checks for updates once at boot and is
+         * the recommended approach for a gallery installation — it keeps the
+         * boot sequence predictable and avoids mid-session interruptions.
+         *
+         * If you need the device to poll for updates while running (e.g. for
+         * long-running deployments where rebooting every node is impractical),
+         * uncomment the line below.  OTA_CHECK_INTERVAL_MS in ota.h controls
+         * the poll interval (default: once per day).
+         *
+         * NOTE: if enabled, store the application task handles in static or
+         * global variables (not the stack-local h_audio/h_lux/h_flock above,
+         * which are out of scope by the time the periodic check fires) and
+         * call ota_register_tasks() with them so ota_perform_update() can
+         * suspend the audio/lux/flock tasks during the download.  Without
+         * this the download will compete with I2S and ESP-NOW traffic.
+         */
+        // xTaskCreate(ota_task, "ota_poll", 4096, NULL, 2, NULL);
+
     } else {
         ESP_LOGI(TAG, "WiFi connection failed - continuing without OTA and startup report");
         

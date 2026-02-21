@@ -206,9 +206,11 @@ esp_err_t startup_send_report(const startup_report_t *report)
     esp_http_client_cleanup(client);
 
     if (err == ESP_ERR_HTTP_EAGAIN) {
+        /* All attempts timed out — report failure so the caller can signal
+         * this correctly (e.g. blue LED blink rather than false white blink). */
         ESP_LOGW(TAG, "Startup report not delivered after %d attempts — continuing",
                  STARTUP_MAX_RETRIES);
-        return ESP_OK;
+        return ESP_ERR_TIMEOUT;
     }
 
     return err;

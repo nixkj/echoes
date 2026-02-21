@@ -217,7 +217,7 @@ void markov_reset(markov_chain_t *mc);
  *
  * @param mc  Chain instance.
  */
-void markov_log_top_transitions(const markov_chain_t *mc);
+void markov_log_top_transitions(markov_chain_t *mc);
 
 /* ========================================================================
  * CONVERSION HELPERS (also used by espnow_mesh.c)

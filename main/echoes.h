@@ -58,7 +58,6 @@
 
 /* Audio synthesis */
 #define VOLUME              0.20f
-//#define VOLUME              0.01f
 #define CHUNK_SIZE          512
 #define MAX_BIRD_CALL_SAMPLES  48000  // 3 seconds at 16kHz (longest bird call)
 
@@ -250,7 +249,6 @@ typedef struct bird_call_mapper_t bird_call_mapper_t;
 
 /* Initialization */
 void system_init(void);
-void i2s_init(void);
 void led_init(void);
 void light_sensor_init(void);
 

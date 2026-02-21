@@ -50,7 +50,6 @@ static float               s_last_tx_lux     = -1000.0f;
  * ever compared against the window; the extra slots are simply unused.     */
 static uint32_t            s_rx_times[FLOCK_RING_MAX] = {0};
 static uint8_t             s_rx_head     = 0;       /* next slot to write   */
-static bool                s_flock_mode  = false;   /* current flock state  */
 static bool                s_flock_active = false;
 static uint32_t            s_flock_last_ms = 0;     /* last trigger time    */
 
@@ -101,11 +100,11 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info,
     }
 }
 
-static void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status)
+static void on_data_sent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status)
 {
     /* Broadcast status is always ESP_NOW_SEND_SUCCESS on the TX side;
        we don't care about delivery confirmation for broadcast. */
-    (void)mac_addr;
+    (void)tx_info;
     (void)status;
 }
 
@@ -375,10 +374,6 @@ bool espnow_mesh_is_flock_mode(void)
             s_flock_active = false;
             ESP_LOGI(TAG, "🐦 FLOCK MODE exited (hold expired)");
         }
-    }
-
-    if (s_flock_active != s_flock_mode) {
-        s_flock_mode = s_flock_active;
     }
 
     return s_flock_active;

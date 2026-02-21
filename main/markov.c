@@ -508,10 +508,9 @@ void markov_reset(markov_chain_t *mc)
     }
 }
 
-void markov_log_top_transitions(const markov_chain_t *mc)
+void markov_log_top_transitions(markov_chain_t *mc)
 {
-    markov_chain_t *m = (markov_chain_t *)mc;  /* cast away const for recompute */
-    if (m->probs_dirty) recompute_probs(m);
+    if (mc->probs_dirty) recompute_probs(mc);
 
     uint8_t cur = mc->current_state;
     ESP_LOGI(TAG, "Top transitions from %s:", markov_state_name(cur));

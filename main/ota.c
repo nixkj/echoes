@@ -123,8 +123,8 @@ bool wifi_init_and_connect(void)
     /* Configure WiFi */
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = WIFI_SSID,
-            .password = WIFI_PASSWORD,
+            .ssid = CONFIG_WIFI_SSID,
+            .password = CONFIG_WIFI_PASSWORD,
             .threshold.authmode = WIFI_AUTH_WPA2_PSK,
         },
     };
@@ -132,7 +132,7 @@ bool wifi_init_and_connect(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi initialization finished. Connecting to SSID: %s", WIFI_SSID);
+    ESP_LOGI(TAG, "WiFi initialization finished. Connecting to SSID: %s", CONFIG_WIFI_SSID);
 
     /* Wait for connection */
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
@@ -143,10 +143,10 @@ bool wifi_init_and_connect(void)
 
     /* Check result */
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "Connected to WiFi SSID: %s", WIFI_SSID);
+        ESP_LOGI(TAG, "Connected to WiFi SSID: %s", CONFIG_WIFI_SSID);
         return true;
     } else if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGE(TAG, "Failed to connect to SSID: %s", WIFI_SSID);
+        ESP_LOGE(TAG, "Failed to connect to SSID: %s", CONFIG_WIFI_SSID);
         return false;
     } else {
         ESP_LOGE(TAG, "WiFi connection timeout");

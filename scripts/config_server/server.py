@@ -1556,9 +1556,14 @@ FLEET_TEMPLATE = r"""<!DOCTYPE html>
   .ld-r{background:var(--red)}   .ld-x{background:var(--muted)}
 
   /* ── Node dot grid ── */
+  /* Four fixed rows: 12 / 12 / 13 / 13 */
   .node-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, 18px);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .node-row {
+    display: flex;
     gap: 6px;
   }
 
@@ -1738,49 +1743,60 @@ function render(nodes) {
   const grid = document.getElementById('grid');
   grid.innerHTML = '';
 
-  // Sort: offline first, then stale, then online, then fill unknown slots
+  // Sort: offline first, then stale, then online, then never
   const cls_order = {offline:0, stale:1, online:2, never:3};
   nodes.sort((a,b) => cls_order[classify(a)] - cls_order[classify(b)]);
 
-  // Pad to FLEET_SIZE with empty placeholder slots
+  // Pad to FLEET_SIZE with null placeholder slots
   const slots = [...nodes];
   while (slots.length < FLEET_SIZE) slots.push(null);
 
   let online=0, stale=0, offline=0, never=0;
 
-  slots.forEach((node, i) => {
-    const cls = classify(node);
-    if (cls === 'online')  online++;
-    else if (cls === 'stale')   stale++;
-    else if (cls === 'offline') offline++;
-    else                        never++;
+  // Four rows: 12, 12, 13, 13
+  const ROW_SIZES = [12, 12, 13, 13];
+  let slotIdx = 0;
 
-    const dot = document.createElement('div');
-    dot.className = 'nd ' + cls;
+  ROW_SIZES.forEach(rowCount => {
+    const row = document.createElement('div');
+    row.className = 'node-row';
 
-    const mac   = node ? node.mac        : '—';
-    const type  = node ? node.node_type  : '—';
-    const fw    = node ? node.firmware   : '—';
-    const polls = node ? node.poll_count : 0;
-    const first = node ? fmtTs(node.first_seen) : '—';
-    const last  = node ? fmtTs(node.last_seen)  : '—';
+    for (let i = 0; i < rowCount; i++) {
+      const node = slots[slotIdx++] || null;
+      const cls = classify(node);
+      if (cls === 'online')       online++;
+      else if (cls === 'stale')   stale++;
+      else if (cls === 'offline') offline++;
+      else                        never++;
 
-    dot.innerHTML = `
-      <div class="tt">
-        <div class="tt-head">
-          <span class="tt-id">${mac}</span>
-          <span class="tt-badge">${statusLabel(cls)}</span>
-        </div>
-        <div class="tt-row"><span class="tt-key">Type</span><span class="tt-val">${type}</span></div>
-        <div class="tt-row"><span class="tt-key">Firmware</span><span class="tt-val">${fw}</span></div>
-        <div class="tt-row"><span class="tt-key">Polls</span><span class="tt-val">${polls}</span></div>
-        <div class="tt-row"><span class="tt-key">Age</span><span class="tt-val">${ageStr(node)}</span></div>
-        <div class="tt-ts">
-          First seen<br>${first}<br><br>
-          Last poll<br>${last}
-        </div>
-      </div>`;
-    grid.appendChild(dot);
+      const dot = document.createElement('div');
+      dot.className = 'nd ' + cls;
+
+      const mac   = node ? node.mac        : '—';
+      const type  = node ? node.node_type  : '—';
+      const fw    = node ? node.firmware   : '—';
+      const polls = node ? node.poll_count : 0;
+      const first = node ? fmtTs(node.first_seen) : '—';
+      const last  = node ? fmtTs(node.last_seen)  : '—';
+
+      dot.innerHTML = `
+        <div class="tt">
+          <div class="tt-head">
+            <span class="tt-id">${mac}</span>
+            <span class="tt-badge">${statusLabel(cls)}</span>
+          </div>
+          <div class="tt-row"><span class="tt-key">Type</span><span class="tt-val">${type}</span></div>
+          <div class="tt-row"><span class="tt-key">Firmware</span><span class="tt-val">${fw}</span></div>
+          <div class="tt-row"><span class="tt-key">Polls</span><span class="tt-val">${polls}</span></div>
+          <div class="tt-row"><span class="tt-key">Age</span><span class="tt-val">${ageStr(node)}</span></div>
+          <div class="tt-ts">
+            First seen<br>${first}<br><br>
+            Last poll<br>${last}
+          </div>
+        </div>`;
+      row.appendChild(dot);
+    }
+    grid.appendChild(row);
   });
 
   document.getElementById('s-online').textContent  = online;

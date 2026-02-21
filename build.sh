@@ -46,7 +46,7 @@ print_info() {
 check_idf() {
     if [ -z "$IDF_PATH" ]; then
         print_error "ESP-IDF environment not set up!"
-        print_info "Run: . \$HOME/esp/esp-idf-v5.4/export.sh"
+        print_info "Run: . \$HOME/esp/esp-idf-v5.4.1/export.sh"
         exit 1
     fi
     print_success "ESP-IDF environment ready"
@@ -285,11 +285,11 @@ install_services() {
     local SCRIPT_DIR="${PROJECT_DIR}/scripts"
 
     print_info "Installing OTA firmware server (port 8000)..."
-    sudo bash "${SCRIPT_DIR}/firmware_server/install-service.sh"
+    sudo bash "${SCRIPT_DIR}/firmware_server/install.sh"
     print_success "Firmware server installed"
 
     print_info "Installing startup report server (port 8001)..."
-    sudo bash "${SCRIPT_DIR}/startup_server/install_server.sh"
+    sudo bash "${SCRIPT_DIR}/startup_server/install.sh"
     print_success "Startup server installed"
 
     print_info "Installing remote config server (port 8002)..."
@@ -309,26 +309,26 @@ Usage: ./build.sh [command] [options]
 
 Commands:
   build [clean]     Build firmware (optional: clean build)
-  clean             Remove edit backups and build directory
+  tidyup            Remove editor backups, build/, and sdkconfig
   flash             Flash firmware via USB
   erase             Erase flash completely
   monitor           Open serial monitor
   deploy            Deploy firmware to OTA server
   version [type]    Increment version (major|minor|patch)
   services          Install all three servers as systemd services
-  all               Build, bump patch version, and deploy
+  all               Bump patch version, build, and deploy
   help              Show this help message
 
 Examples:
   ./build.sh build              # Build firmware
-  ./build.sh clean              # Tidy up edit files and build dir
+  ./build.sh tidyup             # Remove editor backups, build/, and sdkconfig
   ./build.sh build clean        # Clean build
   ./build.sh flash              # Flash via USB
   ./build.sh erase              # Erase flash
   ./build.sh deploy             # Deploy to OTA server
   ./build.sh version minor      # Increment minor version
   ./build.sh services           # Install all servers as systemd services
-  ./build.sh all                # Build and deploy with patch bump
+  ./build.sh all                # Bump patch version, build, and deploy
 
 Workflow:
   1. Make code changes
@@ -357,9 +357,14 @@ main() {
             check_idf
             build_firmware "$2"
             ;;
-        clean)
+        tidyup)
+            # Remove editor backup files (*~ and .*.un~ vim/emacs files) from
+            # anywhere in the project tree, and delete the build/ directory.
+            # Also removes sdkconfig — re-run 'idf.py menuconfig' afterwards
+            # to restore your WiFi credentials before the next build.
             find . -type f \( -name '*~' -o -name '.*.un~' \) -delete
-	    rm -rf build sdkconfig
+            rm -rf build sdkconfig
+            print_success "Tidy complete — editor backups, build/, and sdkconfig removed"
             ;;
         flash)
             check_idf
@@ -384,8 +389,8 @@ main() {
             ;;
         all)
             check_idf
-            build_firmware
             bump_version patch
+            build_firmware
             deploy_ota
             ;;
         help|--help|-h|"")

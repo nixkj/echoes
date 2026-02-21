@@ -18,13 +18,11 @@
  * ======================================================================== */
 
 /* WiFi Configuration - Update these for your network */
-#define WIFI_SSID           "Echoes"
-#define WIFI_PASSWORD       "REMOVED_SECRET"
 #define WIFI_MAXIMUM_RETRY  5
 #define WIFI_TIMEOUT_MS     20000  // 20 second timeout
 
 /* OTA Configuration */
-#define FIRMWARE_VERSION    "5.2.1"
+#define FIRMWARE_VERSION    "5.3.0"
 #define OTA_URL             "http://192.168.101.2:8000/firmware/echoes.bin"
 #define VERSION_URL         "http://192.168.101.2:8000/firmware/version.txt"
 
@@ -114,7 +112,7 @@ const ota_state_t* ota_get_state(void);
 
 /**
  * @brief OTA task for periodic update checking
- * @param param Task parameter (unused)
+ * @param param Task parameter (optional)
  */
 void ota_task(void *param);
 
@@ -125,4 +123,4 @@ void ota_task(void *param);
  */
 bool ota_perform_update(const char *url);
 
-#endif /* SA_BIRD_OTA_H */
+#endif /* OTA_H */

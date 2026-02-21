@@ -61,26 +61,44 @@ without (basic).  The firmware auto-detects which hardware is present at boot:
 
 ### 1. Prerequisites
 
+- Python 3.9 or newer (required by ESP-IDF v5.5.x — run `python3 --version` to check)
+
 ```bash
-# Install ESP-IDF v5.4
+# Install ESP-IDF v5.5.2
 cd ~/esp
-git clone --recursive https://github.com/espressif/esp-idf.git esp-idf-v5.4
-cd esp-idf-v5.4 && git checkout v5.4
+git clone --recursive https://github.com/espressif/esp-idf.git esp-idf-v5.5.2
+cd esp-idf-v5.5.2 && git checkout v5.5.2
 ./install.sh
 . ./export.sh
 ```
 
 ### 2. Configure
 
-Edit `main/ota.h` to set your WiFi credentials and server IP:
+Set your WiFi credentials and server IP using `idf.py menuconfig`:
+
+```bash
+idf.py menuconfig
+# Navigate to: WiFi Configuration
+#   → WiFi SSID       (your network name)
+#   → WiFi Password   (your network password)
+```
+
+Or you can add the following to `sdkconfig` and enter the details:
+
+```
+CONFIG_WIFI_SSID=""
+CONFIG_WIFI_PASSWORD=""
+```
+
+Then edit `main/ota.h` to set your server IP and starting firmware version:
 
 ```c
-#define WIFI_SSID        "your_ssid_here"
-#define WIFI_PASSWORD    "your_password_here"
-#define FIRMWARE_VERSION "5.1.3"
+#define FIRMWARE_VERSION "5.3.0"
 #define OTA_URL          "http://192.168.101.2:8000/firmware/echoes.bin"
 #define VERSION_URL      "http://192.168.101.2:8000/firmware/version.txt"
 ```
+
+Credentials entered via `menuconfig` are stored in `sdkconfig`, which is excluded from version control by `.gitignore` and will never be committed to the repository.
 
 ### 3. Build and Flash
 
@@ -102,8 +120,8 @@ Three servers need to run on the host machine — a Raspberry Pi on the same net
 Or individually:
 
 ```bash
-sudo bash scripts/firmware_server/install-service.sh
-sudo bash scripts/startup_server/install_server.sh
+sudo bash scripts/firmware_server/install.sh
+sudo bash scripts/startup_server/install.sh
 sudo bash scripts/config_server/install.sh
 ```
 
@@ -138,11 +156,10 @@ echoes/
 ├── sdkconfig.defaults
 ├── build.sh                          # Build, flash, deploy, and server helper script
 ├── docs/
-│   ├── 00-Notes.md
+│   ├── 00-Notes.md                   # Developer notes and internal references
 │   ├── README_STARTUP_REPORTING.md
 │   ├── STARTUP_REFERENCE.md
 │   ├── VU_METER_CONFIG.md
-│   ├── SYSTEMD_SERVICE_GUIDE.md      # (in scripts/firmware_server/)
 │   └── ESP32-DEV-032.jpg             # (+ other hardware reference images)
 ├── scripts/
 │   ├── config_server/
@@ -152,15 +169,17 @@ echoes/
 │   ├── firmware_server/
 │   │   ├── firmware_server.py        # OTA firmware server (port 8000)
 │   │   ├── echoes-firmware.service   # systemd unit file
-│   │   ├── install-service.sh
+│   │   ├── SYSTEMD_SERVICE_GUIDE.md  # Guide for installing servers as services
+│   │   ├── install.sh
 │   │   └── uninstall-service.sh
 │   └── startup_server/
 │       ├── startup_server.py         # Startup report receiver (port 8001)
 │       ├── echoes-startup-server.service  # systemd unit file
-│       ├── install_server.sh
+│       ├── install.sh
 │       └── test_server.py
 └── main/
     ├── CMakeLists.txt
+    ├── Kconfig.projbuild             # WiFi credentials via menuconfig
     ├── main.c                        # Entry point — WiFi, OTA, task startup
     ├── echoes.h / echoes.c           # Core system, detection, LED, audio tasks
     ├── synthesis.h / synthesis.c     # Bird call synthesis (11 species)
@@ -192,7 +211,7 @@ echoes/
 Or in one step:
 
 ```bash
-./build.sh all               # build + patch version bump + deploy
+./build.sh all               # patch version bump + build + deploy
 ```
 
 ### Manually
@@ -208,13 +227,13 @@ Each device checks for updates once at boot. It compares the running version str
 
 ## build.sh Reference
 
-`build.sh` wraps common `idf.py` commands, auto-detects the serial port, and handles the deploy workflow. Requires ESP-IDF to be sourced first.
+`build.sh` wraps common `idf.py` commands, auto-detects the serial port, and handles the deploy workflow. Commands that invoke the compiler (`build`, `flash`, `erase`, `monitor`, `all`) check that ESP-IDF is sourced before proceeding — if `IDF_PATH` is not set the script exits immediately with a clear message showing the exact `export.sh` command to run. Commands that don't need the compiler (`tidyup`, `deploy`, `version`, `services`) work without ESP-IDF sourced.
 
 | Command | Description |
 |---|---|
 | `./build.sh build` | Build firmware |
 | `./build.sh build clean` | Full clean then build |
-| `./build.sh clean` | Remove edit backups and the `build/` directory |
+| `./build.sh tidyup` | Remove editor backups, `build/`, and `sdkconfig` (re-run `menuconfig` afterwards to restore credentials) |
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
@@ -223,7 +242,7 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh version major` | Increment major version (e.g. 5.1.3 → 6.0.0) |
 | `./build.sh deploy` | Copy binary and write `version.txt` to `~/firmware_server/firmware/` |
 | `./build.sh services` | Install all three servers as systemd services (run on host/Pi) |
-| `./build.sh all` | Build + patch version bump + deploy |
+| `./build.sh all` | Patch version bump + build + deploy |
 | `./build.sh help` | Show usage summary |
 
 ## Remote Configuration
@@ -312,7 +331,7 @@ WiFi modem sleep (`WIFI_PS_MIN_MODEM`) is enabled after OTA completes, reducing 
 ## Partition Table
 
 ```
-# Name,   Type,  SubType  Offset    Size
+# Name    Type   SubType  Offset    Size
 nvs       data   nvs      0x9000    16 KB   NVS storage (WiFi credentials, Markov chain state)
 otadata   data   ota      0xd000     8 KB   OTA state (active partition tracking)
 phy_init  data   phy      0xf000     4 KB   RF calibration data
@@ -320,12 +339,22 @@ ota_0     app    ota_0    0x10000    1 MB   OTA firmware slot 0
 ota_1     app    ota_1    0x110000   1 MB   OTA firmware slot 1
 ```
 
-Note: there is no separate factory partition — the two OTA slots share the full application space. Each slot is 1 MB; keep your firmware binary under this limit.
+Note: there is no separate factory partition, for two reasons. First, the practical constraint: on a 4 MB chip with 1 MB firmware slots, adding a factory partition would require shrinking ota_0 and ota_1 below the size of a typical build. Second, and more importantly, a factory partition interferes with the OTA boot sequence during testing: when a factory partition is present the bootloader's default boot order is factory → ota_0 → ota_1, and if the factory image remains valid the bootloader can revert to it after an OTA update rather than staying on the new slot — causing an apparent OTA loop. Removing the factory partition ensures the bootloader always boots the most recently confirmed OTA slot.
+
+The safety mechanism for an unattended installation is instead **OTA rollback**, which is enabled in `sdkconfig.defaults`:
+
+```
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+```
+
+How this protects the installation: when a new firmware image is flashed via OTA, it boots in `PENDING_VERIFY` state. The firmware waits two minutes to confirm stability (see `main.c`), then calls `esp_ota_mark_app_valid_cancel_rollback()`. If the device crashes or reboots before that call, the bootloader automatically reverts to the previous OTA slot on the next boot. The previous slot always contains the last known-good image.
+
+The only unrecoverable scenario is if both OTA slots are simultaneously corrupted (e.g. power loss mid-flash on both partitions), which requires physical reflashing via USB. For a gallery installation this is an acceptable risk given the impracticality of the factory partition alternative.
 
 ## Troubleshooting
 
 ### WiFi Connection Fails
-- Check SSID and password in `main/ota.h`
+- Check SSID and password via `idf.py menuconfig` → WiFi Configuration
 - ESP32 supports 2.4 GHz only
 - Blue LED blinks 3× on failure; device continues without WiFi or OTA
 
@@ -333,7 +362,8 @@ Note: there is no separate factory partition — the two OTA slots share the ful
 - Verify server: `curl http://192.168.101.2:8000/firmware/version.txt`
 - Confirm binary exists: `ls ~/firmware_server/firmware/`
 - Each OTA slot is 1 MB — ensure your binary fits
-- Device retries up to 3 times with linear backoff before continuing
+- Device retries up to 3 times with linear backoff before falling back
+to normal operation without updating
 
 ### Remote Config Not Applying
 - Verify `server.py` is running on port 8002
@@ -341,9 +371,16 @@ Note: there is no separate factory partition — the two OTA slots share the ful
 - Devices fall back to built-in defaults if the server is unreachable
 
 ### No Sound / Only LED VU Meter
-- No BH1750 detected at boot → device runs in Minimal mode (LED VU only)
-- Confirm MAX98357A wiring matches pin assignments above
+
+**If the device booted into Minimal mode (no BH1750 detected):**
+- No BH1750 found on I2C at boot → firmware runs in Minimal mode; audio output is intentionally disabled regardless of MAX98357A wiring
+- Confirm BH1750 is connected to SDA (GPIO 21) and SCL (GPIO 22) and powered
+- Check device logs at boot for `Hardware detected: MINIMAL` to confirm
+
+**If the device booted into Full mode but there is no sound:**
+- Confirm MAX98357A wiring matches the pin assignments above (SCK=18, WS=19, DIN=17)
 - Check `SILENT_MODE` and `SOUND_OFF` in the remote config UI at port 8002
+- Verify quiet hours are not active (default window: 17:00–08:00)
 
 ### NVS / Flash Errors at Boot
 ```bash
@@ -373,7 +410,13 @@ I (xxx) MAIN: System started successfully!
 
 ## Version History
 
-**5.1.3** — Current
+**5.3.0** — Current
+- General tidy up of documentation and code with repo going public
+- WiFi credentials moved to `idf.py menuconfig` (Kconfig) — no longer stored in source
+- Status dashboard to see the state of all nodes
+- Upgrade to ESP-IDF v5.5.2 (various subtle changes)
+
+**5.1.3**
 - ESP-NOW broadcast mesh with flock mode
 - Markov chain with NVS persistence and autonomous calls
 - Remote configuration server with live parameter updates and web UI
@@ -382,6 +425,8 @@ I (xxx) MAIN: System started successfully!
 - Birdsong detection (4th detection type)
 - Dual hardware configurations (Full / Minimal)
 - Lux-scaled playback volume
+
+*Versions 2.x–5.x: development iterations; details available in the repository.*
 
 **1.0.0** — Initial release
 - WiFi and OTA updates
