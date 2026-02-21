@@ -75,8 +75,8 @@ cd esp-idf-v5.4 && git checkout v5.4
 Edit `main/ota.h` to set your WiFi credentials and server IP:
 
 ```c
-#define WIFI_SSID        "Echoes"
-#define WIFI_PASSWORD    "REMOVED_SECRET"
+#define WIFI_SSID        "your_ssid_here"
+#define WIFI_PASSWORD    "your_password_here"
 #define FIRMWARE_VERSION "5.1.3"
 #define OTA_URL          "http://192.168.101.2:8000/firmware/echoes.bin"
 #define VERSION_URL      "http://192.168.101.2:8000/firmware/version.txt"
@@ -325,7 +325,7 @@ Note: there is no separate factory partition — the two OTA slots share the ful
 ## Troubleshooting
 
 ### WiFi Connection Fails
-- Check SSID and password in `main/ota.h` (default: `Echoes` / `REMOVED_SECRET`)
+- Check SSID and password in `main/ota.h`
 - ESP32 supports 2.4 GHz only
 - Blue LED blinks 3× on failure; device continues without WiFi or OTA
 
