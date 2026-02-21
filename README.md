@@ -1,12 +1,73 @@
-# Echoes of the Machine - Bird Call System with OTA Updates
+# Echoes of the Machine
 
-A sophisticated bird call detection and response system with wireless firmware update capability.
+**Ken Nixon & Renzo Filinich Orozco**
+**University of the Witwatersrand**
+
+A cross-disciplinary interactive art exhibition exploring cybernetics and feedback, as well as machine-assisted code generation.
+
+---
+
+## Authorship and Conceptual Contribution
+
+* **Ken Nixon** – Hardware, software, and technical implementation.
+* **Renzo Filinich Orozco** – Conceptual development, artistic vision, and curatorial framework.
+
+All contributors should be credited in any reuse, citation, or derivative work.
+
+---
+
+## License
+
+### Code
+
+All software components in this repository are licensed under the **MIT License**.
+
+You are free to use, modify, distribute, and build upon this code, including for commercial purposes, provided the original copyright notice and license are included.
+
+---
+
+### Documentation, Prompts, and Media
+
+Textual materials, prompt designs, exhibition documentation, and accompanying media are licensed under the **Creative Commons Attribution 4.0 International (CC BY 4.0)**.
+
+Suggested attribution format:
+
+> Nixon, K. J., & Filinich Orozco, R. (2026). *Echoes of the Machine*. University of the Witwatersrand, Johannesburg.
+
+---
+
+## LLM-Assisted Development Statement
+
+This project incorporates Large Language Model (LLM) assistance in the development of selected code components and textual materials.
+
+* LLM outputs were critically reviewed, edited, and integrated by the author (Ken Nixon).
+* Conceptual framing, system design, and curatorial decisions were developed collaboratively with Renzo Filinich Orozco.
+* Generated code and text function as material within an artistic and research-driven process.
+
+This statement supports transparency, reproducibility, and academic integrity.
+
+---
+
+## Institutional Context
+
+Developed within the academic context of the **University of the Witwatersrand, Johannesburg**.
+Unless otherwise stated, the views expressed are those of the authors and do not necessarily reflect those of the institution.
+
+---
+
+## Citation
+
+If you reference or build upon this work, please cite:
+
+> Nixon, K., & Filinich Orozco, R. (2026). *Echoes of the Machine*. University of the Witwatersrand.
+
+---
 
 ## Features
 
 - 🎵 Detects whistles, voice commands, and claps
 - 🐦 Responds with authentic South African bird calls
-- 💡 Light-adaptive bird selection (day/night species)
+- 💡 Light-adaptive bird calls
 - 📡 WiFi connectivity with OTA firmware updates
 - 🔄 Automatic update checking at boot
 - 🔋 Power-efficient operation with WiFi sleep modes
