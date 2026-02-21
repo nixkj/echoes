@@ -9,64 +9,59 @@ This extension adds startup reporting functionality to the Echoes of the Machine
 
 ## Features
 
-- **Random Sleep**: 0-5 second randomized startup delay
-- **Light Sampling**: Continuous light sensor sampling during sleep period
-- **Device Identification**: Reports MAC address and node type
+- **Device Identification**: Reports MAC address, firmware version, and node type
+- **Hardware Config Reporting**: Automatically detects and reports `echoes-full` or `echoes-minimal`
 - **Error Tracking**: Captures and reports any startup errors
+- **Retry with Exponential Backoff**: Up to 4 attempts; delays of 2 s, 4 s, 8 s between retries
 - **Reliable Server**: Python HTTP server with rotating log files
 - **Systemd Integration**: Run as a system service with automatic restart
 
 ## ESP32 Integration
 
-### Files Added
+### Files
 
-1. **startup_report.h** - Header file with configuration and function declarations
-2. **startup_report.c** - Implementation of startup reporting functionality
-3. **main_updated.c** - Updated main.c with startup reporting integrated
+- **`main/startup.h`** — Configuration and function declarations
+- **`main/startup.c`** — Implementation
 
 ### Configuration
 
-Edit `startup_report.h` to configure:
+Edit `main/startup.h`:
 
 ```c
-#define STARTUP_REPORT_URL      "http://192.168.101.2:8000/startup"
-#define NODE_TYPE               "echoes-v1"
-#define STARTUP_SLEEP_MIN_MS    0
-#define STARTUP_SLEEP_MAX_MS    5000
+#define STARTUP_REPORT_URL      "http://192.168.101.2:8001/startup"
+#define STARTUP_HTTP_TIMEOUT_MS 10000   // 10 s per attempt
+#define STARTUP_MAX_RETRIES     4
+#define STARTUP_RETRY_BASE_MS   2000
 ```
 
-### Integration Steps
+Node type is set automatically based on hardware detected at boot: `"echoes-full"` (BH1750 present) or `"echoes-minimal"` (analog sensor only).
 
-1. **Add files to your ESP-IDF project:**
-   ```bash
-   cp startup_report.h startup_report.c /path/to/your/project/main/
-   cp main_updated.c /path/to/your/project/main/main.c
-   ```
+### Integration
 
-2. **Update CMakeLists.txt** to include the new source file:
-   ```cmake
-   idf_component_register(SRCS "main.c"
-                               "echoes.c"
-                               "synthesis.c"
-                               "ota.c"
-                               "startup_report.c"
-                          INCLUDE_DIRS ".")
-   ```
+The startup reporting module is already integrated into `main/main.c`. The CMakeLists.txt should include `startup.c`:
 
-3. **Build and flash:**
-   ```bash
-   idf.py build
-   idf.py flash monitor
-   ```
+```cmake
+idf_component_register(SRCS "main.c"
+                             "echoes.c"
+                             "synthesis.c"
+                             "ota.c"
+                             "espnow_mesh.c"
+                             "markov.c"
+                             "remote_config.c"
+                             "startup.c"
+                        INCLUDE_DIRS ".")
+```
 
 ## Python Server Setup
 
 ### Quick Installation
 
-1. **Copy files to your server:**
+1. **Copy server files to your server machine:**
    ```bash
-   # Copy the Python server files
-   scp startup_server.py echoes-startup-server.service install_server.sh user@server:~/
+   scp scripts/startup_server/startup_server.py \
+       scripts/startup_server/echoes-startup-server.service \
+       scripts/startup_server/install_server.sh \
+       user@server:~/
    ```
 
 2. **Run the installation script:**
@@ -167,15 +162,13 @@ python3 startup_server.py --verbose
 
 ### Startup Report Log Entry
 
-Each startup report is logged with the following format:
-
 ```
-[2026-02-17 10:23:45] Startup Report | MAC: A4:CF:12:34:56:78 | Type: echoes-v1 | IP: 192.168.101.42 | Light: 124.50 lux (50 samples) | Sleep: 3247ms | Errors: NO
+[2026-02-17 10:23:45] Startup Report | MAC: A4:CF:12:34:56:78 | Type: echoes-full | Firmware: 5.1.3 | Errors: NO
 ```
 
 With errors:
 ```
-[2026-02-17 10:24:12] Startup Report | MAC: A4:CF:12:34:56:79 | Type: echoes-v1 | IP: 192.168.101.43 | Light: -1.00 lux (0 samples) | Sleep: 1523ms | Errors: YES | Error: No valid light sensor readings
+[2026-02-17 10:24:12] Startup Report | MAC: A4:CF:12:34:56:79 | Type: echoes-minimal | Firmware: 5.1.3 | Errors: YES | Error: MAC read failed: ESP_ERR_INVALID_ARG
 ```
 
 ### JSON Payload
@@ -185,14 +178,14 @@ ESP32 devices send JSON data:
 ```json
 {
   "mac": "A4:CF:12:34:56:78",
-  "node_type": "echoes-v1",
-  "avg_light": 124.50,
-  "light_samples": 50,
-  "sleep_duration_ms": 3247,
+  "firmware": "5.1.3",
+  "node_type": "echoes-full",
   "has_errors": false,
   "error_message": ""
 }
 ```
+
+`node_type` is one of `"echoes-full"` (BH1750 detected), `"echoes-minimal"` (analog sensor only), or `"echoes-unknown"` (detection failed).
 
 ## Log Rotation
 
@@ -207,8 +200,8 @@ Old log files are automatically compressed and rotated.
 
 ### ESP32 Not Sending Reports
 
-1. Check WiFi credentials in `ota.h`
-2. Verify server IP address in `startup_report.h`
+1. Check WiFi credentials in `main/ota.h`
+2. Verify server IP address in `main/startup.h`
 3. Check ESP32 serial output: `idf.py monitor`
 4. Ensure server is running: `sudo systemctl status echoes-startup-server`
 
@@ -216,19 +209,19 @@ Old log files are automatically compressed and rotated.
 
 1. Check firewall rules:
    ```bash
-   sudo ufw allow 8000/tcp
+   sudo ufw allow 8001/tcp
    ```
 
 2. Verify server is listening:
    ```bash
-   sudo netstat -tlnp | grep 8000
+   sudo netstat -tlnp | grep 8001
    ```
 
 3. Test with curl:
    ```bash
-   curl -X POST http://localhost:8000/startup \
+   curl -X POST http://localhost:8001/startup \
      -H "Content-Type: application/json" \
-     -d '{"mac":"AA:BB:CC:DD:EE:FF","node_type":"test","avg_light":100.0,"light_samples":10,"sleep_duration_ms":2000,"has_errors":false,"error_message":""}'
+     -d '{"mac":"AA:BB:CC:DD:EE:FF","firmware":"5.1.3","node_type":"echoes-full","has_errors":false,"error_message":""}'
    ```
 
 ### Viewing Logs

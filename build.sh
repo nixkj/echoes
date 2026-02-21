@@ -278,17 +278,26 @@ erase_flash() {
     fi
 }
 
-# Start firmware server
-start_server() {
-    print_header "Starting Firmware Server"
-    
-    if [ ! -f "firmware_server.py" ]; then
-        print_error "firmware_server.py not found!"
-        return 1
-    fi
-    
-    print_info "Starting server on port 8000..."
-    python3 firmware_server.py
+# Install all three servers as systemd services
+install_services() {
+    print_header "Installing Server Services"
+
+    local SCRIPT_DIR="${PROJECT_DIR}/scripts"
+
+    print_info "Installing OTA firmware server (port 8000)..."
+    sudo bash "${SCRIPT_DIR}/firmware_server/install-service.sh"
+    print_success "Firmware server installed"
+
+    print_info "Installing startup report server (port 8001)..."
+    sudo bash "${SCRIPT_DIR}/startup_server/install_server.sh"
+    print_success "Startup server installed"
+
+    print_info "Installing remote config server (port 8002)..."
+    sudo bash "${SCRIPT_DIR}/config_server/install.sh"
+    print_success "Config server installed"
+
+    print_success "All services installed and started"
+    print_info "Check status with: sudo systemctl status echoes-firmware echoes-startup-server echoes-config"
 }
 
 # Show help
@@ -306,7 +315,7 @@ Commands:
   monitor           Open serial monitor
   deploy            Deploy firmware to OTA server
   version [type]    Increment version (major|minor|patch)
-  server            Start firmware update server
+  services          Install all three servers as systemd services
   all               Build, bump patch version, and deploy
   help              Show this help message
 
@@ -318,6 +327,7 @@ Examples:
   ./build.sh erase              # Erase flash
   ./build.sh deploy             # Deploy to OTA server
   ./build.sh version minor      # Increment minor version
+  ./build.sh services           # Install all servers as systemd services
   ./build.sh all                # Build and deploy with patch bump
 
 Workflow:
@@ -326,7 +336,7 @@ Workflow:
   3. ./build.sh flash           # Flash to device
   4. ./build.sh version patch   # Increment version
   5. ./build.sh deploy          # Deploy OTA update
-  6. ./build.sh server          # Start update server
+  6. ./build.sh services        # Install servers (first time, run on host/Pi)
 
 OTA Update Workflow:
   1. ./build.sh version patch   # Update version number
@@ -369,8 +379,8 @@ main() {
         version)
             bump_version "$2"
             ;;
-        server)
-            start_server
+        services)
+            install_services
             ;;
         all)
             check_idf

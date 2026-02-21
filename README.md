@@ -18,20 +18,25 @@ A cross-disciplinary interactive art exhibition exploring cybernetics and feedba
 - 🔋 Power-efficient operation with WiFi modem sleep
 - 🎛️ LED indicators for status and audio VU metering
 
-## Hardware Requirements
+## Hardware Requirements (refer to docs for more details)
 
-- ESP32-D0WD-V3 development board
+- ESP32 development board
 - Adafruit ICS-43434 I2S MEMS Microphone
 - Adafruit MAX98357A I2S Amplifier
 - Speaker (4–8 Ω)
 - White LED (GPIO 13)
-- Blue LED (GPIO 2)
-- Optional: BH1750 I2C light sensor **or** ALS-PT19 analog light sensor
-- Power supply (5V USB or battery)
+- Blue LED (GPIO 2) (on ESP32-DEV board)
+- BH1750 I2C light sensor **or** ALS-PT19 analog light sensor
+- Capacitor
+- Connector
+- Headers (Header pin female 3 way, 5 way, 6 way, 8 way, 15 way)
+- Protoboard
+- Power supply or 5V USB
 
 ### Hardware Configurations
 
-The firmware auto-detects which hardware is present at boot:
+Two different nodes are possible - one with audio output (speaker), and another
+without (basic).  The firmware auto-detects which hardware is present at boot:
 
 | Configuration | Light Sensor | Audio Output |
 |---|---|---|
@@ -88,27 +93,43 @@ idf.py -p /dev/tty.usbserial-110 erase-flash
 idf.py -p /dev/tty.usbserial-110 flash monitor
 ```
 
-### 4. Start the Servers
+### 4. Install the Servers
 
-Three servers run on the host machine. Start each in a separate terminal:
+Three servers need to run on the host machine — a Raspberry Pi on the same network works well. Install all three as systemd services with:
+
+```bash
+./build.sh services
+```
+
+Or individually:
+
+```bash
+sudo bash scripts/firmware_server/install-service.sh
+sudo bash scripts/startup_server/install_server.sh
+sudo bash scripts/config_server/install.sh
+```
+
+For testing without systemd, start each manually in a separate terminal:
 
 ```bash
 # Firmware OTA server — port 8000
 python3 scripts/firmware_server/firmware_server.py
 
 # Startup report receiver — port 8001
-python3 scripts/startup_server.py
+python3 scripts/startup_server/startup_server.py
 
 # Remote configuration UI — port 8002
-python3 scripts/server.py
+python3 scripts/config_server/server.py
 ```
 
-After starting the OTA server, copy your firmware binary and set the version:
+After the OTA server is running, copy your firmware binary and set the version:
 
 ```bash
 cp build/echoes.bin ~/firmware_server/firmware/echoes.bin
 echo "5.1.3" > ~/firmware_server/firmware/version.txt
 ```
+
+Or use `./build.sh deploy` after a successful build to do both steps at once.
 
 ## File Structure
 
@@ -118,14 +139,13 @@ echoes/
 ├── partitions.csv
 ├── sdkconfig.defaults
 ├── build.sh                          # Build, flash, deploy, and server helper script
-├── prep.sh                           # Environment preparation script
 ├── docs/
 │   ├── 00-Notes.md
 │   ├── README_STARTUP_REPORTING.md
 │   ├── STARTUP_REFERENCE.md
 │   ├── VU_METER_CONFIG.md
 │   ├── SYSTEMD_SERVICE_GUIDE.md      # (in scripts/firmware_server/)
-│   └── ESP32-DEV-032.jpg             # (+ other hardware reference images and PDFs)
+│   └── ESP32-DEV-032.jpg             # (+ other hardware reference images)
 ├── scripts/
 │   ├── config_server/
 │   │   ├── server.py                 # Remote configuration UI (port 8002)
@@ -163,14 +183,50 @@ echoes/
 
 ## Deploying a Firmware Update
 
+### Using build.sh (recommended)
+
 ```bash
+./build.sh version patch     # 5.1.3 → 5.1.4 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh build             # Build firmware
+./build.sh deploy            # Copy binary + write version.txt to ~/firmware_server/firmware/
+```
+
+Or in one step:
+
+```bash
+./build.sh all               # build + patch version bump + deploy
+```
+
+### Manually
+
+```bash
+# Edit FIRMWARE_VERSION in main/ota.h, then:
 idf.py build
 cp build/echoes.bin ~/firmware_server/firmware/echoes.bin
 echo "5.1.4" > ~/firmware_server/firmware/version.txt
-# Update FIRMWARE_VERSION in main/ota.h to match before the next build
 ```
 
 Each device checks for updates once at boot. It compares the running version string against `version.txt`; if they differ it downloads and flashes the new binary, then restarts. The attempt retries up to 3 times with linear backoff (15 s, 30 s, 45 s).
+
+## build.sh Reference
+
+`build.sh` wraps common `idf.py` commands, auto-detects the serial port, and handles the deploy workflow. Requires ESP-IDF to be sourced first.
+
+| Command | Description |
+|---|---|
+| `./build.sh build` | Build firmware |
+| `./build.sh build clean` | Full clean then build |
+| `./build.sh clean` | Remove edit backups and the `build/` directory |
+| `./build.sh flash` | Flash via USB (auto-detects port) |
+| `./build.sh erase` | Erase flash completely (prompts for confirmation) |
+| `./build.sh monitor` | Open serial monitor (auto-detects port) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 5.1.3 → 5.1.4) |
+| `./build.sh version minor` | Increment minor version (e.g. 5.1.3 → 5.2.0) |
+| `./build.sh version major` | Increment major version (e.g. 5.1.3 → 6.0.0) |
+| `./build.sh deploy` | Copy binary and write `version.txt` to `~/firmware_server/firmware/` |
+| `./build.sh services` | Install all three servers as systemd services (run on host/Pi) |
+| `./build.sh all` | Build + patch version bump + deploy |
+| `./build.sh help` | Show usage summary |
 
 ## Remote Configuration
 

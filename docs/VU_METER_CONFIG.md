@@ -33,11 +33,11 @@ Edit `calculate_vu_level()` in `echoes.c`:
 
 ```c
 // Scale to reasonable range
-float level = rms * 20.0f;  // ← Change this multiplier
+float level = rms * 5.0f;  // ← Change this multiplier
 ```
 
-**Higher value** (e.g., 30.0f): More sensitive, responds to quieter sounds
-**Lower value** (e.g., 10.0f): Less sensitive, only responds to louder sounds
+**Higher value** (e.g., 10.0f): More sensitive, responds to quieter sounds
+**Lower value** (e.g., 2.0f): Less sensitive, only responds to louder sounds
 
 ### Adjust Dead Zone Threshold
 
@@ -74,6 +74,8 @@ const float FAST_SMOOTH = 0.3f;  // ← Adjust (0.0 - 1.0)
 
 **Higher value** (e.g., 0.7f): Slower, smoother transitions between levels
 **Lower value** (e.g., 0.1f): Faster, more immediate level changes
+
+Note: the `smooth_factor` parameter in the function signature is currently unused — `FAST_SMOOTH` is the active constant.
 
 ## Behavior Examples
 
