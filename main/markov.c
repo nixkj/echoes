@@ -295,6 +295,17 @@ static void fire_autonomous_call(markov_chain_t *mc, uint8_t predicted_state)
         default:                  representative_lux = 200.0f; break;
     }
 
+    /* Temporarily apply a lux matching the predicted band so the mapper
+     * selects an appropriate bird for that mood.
+     *
+     * NOTE: The three-step sequence (update → get → restore) is NOT atomic.
+     * A concurrent lux task or ESP-NOW event could update the mapper between
+     * steps.  Because autonomous calls are rare (≥45 s apart) and lux changes
+     * are slow (500 ms poll), the window for collision is tiny and the only
+     * observable effect would be a single bird chosen from the "wrong" list
+     * for one call.  The next lux poll will correct it.  Not worth the
+     * complexity of holding the mapper lock across the whole playback path.
+     */
     bird_mapper_update_for_lux(mc->mapper, representative_lux);
 
     bird_info_t bird = bird_mapper_get_bird(mc->mapper, det);

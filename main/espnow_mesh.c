@@ -346,25 +346,27 @@ void espnow_mesh_broadcast_light(float lux)
 
 bool espnow_mesh_is_flock_mode(void)
 {
-    /* Read the runtime trigger count from remote config, clamped to the
-     * compile-time ring buffer size so we never read out-of-bounds.        */
-    uint32_t flock_count  = remote_config_get()->flock_msg_count;
+    remote_config_t cfg;
+    if (!remote_config_snapshot(&cfg)) {
+        /* Fallback to compile-time defaults if mutex is contended */
+        cfg.flock_msg_count = FLOCK_MSG_COUNT;
+        cfg.flock_window_ms = FLOCK_WINDOW_MS;
+        cfg.flock_hold_ms   = FLOCK_HOLD_MS;
+    }
+
+    /* Clamp to safe ring-buffer limits */
+    uint32_t flock_count  = cfg.flock_msg_count;
     if (flock_count < 2)              flock_count = 2;
     if (flock_count > FLOCK_RING_MAX) flock_count = FLOCK_RING_MAX;
 
-    uint32_t flock_window = remote_config_get()->flock_window_ms;
+    uint32_t flock_window = cfg.flock_window_ms;
     uint32_t now          = millis();
 
-    /* The oldest relevant slot is the one that was written (flock_count)
-     * messages ago.  Because s_rx_head always points to the NEXT write slot,
-     * we walk back flock_count positions in the ring.                       */
     uint8_t oldest_slot = (uint8_t)
         ((s_rx_head + FLOCK_RING_MAX - (uint8_t)flock_count) % FLOCK_RING_MAX);
     uint32_t oldest = s_rx_times[oldest_slot];
 
-    /* oldest == 0 means the ring hasn't been filled enough yet */
-    bool newly_triggered = (oldest != 0) &&
-                           ((now - oldest) <= flock_window);
+    bool newly_triggered = (oldest != 0) && ((now - oldest) <= flock_window);
 
     if (newly_triggered) {
         s_flock_last_ms = now;
@@ -374,7 +376,7 @@ bool espnow_mesh_is_flock_mode(void)
                      flock_count, flock_window);
         }
     } else if (s_flock_active) {
-        if ((now - s_flock_last_ms) >= remote_config_get()->flock_hold_ms) {
+        if ((now - s_flock_last_ms) >= cfg.flock_hold_ms) {
             s_flock_active = false;
             ESP_LOGI(TAG, "🐦 FLOCK MODE exited (hold expired)");
         }
