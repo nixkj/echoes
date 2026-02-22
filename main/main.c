@@ -33,21 +33,7 @@ static const char *TAG = "MAIN";
 
 void app_main(void)
 {
-    /* Drive the blue LED directly via GPIO as an early "alive" indicator.
-     *
-     * This runs BEFORE led_init() and remote_config_init() so we cannot use
-     * set_led() — it calls remote_config_is_quiet_hours() which dereferences
-     * s_cfg_mutex (NULL until remote_config_init runs).
-     *
-     * gpio_reset_pin() + gpio_set_direction() configure the pin as a plain
-     * output independently of LEDC.  led_init() subsequently calls
-     * ledc_channel_config() which re-muxes the same GPIO to the LEDC
-     * peripheral, cleanly taking over drive control.                         */
-    gpio_reset_pin(PIN_LED_BLUE);
-    gpio_set_direction(PIN_LED_BLUE, GPIO_MODE_OUTPUT);
-    gpio_set_level(PIN_LED_BLUE, 1);
-
-    led_init();   /* hands PIN_LED_BLUE to LEDC; GPIO level is superseded */
+    led_init();   /* Default initialisation is full on */
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Echoes of the Machine");

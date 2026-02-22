@@ -144,7 +144,7 @@ After the OTA server is running, copy your firmware binary and set the version:
 
 ```bash
 cp build/echoes.bin ~/firmware_server/firmware/echoes.bin
-echo "5.4.0" > ~/firmware_server/firmware/version.txt
+echo "5.4.1" > ~/firmware_server/firmware/version.txt
 ```
 
 Or use `./build.sh deploy` after a successful build to do both steps at once.
@@ -205,7 +205,7 @@ echoes/
 ### Using build.sh (recommended)
 
 ```bash
-./build.sh version patch     # 5.4.0 → 5.4.1 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh version patch     # 5.4.1 → 5.4.2 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
 ./build.sh deploy            # Copy binary + write version.txt to ~/firmware_server/firmware/
 ```
@@ -239,9 +239,9 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 5.4.0 → 5.4.1) |
-| `./build.sh version minor` | Increment minor version (e.g. 5.4.0 → 5.5.0) |
-| `./build.sh version major` | Increment major version (e.g. 5.4.0 → 6.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 5.4.1 → 5.4.2) |
+| `./build.sh version minor` | Increment minor version (e.g. 5.4.1 → 5.5.0) |
+| `./build.sh version major` | Increment major version (e.g. 5.4.1 → 6.0.0) |
 | `./build.sh deploy` | Copy binary and write `version.txt` to `~/firmware_server/firmware/` |
 | `./build.sh services` | Install all three servers as systemd services (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -391,28 +391,44 @@ idf.py -p /dev/tty.usbserial-110 flash
 ```
 
 ## Expected Boot Output
+Indicative - expect variations based on hardware configuration and network
+availability.
 
 ```
-I (xxx) MAIN: ========================================
-I (xxx) MAIN: Echoes of the Machine
-I (xxx) MAIN: Firmware Version: 5.4.0
-I (xxx) MAIN: ========================================
-I (xxx) MAIN: Connecting to WiFi...
-I (xxx) OTA:  Got IP: 192.168.101.x
-I (xxx) MAIN: Sending startup report...
-I (xxx) STARTUP: Startup report sent successfully
-I (xxx) MAIN: Fetching remote configuration...
-I (xxx) RCFG: Config applied — vol=0.20 whistle=2000Hz voice=200Hz poll=500ms
-I (xxx) MAIN: Checking for firmware updates...
-I (xxx) OTA:  Current: 5.4.0 — no update needed
-I (xxx) MAIN: Application tasks resumed
-I (xxx) ESPNOW: ESP-NOW mesh initialised (broadcast-only)
-I (xxx) MAIN: System started successfully!
+I (567) ECHOES: LEDs initialized
+I (569) MAIN: ========================================
+I (574) MAIN: Echoes of the Machine
+I (577) MAIN: Firmware Version: 5.4.1
+I (580) MAIN: ========================================
+I (602) RCFG: Remote config initialised with defaults
+I (603) MAIN: Initializing system...
+I (606) ECHOES: BH1750 light sensor detected at 0x23
+I (606) ECHOES: Hardware detected: FULL (BH1750 + Audio)
+I (612) MARKOV: Loaded transition counts from NVS (578 bytes)
+I (615) MARKOV: Markov chain ready — 17 states, current: STARTUP
+I (621) MARKOV: Top transitions from STARTUP:
+I (625) MARKOV:   #1  VOICE+NIGHT           32.5%
+I (630) MARKOV:   #2  IDLE+DAWN             13.0%
+I (634) MARKOV:   #3  VOICE+DAWN            13.0%
+I (638) ECHOES: System initialized
+I (642) MAIN: Connecting to WiFi...
+I (645) OTA: Initializing WiFi...
+I (15798) MAIN: Capturing device identity...
+I (15798) STARTUP: Device MAC: xx:xx:xx:xx:xx:xx  Node type: echoes-full
+I (15802) MAIN: Initializing audio hardware...
+I (15808) ECHOES: Microphone (I2S RX) initialized @ 16000 Hz
+I (15812) MAIN: Full hardware detected - initializing speaker
+I (15818) ECHOES: Speaker (I2S TX) initialized @ 16000 Hz
+I (17031) ESPNOW: espnow [version: 2.0] init
+I (17032) ESPNOW: ESP-NOW mesh initialised (broadcast-only)
+I (17033) ESPNOW: Initial local lux seeded: 0.8
+I (17034) MAIN: Starting Echoes of the Machine (no-WiFi path)...
+I (17040) ECHOES: Audio detection task started
 ```
 
 ## Version History
 
-**5.4.0** — Current
+**5.4.1** — Current
 - Server IP and all three server ports (OTA :8000, startup :8001, config :8002) moved to `idf.py menuconfig` (Kconfig) — no longer hardcoded in headers
 - Race condition fix: `remote_config` struct now updated via mutex-protected atomic swap; `remote_config_is_quiet_hours()` snapshots fields under lock
 - Documentation and deploy script improvements: `mkdir -p` in install scripts, `requirements.txt` for all three servers, stale version references cleaned up

@@ -96,7 +96,7 @@ void led_init(void) {
         .timer_sel = LEDC_TIMER_0,
         .intr_type = LEDC_INTR_DISABLE,
         .gpio_num = PIN_LED_BLUE,
-        .duty = 0,
+        .duty       = 65535,   /* full brightness — LEDC takes over from gpio_set_level */
         .hpoint = 0
     };
     ledc_channel_config(&ledc_channel_blue);
