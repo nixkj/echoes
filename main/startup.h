@@ -16,14 +16,14 @@
  * ======================================================================== */
 
 /* STARTUP_REPORT_URL is built from CONFIG_SERVER_IP and
- * CONFIG_STARTUP_SERVER_PORT, set via 'idf.py menuconfig' under
+ * CONFIG_SERVER_PORT, set via 'idf.py menuconfig' under
  * "Server Configuration".  Do not edit this directly.            */
 #ifndef STRINGIFY
 #  define STRINGIFY_INNER(x) #x
 #  define STRINGIFY(x)       STRINGIFY_INNER(x)
 #endif
 #define STARTUP_REPORT_URL      "http://" CONFIG_SERVER_IP ":" \
-                                    STRINGIFY(CONFIG_STARTUP_SERVER_PORT) \
+                                    STRINGIFY(CONFIG_SERVER_PORT) \
                                     "/startup"
 #define STARTUP_HTTP_TIMEOUT_MS     10000   // 10 s per attempt — gives congested AP time to respond
 

@@ -1,2 +1,0 @@
-# No third-party dependencies — startup_server.py uses Python stdlib only
-# (http.server, json, os, datetime, pathlib).

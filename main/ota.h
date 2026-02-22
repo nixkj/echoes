@@ -28,7 +28,7 @@
  * under "Server Configuration".  You should not need to edit this
  * file directly — set the IP and port in menuconfig instead.
  */
-#define FIRMWARE_VERSION    "5.5.4"
+#define FIRMWARE_VERSION    "6.0.0"
 
 /* STRINGIFY is needed to turn an integer Kconfig value into a string
  * literal so it can be concatenated with other string literals.       */
@@ -38,10 +38,10 @@
 #endif
 
 #define OTA_URL             "http://" CONFIG_SERVER_IP ":" \
-                                STRINGIFY(CONFIG_OTA_SERVER_PORT) \
+                                STRINGIFY(CONFIG_SERVER_PORT) \
                                 "/firmware/echoes.bin"
 #define VERSION_URL         "http://" CONFIG_SERVER_IP ":" \
-                                STRINGIFY(CONFIG_OTA_SERVER_PORT) \
+                                STRINGIFY(CONFIG_SERVER_PORT) \
                                 "/firmware/version.txt"
 
 /* Update check settings */

@@ -20,33 +20,23 @@ config SERVER_IP
     string "Server IP Address"
     default "192.168.101.2"
     help
-        IP address of the Raspberry Pi (or other host) running the three
-        Echoes servers.  All three servers are assumed to run on the same
-        host.  Change this to match your network before flashing.
+        IP address of the host running the consolidated Echoes server.
 
-        OTA firmware server   - http://<SERVER_IP>:8000
-        Startup report server - http://<SERVER_IP>:8001
-        Remote config server  - http://<SERVER_IP>:8002
+        All device traffic — OTA firmware, startup reports, and remote
+        config — goes to a single process on SERVER_PORT (default 8002).
 
-config OTA_SERVER_PORT
-    int "OTA Firmware Server Port"
-    default 8000
-    help
-        TCP port for the OTA firmware server (firmware_server.py).
-        Only change this if you have modified the server's default port.
+          GET  /firmware/version.txt   OTA version check
+          GET  /firmware/echoes.bin    OTA binary download
+          POST /startup                boot report
+          GET  /config                 60-second parameter poll
 
-config STARTUP_SERVER_PORT
-    int "Startup Report Server Port"
-    default 8001
-    help
-        TCP port for the startup report server (startup_server.py).
-        Only change this if you have modified the server's default port.
-
-config CONFIG_SERVER_PORT
-    int "Remote Config Server Port"
+config SERVER_PORT
+    int "Server Port"
     default 8002
     help
-        TCP port for the remote configuration server (server.py).
-        Only change this if you have modified the server's default port.
+        TCP port for the consolidated Echoes server.  All three services
+        (OTA firmware, startup reports, remote config) are served from
+        this single port.  Only change this if you have a specific reason
+        to run the server on a different port.
 
 endmenu

@@ -1,0 +1,24 @@
+[Unit]
+Description=Echoes of the Machine — Consolidated Server (OTA + Startup + Config)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/echoes
+ExecStart=/opt/echoes/venv/bin/python /opt/echoes/echoes-server.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=echoes-server
+
+# The server writes config.json to /opt/echoes and reads
+# ~/firmware_server/firmware/ for OTA binaries.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/echoes /var/log/echoes
+
+[Install]
+WantedBy=multi-user.target

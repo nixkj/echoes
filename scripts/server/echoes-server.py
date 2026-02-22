@@ -1,0 +1,1140 @@
+#!/usr/bin/env python3
+"""
+Echoes of the Machine — Consolidated Server  (port 8002)
+
+Replaces three separate processes:
+
+  firmware_server.py   was :8000   GET  /firmware/version.txt
+                                   GET  /firmware/echoes.bin
+  startup_server.py    was :8001   POST /startup
+  server.py            was :8002   GET/POST /config  (and web UI)
+
+Everything now runs on port 8002.  The node registry is populated by
+startup POSTs (node_type, firmware, ip) and kept alive by 60-second
+config polls (last_seen, poll_count).  The fleet dashboard therefore
+shows the full picture for the first time.
+
+Firmware files live in ~/firmware_server/firmware/ — the same path that
+build.sh deploy has always written to, so no workflow change is needed.
+"""
+
+from flask import Flask, jsonify, request, render_template_string, send_from_directory
+import json
+import logging
+import os
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+from logging.handlers import RotatingFileHandler
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+def _setup_logging(log_dir: Path) -> None:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    fmt = logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s",
+                            datefmt="%Y-%m-%d %H:%M:%S")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    # Console
+    ch = logging.StreamHandler()
+    ch.setFormatter(fmt)
+    root.addHandler(ch)
+    # Rotating file
+    fh = RotatingFileHandler(log_dir / "echoes-server.log",
+                             maxBytes=10 * 1024 * 1024, backupCount=5)
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+
+LOG_DIR = Path(os.environ.get("ECHOES_LOG_DIR", "/var/log/echoes"))
+_setup_logging(LOG_DIR)
+log = logging.getLogger("echoes")
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+_HERE        = Path(__file__).parent.resolve()
+CONFIG_FILE  = _HERE / "config.json"
+FIRMWARE_DIR = Path.home() / "firmware_server" / "firmware"
+
+# ---------------------------------------------------------------------------
+# Flask app
+# ---------------------------------------------------------------------------
+
+app = Flask(__name__)
+
+# Silence Flask's own request logger — we log manually
+import logging as _logging
+_logging.getLogger("werkzeug").setLevel(_logging.WARNING)
+
+# ---------------------------------------------------------------------------
+# DEFAULT CONFIGURATION
+# ---------------------------------------------------------------------------
+
+DEFAULT_CONFIG = {
+    "VOLUME": {
+        "value": 0.20, "min": 0.01, "max": 1.0, "step": 0.01, "type": "float",
+        "description": "Master playback volume for synthesised bird calls. Lower values are quieter and less intrusive; higher values project further in noisy spaces.",
+        "unit": "amplitude (0–1)"
+    },
+    "GAIN": {
+        "value": 16.0, "min": 1.0, "max": 64.0, "step": 0.5, "type": "float",
+        "description": "Digital microphone pre-amplifier gain applied before detection. Increase if the device misses quiet sounds; decrease if loud environments cause false triggers.",
+        "unit": "linear multiplier"
+    },
+    "WHISTLE_FREQ": {
+        "value": 2000, "min": 500, "max": 8000, "step": 50, "type": "int",
+        "description": "Centre frequency (Hz) used by the Goertzel detector to recognise whistles. Should match the dominant frequency of the whistle you intend to use.",
+        "unit": "Hz"
+    },
+    "VOICE_FREQ": {
+        "value": 200, "min": 80, "max": 1000, "step": 10, "type": "int",
+        "description": "Centre frequency (Hz) used to detect human voice / low-frequency sounds. Lower values respond to deeper voices and bass-heavy sounds.",
+        "unit": "Hz"
+    },
+    "WHISTLE_MULTIPLIER": {
+        "value": 2.5, "min": 1.2, "max": 10.0, "step": 0.1, "type": "float",
+        "description": "Adaptive threshold multiplier for whistle detection. The detector fires when the Goertzel magnitude exceeds the running average multiplied by this value. Higher = less sensitive, fewer false positives.",
+        "unit": "× running average"
+    },
+    "VOICE_MULTIPLIER": {
+        "value": 2.5, "min": 1.2, "max": 10.0, "step": 0.1, "type": "float",
+        "description": "Adaptive threshold multiplier for voice detection. Equivalent to WHISTLE_MULTIPLIER but applied to the voice frequency band.",
+        "unit": "× running average"
+    },
+    "CLAP_MULTIPLIER": {
+        "value": 4.0, "min": 2.0, "max": 15.0, "step": 0.5, "type": "float",
+        "description": "Adaptive threshold multiplier for clap/impulse detection. Claps are broadband transients; a higher multiplier reduces false triggers from ambient noise bursts.",
+        "unit": "× running average"
+    },
+    "WHISTLE_CONFIRM": {
+        "value": 2, "min": 1, "max": 10, "step": 1, "type": "int",
+        "description": "Number of consecutive buffer frames that must exceed the threshold before a whistle detection is confirmed. Increase to require a longer, sustained whistle.",
+        "unit": "frames"
+    },
+    "VOICE_CONFIRM": {
+        "value": 3, "min": 1, "max": 10, "step": 1, "type": "int",
+        "description": "Consecutive confirmation frames required for voice detection. A higher count reduces false triggers from short percussive sounds at low frequencies.",
+        "unit": "frames"
+    },
+    "CLAP_CONFIRM": {
+        "value": 1, "min": 1, "max": 5, "step": 1, "type": "int",
+        "description": "Confirmation frames for clap detection. Claps are short by nature so 1 frame is usually correct; increase only in very noisy environments.",
+        "unit": "frames"
+    },
+    "DEBOUNCE_BUFFERS": {
+        "value": 20, "min": 5, "max": 100, "step": 1, "type": "int",
+        "description": "Minimum number of audio buffer reads between successive detections of the same type. Prevents a single event from triggering multiple bird calls.",
+        "unit": "buffer cycles"
+    },
+    "BIRDSONG_FREQ": {
+        "value": 3500, "min": 1000, "max": 8000, "step": 100, "type": "int",
+        "description": "Centre frequency (Hz) used by the Goertzel detector to recognise birdsong.",
+        "unit": "Hz"
+    },
+    "BIRDSONG_MULTIPLIER": {
+        "value": 2.2, "min": 1.2, "max": 10.0, "step": 0.1, "type": "float",
+        "description": "Adaptive threshold multiplier for birdsong detection. Higher = less sensitive.",
+        "unit": "x running average"
+    },
+    "BIRDSONG_HF_RATIO": {
+        "value": 1.4, "min": 1.0, "max": 5.0, "step": 0.1, "type": "float",
+        "description": "Spectral ratio: high-frequency band must exceed mid-frequency band by at least this factor for birdsong to be confirmed.",
+        "unit": "ratio"
+    },
+    "BIRDSONG_MF_MIN": {
+        "value": 0.35, "min": 0.05, "max": 1.0, "step": 0.05, "type": "float",
+        "description": "Mid-frequency must be at least this fraction of its own threshold for a birdsong detection to proceed.",
+        "unit": "fraction (0-1)"
+    },
+    "BIRDSONG_CONFIRM": {
+        "value": 3, "min": 1, "max": 10, "step": 1, "type": "int",
+        "description": "Consecutive confirmation frames required for birdsong detection. Filters brief transients.",
+        "unit": "frames"
+    },
+    "NOISE_FLOOR_WHISTLE": {
+        "value": 10000.0, "min": 100.0, "max": 100000.0, "step": 500.0, "type": "float",
+        "description": "Absolute minimum Goertzel magnitude for whistle detection, regardless of adaptive threshold. Prevents detections in near-silence.",
+        "unit": "magnitude"
+    },
+    "NOISE_FLOOR_VOICE": {
+        "value": 4000.0, "min": 100.0, "max": 100000.0, "step": 500.0, "type": "float",
+        "description": "Absolute minimum Goertzel magnitude for voice detection. Lower than whistle because voice energy at 200 Hz is naturally lower amplitude.",
+        "unit": "magnitude"
+    },
+    "NOISE_FLOOR_BIRDSONG": {
+        "value": 10000.0, "min": 100.0, "max": 100000.0, "step": 500.0, "type": "float",
+        "description": "Absolute minimum Goertzel magnitude for birdsong detection. Guards against false triggers in quiet environments.",
+        "unit": "magnitude"
+    },
+    "LUX_POLL_INTERVAL_MS": {
+        "value": 500, "min": 100, "max": 5000, "step": 100, "type": "int",
+        "description": "How often the light sensor is polled. 500 ms is a good balance between responsiveness and CPU load. The BH1750 has a ~120 ms measurement time; do not go below 150 ms.",
+        "unit": "ms"
+    },
+    "LUX_CHANGE_THRESHOLD": {
+        "value": 1.0, "min": 0.1, "max": 50.0, "step": 0.5, "type": "float",
+        "description": "Minimum lux change required to update the bird mapper or Markov chain. Filters out sensor noise in stable lighting conditions.",
+        "unit": "lux"
+    },
+    "LUX_FLASH_THRESHOLD": {
+        "value": 30.0, "min": 5.0, "max": 500.0, "step": 5.0, "type": "float",
+        "description": "Absolute lux jump in a single poll that triggers an immediate bird-call response (light-flash event). A phone torch at 1 m produces roughly 50–200 lux.",
+        "unit": "lux"
+    },
+    "LUX_FLASH_PERCENT": {
+        "value": 0.15, "min": 0.05, "max": 0.90, "step": 0.05, "type": "float",
+        "description": "Relative lux change (fraction of current reading) that also triggers a flash event. At 0.15, a 15% increase in ambient light fires a response. Works alongside LUX_FLASH_MIN_ABS.",
+        "unit": "fraction (0–1)"
+    },
+    "LUX_FLASH_MIN_ABS": {
+        "value": 15.0, "min": 1.0, "max": 100.0, "step": 1.0, "type": "float",
+        "description": "Minimum absolute lux change that must accompany the percentage check for a flash trigger. Prevents micro-fluctuations in very dark rooms from firing events.",
+        "unit": "lux"
+    },
+    "VOLUME_LUX_MIN": {
+        "value": 2.0, "min": 0.0, "max": 50.0, "step": 1.0, "type": "float",
+        "description": "Lux level at or below which the quietest playback volume (VOLUME_SCALE_MIN) is used. Models a 'quiet at night' behaviour.",
+        "unit": "lux"
+    },
+    "VOLUME_LUX_MAX": {
+        "value": 200.0, "min": 10.0, "max": 2000.0, "step": 10.0, "type": "float",
+        "description": "Lux level at or above which the loudest playback volume (VOLUME_SCALE_MAX) is used. In a typical indoor space, 200 lux is a well-lit room.",
+        "unit": "lux"
+    },
+    "VOLUME_SCALE_MIN": {
+        "value": 0.25, "min": 0.01, "max": 1.0, "step": 0.05, "type": "float",
+        "description": "Volume scale factor applied in darkness (at or below VOLUME_LUX_MIN). Final playback amplitude = VOLUME × VOLUME_SCALE_MIN.",
+        "unit": "multiplier (0–1)"
+    },
+    "VOLUME_SCALE_MAX": {
+        "value": 1.0, "min": 0.1, "max": 1.0, "step": 0.05, "type": "float",
+        "description": "Volume scale factor applied in bright conditions (at or above VOLUME_LUX_MAX). Set below 1.0 to cap maximum output even in bright environments.",
+        "unit": "multiplier (0–1)"
+    },
+    "QUELEA_GAIN": {
+        "value": 1.2, "min": 0.1, "max": 4.0, "step": 0.05, "type": "float",
+        "description": "Post-process gain applied specifically to the Red-billed Quelea synthesised call. Quelea bypasses the global VOLUME constant so this is its sole loudness control.",
+        "unit": "linear multiplier"
+    },
+    "ESPNOW_LUX_THRESHOLD": {
+        "value": 12.0, "min": 1.0, "max": 100.0, "step": 1.0, "type": "float",
+        "description": "Minimum lux change between consecutive ESP-NOW light broadcasts. Prevents flooding the mesh network with tiny sensor fluctuations.",
+        "unit": "lux"
+    },
+    "ESPNOW_EVENT_TTL_MS": {
+        "value": 30000, "min": 5000, "max": 300000, "step": 1000, "type": "int",
+        "description": "How long (ms) a remote ESP-NOW event continues to influence local bird selection before reverting to the node's own light-level defaults.",
+        "unit": "ms"
+    },
+    "ESPNOW_SOUND_THROTTLE_MS": {
+        "value": 3000, "min": 500, "max": 30000, "step": 500, "type": "int",
+        "description": "Minimum time between consecutive sound-event broadcasts from this node. Prevents flooding the mesh during rapid repeated detections.",
+        "unit": "ms"
+    },
+    "FLOCK_MSG_COUNT": {
+        "value": 12, "min": 2, "max": 50, "step": 1, "type": "int",
+        "description": "Number of ESP-NOW messages that must arrive within FLOCK_WINDOW_MS to trigger flock mode. Max 50 (one per node). Lower values make the flock more reactive; higher values require a denser burst.",
+        "unit": "messages"
+    },
+    "FLOCK_WINDOW_MS": {
+        "value": 6000, "min": 1000, "max": 60000, "step": 500, "type": "int",
+        "description": "Sliding time window (ms) in which FLOCK_MSG_COUNT messages must arrive to trigger flock mode.",
+        "unit": "ms"
+    },
+    "MARKOV_IDLE_TRIGGER_MS": {
+        "value": 45000, "min": 5000, "max": 600000, "step": 5000, "type": "int",
+        "description": "Duration of network silence (ms) before the Markov chain autonomously fires a bird call based on the most probable next state. Keeps the installation alive when no one is interacting.",
+        "unit": "ms"
+    },
+    "MARKOV_AUTONOMOUS_COOLDOWN_MS": {
+        "value": 15000, "min": 1000, "max": 120000, "step": 1000, "type": "int",
+        "description": "Minimum gap (ms) between consecutive autonomous Markov-triggered calls. Prevents the chain from firing repeatedly during a long quiet period.",
+        "unit": "ms"
+    },
+    "FLOCK_HOLD_MS": {
+        "value": 10000, "min": 1000, "max": 120000, "step": 1000, "type": "int",
+        "description": "How long (ms) flock mode persists after the last qualifying burst before automatically decaying back to normal.",
+        "unit": "ms"
+    },
+    "FLOCK_CALL_GAP_MS": {
+        "value": 200, "min": 50, "max": 2000, "step": 50, "type": "int",
+        "description": "Minimum silence gap (ms) between consecutive bird calls during flock mode. Keeps individual calls perceptible rather than blending into a sustained tone.",
+        "unit": "ms"
+    },
+    "VU_MAX_BRIGHTNESS": {
+        "value": 0.75, "min": 0.1, "max": 1.0, "step": 0.05, "type": "float",
+        "description": "Peak LED brightness during bird-call playback VU meter animation. Lower values make the visual response more subtle.",
+        "unit": "brightness (0–1)"
+    },
+    "SILENT_MODE": {
+        "value": False, "type": "bool",
+        "description": "When ON, all output is suppressed — no sound and no LED activity. The device continues to listen and learn but produces no response. Use for maintenance or overnight quiet hours.",
+        "unit": "on / off"
+    },
+    "SOUND_OFF": {
+        "value": False, "type": "bool",
+        "description": "When ON, bird-call audio is silenced but LEDs continue to operate normally (ambient glow and VU meter during detection). Useful in quiet settings where visual response is still wanted.",
+        "unit": "on / off"
+    },
+    "QUIET_HOURS_ENABLED": {
+        "value": True, "type": "bool",
+        "description": "When ON, all nodes enter a fully silent mode (no sound, no LEDs) between QUIET_HOUR_START and QUIET_HOUR_END each day. Uses the server's local time so keep server and installation in the same timezone.",
+        "unit": "on / off"
+    },
+    "QUIET_HOUR_START": {
+        "value": 17, "min": 0, "max": 23, "step": 1, "type": "int",
+        "description": "Hour (0–23, 24-hour clock) at which the daily quiet period begins. Default 17 = 17:00 (5 pm). The quiet window wraps overnight when START > END.",
+        "unit": "hour (0-23)"
+    },
+    "QUIET_HOUR_END": {
+        "value": 8, "min": 0, "max": 23, "step": 1, "type": "int",
+        "description": "Hour (0–23) at which the daily quiet period ends and normal operation resumes. Default 8 = 08:00 (8 am). Set equal to START to disable the window without touching QUIET_HOURS_ENABLED.",
+        "unit": "hour (0-23)"
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Config persistence
+# ---------------------------------------------------------------------------
+
+def load_config() -> dict:
+    if not CONFIG_FILE.exists():
+        save_config(DEFAULT_CONFIG)
+        return dict(DEFAULT_CONFIG)
+    try:
+        saved = json.loads(CONFIG_FILE.read_text())
+        merged = dict(DEFAULT_CONFIG)
+        for key, saved_param in saved.items():
+            if key in merged:
+                merged[key] = dict(merged[key])
+                merged[key]["value"] = saved_param.get("value", merged[key]["value"])
+        return merged
+    except Exception as e:
+        log.warning(f"Could not load config: {e} — using defaults")
+        return dict(DEFAULT_CONFIG)
+
+
+def save_config(config: dict) -> None:
+    CONFIG_FILE.write_text(json.dumps(config, indent=2))
+
+
+_config       = load_config()
+_last_modified = datetime.now().isoformat()
+
+# Restart flag
+RESTART_WINDOW_S   = 90
+_restart_pending   = False
+_restart_expires   = 0.0
+_restart_timestamp = None
+_restart_token     = 0
+
+# ---------------------------------------------------------------------------
+# Node registry
+# ---------------------------------------------------------------------------
+# Keyed by MAC (upper-case string).  Two update paths:
+#
+#   POST /startup  — sets node_type, firmware, ip, increments boot_count
+#   GET  /config   — updates last_seen / poll_count (liveness heartbeat)
+#
+# Because consolidation means both calls hit the same process, the
+# dashboard now has the complete picture: identity from startup +
+# liveness from config polls.
+
+_nodes: dict = {}
+_nodes_lock  = threading.Lock()
+
+
+def _node_startup(mac: str, node_type: str, firmware: str, ip: str) -> None:
+    """Record a boot event — sets static identity fields, increments boot_count."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with _nodes_lock:
+        existing = _nodes.get(mac, {})
+        _nodes[mac] = {
+            "mac":          mac,
+            "node_type":    node_type or "unknown",
+            "firmware":     firmware  or "unknown",
+            "ip":           ip,
+            "first_seen":   existing.get("first_seen", now),
+            "last_seen":    now,
+            "last_seen_ts": time.time(),
+            "poll_count":   existing.get("poll_count", 0),
+            "boot_count":   existing.get("boot_count", 0) + 1,
+        }
+    log.info(f"STARTUP  {mac}  type={node_type}  fw={firmware}  ip={ip}")
+
+
+def _node_poll(mac: str) -> None:
+    """Record a 60-second config poll — updates liveness fields only."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with _nodes_lock:
+        if mac in _nodes:
+            _nodes[mac]["last_seen"]    = now
+            _nodes[mac]["last_seen_ts"] = time.time()
+            _nodes[mac]["poll_count"]  += 1
+        else:
+            # Node polling before its first startup report (e.g. server restarted).
+            # Create a minimal skeleton; enriched on next boot.
+            _nodes[mac] = {
+                "mac":          mac,
+                "node_type":    "unknown",
+                "firmware":     "unknown",
+                "ip":           "unknown",
+                "first_seen":   now,
+                "last_seen":    now,
+                "last_seen_ts": time.time(),
+                "poll_count":   1,
+                "boot_count":   0,
+            }
+
+# ---------------------------------------------------------------------------
+# OTA firmware routes  (was firmware_server.py on :8000)
+# ---------------------------------------------------------------------------
+
+@app.route("/firmware/<path:filename>")
+def serve_firmware(filename):
+    """Serve OTA binary and version.txt from ~/firmware_server/firmware/."""
+    # Guard against path traversal
+    safe = os.path.normpath(filename)
+    if safe.startswith("..") or safe.startswith("/"):
+        return "Forbidden", 403
+
+    full = FIRMWARE_DIR / safe
+    if not full.is_file():
+        log.warning(f"OTA 404  {request.remote_addr}  /firmware/{filename}")
+        return "Not found", 404
+
+    is_bin = filename.endswith(".bin")
+    log.info(
+        f"OTA {'BIN ' if is_bin else 'VER '}  {request.remote_addr}  "
+        f"/firmware/{filename}  ({full.stat().st_size:,} bytes)"
+    )
+    return send_from_directory(str(FIRMWARE_DIR), safe,
+                               mimetype="application/octet-stream" if is_bin else "text/plain")
+
+# ---------------------------------------------------------------------------
+# Startup report route  (was startup_server.py on :8001)
+# ---------------------------------------------------------------------------
+
+@app.route("/startup", methods=["POST"])
+def startup_report():
+    """Receive boot report from a node.  Populates node_type, firmware, IP."""
+    data       = request.get_json(force=True, silent=True) or {}
+    mac        = data.get("mac",           "").strip().upper()
+    node_type  = data.get("node_type",     "unknown")
+    firmware   = data.get("firmware",      "unknown")
+    has_errors = data.get("has_errors",    False)
+    error_msg  = data.get("error_message", "")
+    ip         = request.remote_addr or "unknown"
+
+    if has_errors and error_msg:
+        log.warning(f"STARTUP  {mac}  type={node_type}  fw={firmware}  ip={ip}  ERROR: {error_msg}")
+    
+    if mac:
+        _node_startup(mac, node_type, firmware, ip)
+
+    # Content-Length is mandatory — ESP-IDF returns ESP_ERR_HTTP_INCOMPLETE_DATA
+    # when it is absent (chunked encoding, which BaseHTTPRequestHandler defaults to).
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    body = json.dumps({
+        "status":    "ok",
+        "message":   "Startup report received",
+        "timestamp": timestamp,
+    }).encode()
+    return app.response_class(
+        response=body,
+        status=200,
+        mimetype="application/json",
+        headers={"Content-Length": str(len(body))},
+    )
+
+# ---------------------------------------------------------------------------
+# Node registry API
+# ---------------------------------------------------------------------------
+
+@app.route("/nodes")
+def get_nodes():
+    """Return fleet registry — one entry per known node."""
+    with _nodes_lock:
+        return jsonify(list(_nodes.values()))
+
+# ---------------------------------------------------------------------------
+# Config API  (unchanged from original server.py)
+# ---------------------------------------------------------------------------
+
+@app.route("/config")
+def get_config():
+    """Return flat key→value map for device consumption (60-second poll)."""
+    global _restart_pending, _restart_expires, _restart_timestamp
+
+    if _restart_pending and time.time() > _restart_expires:
+        _restart_pending = False
+        _restart_timestamp = None
+        log.info("Restart window expired — flag cleared")
+
+    # Track liveness — MAC sent in X-Device-MAC header (set in remote_config.c)
+    mac = request.headers.get("X-Device-MAC", "").strip().upper()
+    if mac:
+        _node_poll(mac)
+
+    flat = {k: v["value"] for k, v in _config.items()}
+    flat["_server_time"]        = time.time()
+    flat["_version"]            = _last_modified
+    flat["RESTART_REQUESTED"]   = _restart_pending
+    flat["RESTART_TOKEN"]       = _restart_token
+    flat["QUIET_HOURS_ENABLED"] = _config["QUIET_HOURS_ENABLED"]["value"]
+    flat["QUIET_HOUR_START"]    = _config["QUIET_HOUR_START"]["value"]
+    flat["QUIET_HOUR_END"]      = _config["QUIET_HOUR_END"]["value"]
+
+    if _restart_pending:
+        log.info(f"RESTART token={_restart_token} delivered to {mac or 'unknown'}")
+    return jsonify(flat)
+
+
+@app.route("/config/full")
+def get_config_full():
+    return jsonify(_config)
+
+
+@app.route("/config", methods=["POST"])
+def update_config():
+    global _config, _last_modified
+    data = request.get_json(force=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    updated, errors = [], []
+    for key, new_val in data.items():
+        if key not in _config:
+            errors.append(f"Unknown key: {key}")
+            continue
+        param = _config[key]
+        try:
+            if param["type"] == "bool":
+                if isinstance(new_val, str):
+                    new_val = new_val.lower() in ("true", "1", "yes")
+                else:
+                    new_val = bool(new_val)
+            elif param["type"] == "int":
+                new_val = int(new_val)
+            else:
+                new_val = float(new_val)
+            if param["type"] != "bool" and (new_val < param["min"] or new_val > param["max"]):
+                errors.append(f"{key}: {new_val} out of range [{param['min']}, {param['max']}]")
+                continue
+            _config[key] = dict(param)
+            _config[key]["value"] = new_val
+            updated.append(key)
+        except (ValueError, TypeError) as e:
+            errors.append(f"{key}: {e}")
+
+    if updated:
+        _last_modified = datetime.now().isoformat()
+        save_config(_config)
+        log.info(f"Config updated: {updated}")
+
+    return jsonify({"updated": updated, "errors": errors, "version": _last_modified})
+
+
+@app.route("/config/reset", methods=["POST"])
+def reset_config():
+    global _config, _last_modified
+    _config = dict(DEFAULT_CONFIG)
+    _last_modified = datetime.now().isoformat()
+    save_config(_config)
+    log.info("Config reset to defaults")
+    return jsonify({"status": "reset", "version": _last_modified})
+
+
+@app.route("/restart", methods=["POST"])
+def request_restart():
+    global _restart_pending, _restart_expires, _restart_timestamp, _restart_token
+    _restart_pending   = True
+    _restart_expires   = time.time() + RESTART_WINDOW_S
+    _restart_timestamp = datetime.now().isoformat()
+    _restart_token     = int(time.time()) & 0xFFFFFFFF
+    log.info(f"Restart queued token={_restart_token} expires_in={RESTART_WINDOW_S}s")
+    return jsonify({"status": "restart_pending", "timestamp": _restart_timestamp,
+                    "token": _restart_token, "window_s": RESTART_WINDOW_S})
+
+
+@app.route("/restart/cancel", methods=["POST"])
+def cancel_restart():
+    global _restart_pending, _restart_expires, _restart_timestamp, _restart_token
+    was = _restart_pending
+    _restart_pending = False; _restart_expires = 0.0
+    _restart_timestamp = None; _restart_token = 0
+    return jsonify({"status": "cancelled", "was_pending": was})
+
+
+@app.route("/restart/status")
+def restart_status():
+    remaining = max(0.0, _restart_expires - time.time()) if _restart_pending else 0.0
+    return jsonify({"pending": _restart_pending, "timestamp": _restart_timestamp,
+                    "remaining_s": int(remaining)})
+
+
+@app.route("/quiet-hours/status")
+def quiet_hours_status():
+    now     = datetime.now()
+    hour    = now.hour
+    qs      = _config["QUIET_HOUR_START"]["value"]
+    qe      = _config["QUIET_HOUR_END"]["value"]
+    enabled = _config["QUIET_HOURS_ENABLED"]["value"]
+
+    if not enabled:
+        quiet_now = False
+    elif qs < qe:
+        quiet_now = qs <= hour < qe
+    else:
+        quiet_now = hour >= qs or hour < qe
+
+    def _minutes_to(h):
+        delta = (h - hour) % 24
+        return 0 if delta == 0 else delta * 60 - now.minute
+
+    return jsonify({
+        "enabled": enabled, "quiet_now": quiet_now,
+        "current_hour": hour, "quiet_start": qs, "quiet_end": qe,
+        "next_event": "end" if quiet_now else "start",
+        "minutes_to_next_event": _minutes_to(qe if quiet_now else qs),
+        "server_time": now.strftime("%H:%M:%S"),
+    })
+
+# ---------------------------------------------------------------------------
+# Web UI — Config page
+# ---------------------------------------------------------------------------
+
+HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Echoes of the Machine — Configuration</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #0a0c0f;
+    --surface:  #111318;
+    --border:   #1e2330;
+    --accent:   #c8f04a;
+    --accent2:  #4af0c8;
+    --muted:    #3a4055;
+    --text:     #dde3f0;
+    --text-dim: #6b7898;
+    --danger:   #f04a6a;
+    --warn:     #f0b84a;
+    --font-head: 'Syne', sans-serif;
+    --font-mono: 'Space Mono', monospace;
+    --radius:   4px;
+    --glow: 0 0 20px rgba(200,240,74,0.12);
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font-mono); font-size: 13px; min-height: 100vh; overflow-x: hidden; }
+  body::before { content: ''; position: fixed; inset: 0; z-index: 0; background-image: linear-gradient(rgba(200,240,74,0.015) 1px, transparent 1px), linear-gradient(90deg, rgba(200,240,74,0.015) 1px, transparent 1px); background-size: 40px 40px; pointer-events: none; }
+  .layout { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 0 24px 60px; }
+  header { padding: 48px 0 40px; border-bottom: 1px solid var(--border); margin-bottom: 40px; display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+  .logo-eyebrow { font-size: 10px; letter-spacing: 0.3em; color: var(--accent); text-transform: uppercase; margin-bottom: 8px; opacity: 0.8; }
+  .logo-eyebrow a { color: var(--accent2); text-decoration: none; margin-left: 18px; opacity: 0.7; transition: opacity 0.15s; }
+  .logo-eyebrow a:hover { opacity: 1; }
+  h1 { font-family: var(--font-head); font-size: clamp(22px, 4vw, 38px); font-weight: 800; letter-spacing: -0.02em; line-height: 1; color: #fff; }
+  h1 span { color: var(--accent); }
+  .header-meta { font-size: 11px; color: var(--text-dim); line-height: 1.8; text-align: right; }
+  .header-meta strong { color: var(--accent2); font-weight: 400; }
+  .controls-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 32px; flex-wrap: wrap; }
+  .filter-input { flex: 1; min-width: 180px; background: var(--surface); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); font-size: 12px; padding: 8px 14px; border-radius: var(--radius); outline: none; transition: border-color 0.2s; }
+  .filter-input:focus { border-color: var(--accent); }
+  .filter-input::placeholder { color: var(--muted); }
+  .btn { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; padding: 8px 18px; border-radius: var(--radius); border: 1px solid; cursor: pointer; transition: all 0.15s; text-transform: uppercase; white-space: nowrap; }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #0a0c0f; font-weight: 700; }
+  .btn-primary:hover { background: #d8ff5a; box-shadow: var(--glow); }
+  .btn-ghost { background: transparent; border-color: var(--muted); color: var(--text-dim); }
+  .btn-ghost:hover { border-color: var(--danger); color: var(--danger); }
+  .btn-ghost2 { background: transparent; border-color: var(--border); color: var(--text-dim); }
+  .btn-ghost2:hover { border-color: var(--accent2); color: var(--accent2); }
+  .btn-danger { background: transparent; border: 1px solid var(--danger); color: var(--danger); font-family: var(--font-mono); font-size: 11px; padding: 8px 16px; cursor: pointer; border-radius: var(--radius); letter-spacing: 0.05em; transition: background 0.15s, color 0.15s; }
+  .btn-danger:hover { background: var(--danger); color: var(--bg); }
+  #restart-status { font-size: 11px; color: var(--warn); font-family: var(--font-mono); letter-spacing: 0.05em; }
+  .section-label { font-family: var(--font-head); font-size: 11px; font-weight: 600; letter-spacing: 0.25em; text-transform: uppercase; color: var(--text-dim); padding: 6px 0; margin: 32px 0 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+  .section-label::before { content: ''; display: inline-block; width: 8px; height: 8px; background: var(--accent); border-radius: 50%; }
+  .param-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); gap: 2px; }
+  .param-card { background: var(--surface); border: 1px solid var(--border); padding: 18px 20px; display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto auto; gap: 4px 16px; transition: border-color 0.15s; position: relative; overflow: hidden; }
+  .param-card::after { content: ''; position: absolute; top: 0; left: 0; width: 2px; height: 100%; background: var(--accent); opacity: 0; transition: opacity 0.2s; }
+  .param-card:hover { border-color: var(--muted); }
+  .param-card:hover::after { opacity: 1; }
+  .param-card.dirty { border-color: var(--warn); }
+  .param-card.dirty::after { background: var(--warn); opacity: 1; }
+  .param-key { grid-column: 1; grid-row: 1; font-size: 12px; color: var(--accent2); letter-spacing: 0.04em; align-self: center; }
+  .param-unit { grid-column: 2; grid-row: 1; font-size: 10px; color: var(--text-dim); text-align: right; align-self: center; white-space: nowrap; }
+  .param-desc { grid-column: 1 / -1; grid-row: 2; font-size: 11px; line-height: 1.6; color: var(--text-dim); }
+  .param-controls { grid-column: 1 / -1; grid-row: 3; display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .param-input { width: 90px; background: var(--bg); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); font-size: 13px; padding: 6px 10px; border-radius: var(--radius); outline: none; text-align: right; transition: border-color 0.15s; }
+  .param-input:focus { border-color: var(--accent2); }
+  .param-range { flex: 1; -webkit-appearance: none; height: 2px; background: var(--muted); border-radius: 1px; outline: none; cursor: pointer; }
+  .param-range::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); cursor: pointer; transition: transform 0.1s, box-shadow 0.1s; }
+  .param-range::-webkit-slider-thumb:hover { transform: scale(1.3); box-shadow: 0 0 8px rgba(200,240,74,0.5); }
+  .param-range::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: none; cursor: pointer; }
+  .param-default { font-size: 10px; color: var(--muted); white-space: nowrap; }
+  #toast { position: fixed; bottom: 32px; right: 32px; background: var(--surface); border: 1px solid var(--border); padding: 14px 20px; border-radius: var(--radius); font-size: 12px; max-width: 320px; transform: translateY(80px); opacity: 0; transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); z-index: 100; }
+  #toast.show { transform: translateY(0); opacity: 1; }
+  #toast.success { border-left: 3px solid var(--accent); }
+  #toast.error   { border-left: 3px solid var(--danger); }
+  #toast.info    { border-left: 3px solid var(--accent2); }
+  .status-bar { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(10,12,15,0.92); backdrop-filter: blur(8px); border-top: 1px solid var(--border); padding: 8px 32px; display: flex; align-items: center; gap: 20px; font-size: 11px; color: var(--text-dim); z-index: 50; }
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .status-bar .dirty-count { color: var(--warn); }
+  .status-bar .spacer { flex: 1; }
+  .toggle-btn { display: inline-flex; align-items: center; gap: 10px; background: none; border: 1px solid var(--muted); border-radius: var(--radius); padding: 7px 14px; cursor: pointer; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; transition: border-color 0.15s, background 0.15s; }
+  .toggle-track { display: inline-block; width: 32px; height: 16px; border-radius: 8px; background: var(--muted); position: relative; transition: background 0.2s; flex-shrink: 0; }
+  .toggle-thumb { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--text-dim); transition: transform 0.2s, background 0.2s; }
+  .toggle-label { color: var(--text-dim); transition: color 0.15s; }
+  .toggle-off .toggle-track { background: var(--muted); }
+  .toggle-off .toggle-thumb { transform: translateX(0); background: var(--text-dim); }
+  .toggle-off .toggle-label { color: var(--text-dim); }
+  .toggle-off { border-color: var(--muted); }
+  .toggle-on .toggle-track { background: var(--danger); }
+  .toggle-on .toggle-thumb { transform: translateX(16px); background: #fff; }
+  .toggle-on .toggle-label { color: var(--danger); font-weight: 700; }
+  .toggle-on { border-color: var(--danger); background: rgba(240,74,106,0.08); }
+</style>
+</head>
+<body>
+<div class="layout">
+  <header>
+    <div class="logo-block">
+      <div class="logo-eyebrow">ESP32 Mesh Installation <a href="/fleet">◉ Fleet Monitor →</a></div>
+      <h1>Echoes of the <span>Machine</span></h1>
+    </div>
+    <div class="header-meta">
+      Configuration Server<br>
+      Last saved: <strong id="last-saved">—</strong><br>
+      <span id="param-count">0</span> parameters
+    </div>
+  </header>
+
+  <div class="controls-bar">
+    <input class="filter-input" type="text" id="filter-input" placeholder="Filter parameters…">
+    <button class="btn btn-ghost2" onclick="expandAll()">Expand all</button>
+    <button class="btn btn-ghost" onclick="confirmReset()">Reset defaults</button>
+    <button class="btn btn-primary" id="save-btn" onclick="saveAll()">Save changes</button>
+    <button class="btn btn-danger" id="restart-btn" onclick="requestRestart()"
+      title="Queue a reboot — nodes restart at next poll (within 60 s)">
+      ⟳ Restart all nodes
+    </button>
+    <span id="restart-status"></span>
+  </div>
+
+  <div id="quiet-hours-banner" style="display:none;margin-bottom:24px;padding:12px 18px;border-radius:4px;border:1px solid var(--muted);font-family:var(--font-mono);font-size:12px;"></div>
+  <div id="param-sections"></div>
+</div>
+
+<div id="toast"></div>
+<div class="status-bar">
+  <div class="status-dot"></div>
+  <span>Server running</span>
+  <span class="spacer"></span>
+  <span id="dirty-indicator"></span>
+  <span>Devices poll every 60 s</span>
+</div>
+
+<script>
+const SECTIONS = {
+  "Output Switches":  ["SILENT_MODE","SOUND_OFF"],
+  "Quiet Hours":      ["QUIET_HOURS_ENABLED","QUIET_HOUR_START","QUIET_HOUR_END"],
+  "Audio Detection":  ["GAIN","WHISTLE_FREQ","VOICE_FREQ","WHISTLE_MULTIPLIER","VOICE_MULTIPLIER","CLAP_MULTIPLIER","WHISTLE_CONFIRM","VOICE_CONFIRM","CLAP_CONFIRM","DEBOUNCE_BUFFERS","BIRDSONG_FREQ","BIRDSONG_MULTIPLIER","BIRDSONG_HF_RATIO","BIRDSONG_MF_MIN","BIRDSONG_CONFIRM","NOISE_FLOOR_WHISTLE","NOISE_FLOOR_VOICE","NOISE_FLOOR_BIRDSONG"],
+  "Playback Volume":  ["VOLUME","VOLUME_LUX_MIN","VOLUME_LUX_MAX","VOLUME_SCALE_MIN","VOLUME_SCALE_MAX","QUELEA_GAIN"],
+  "Light Sensor":     ["LUX_POLL_INTERVAL_MS","LUX_CHANGE_THRESHOLD","LUX_FLASH_THRESHOLD","LUX_FLASH_PERCENT","LUX_FLASH_MIN_ABS"],
+  "LED Behaviour":    ["VU_MAX_BRIGHTNESS"],
+  "ESP-NOW Mesh":     ["ESPNOW_LUX_THRESHOLD","ESPNOW_EVENT_TTL_MS","ESPNOW_SOUND_THROTTLE_MS"],
+  "Markov Chain":     ["MARKOV_IDLE_TRIGGER_MS","MARKOV_AUTONOMOUS_COOLDOWN_MS"],
+  "Flock Mode":       ["FLOCK_MSG_COUNT","FLOCK_WINDOW_MS","FLOCK_HOLD_MS","FLOCK_CALL_GAP_MS"],
+};
+
+let fullConfig = {}, dirty = {};
+
+async function loadConfig() {
+  const resp = await fetch("/config/full");
+  fullConfig = await resp.json();
+  renderAll();
+  document.getElementById("param-count").textContent = Object.keys(fullConfig).length;
+  updateQuietHoursBanner();
+}
+
+async function updateQuietHoursBanner() {
+  try {
+    const d = await (await fetch("/quiet-hours/status")).json();
+    const banner = document.getElementById("quiet-hours-banner");
+    if (!d.enabled) { banner.style.display = "none"; return; }
+    banner.style.display = "block";
+    if (d.quiet_now) {
+      banner.style.cssText += ";background:rgba(240,74,106,0.08);border-color:var(--danger);color:var(--danger)";
+      banner.innerHTML = `🔇 <strong>QUIET HOURS ACTIVE</strong> — flock is silent until ${String(d.quiet_end).padStart(2,"0")}:00 &nbsp;·&nbsp; ${d.minutes_to_next_event} min remaining &nbsp;·&nbsp; server time ${d.server_time}`;
+    } else {
+      banner.style.cssText += ";background:rgba(200,240,74,0.06);border-color:var(--accent);color:var(--accent)";
+      banner.innerHTML = `🔊 Flock active — quiet hours begin at ${String(d.quiet_start).padStart(2,"0")}:00 &nbsp;·&nbsp; ${d.minutes_to_next_event} min until silence &nbsp;·&nbsp; server time ${d.server_time}`;
+    }
+  } catch(e) {}
+}
+
+function renderAll() {
+  const container = document.getElementById("param-sections");
+  container.innerHTML = "";
+  const filterVal = document.getElementById("filter-input").value.toLowerCase();
+  for (const [section, keys] of Object.entries(SECTIONS)) {
+    const vis = keys.filter(k => fullConfig[k] && (!filterVal || k.toLowerCase().includes(filterVal) || fullConfig[k].description.toLowerCase().includes(filterVal)));
+    if (!vis.length) continue;
+    const label = document.createElement("div");
+    label.className = "section-label";
+    label.textContent = section;
+    container.appendChild(label);
+    const grid = document.createElement("div");
+    grid.className = "param-grid";
+    vis.forEach(k => grid.appendChild(makeCard(k, fullConfig[k])));
+    container.appendChild(grid);
+  }
+}
+
+function makeCard(key, param) {
+  const card = document.createElement("div");
+  card.className = "param-card" + (dirty[key] !== undefined ? " dirty" : "");
+  card.id = "card-" + key;
+  const cur = dirty[key] !== undefined ? dirty[key] : param.value;
+  if (param.type === "bool") {
+    const on = cur === true || cur === "true";
+    card.innerHTML = `<div class="param-key">${key}</div><div class="param-unit">${param.unit}</div><div class="param-desc">${param.description}</div><div class="param-controls"><button class="toggle-btn ${on?'toggle-on':'toggle-off'}" id="toggle-${key}"><span class="toggle-track"><span class="toggle-thumb"></span></span><span class="toggle-label">${on?'ON':'OFF'}</span></button><span class="param-default">default: OFF</span></div>`;
+    const btn = card.querySelector(`#toggle-${key}`);
+    btn.addEventListener("click", () => {
+      const nowOn = btn.classList.contains("toggle-off");
+      btn.classList.toggle("toggle-on", nowOn); btn.classList.toggle("toggle-off", !nowOn);
+      btn.querySelector(".toggle-label").textContent = nowOn ? "ON" : "OFF";
+      markDirty(key, nowOn);
+    });
+    return card;
+  }
+  const isFloat = param.type === "float";
+  const dec = isFloat ? (param.step < 0.1 ? 3 : 2) : 0;
+  card.innerHTML = `<div class="param-key">${key}</div><div class="param-unit">${param.unit}</div><div class="param-desc">${param.description}</div><div class="param-controls"><input type="range" class="param-range" id="range-${key}" min="${param.min}" max="${param.max}" step="${param.step}" value="${cur}"><input type="number" class="param-input" id="input-${key}" min="${param.min}" max="${param.max}" step="${param.step}" value="${cur.toFixed?cur.toFixed(dec):cur}"><span class="param-default">default: ${param.value.toFixed?param.value.toFixed(dec):param.value}</span></div>`;
+  const rng = card.querySelector(`#range-${key}`), inp = card.querySelector(`#input-${key}`);
+  rng.addEventListener("input",  () => { const v=isFloat?parseFloat(rng.value):parseInt(rng.value); inp.value=isFloat?v.toFixed(dec):v; markDirty(key,v); });
+  inp.addEventListener("change", () => { const v=isFloat?parseFloat(inp.value):parseInt(inp.value); rng.value=v; markDirty(key,v); });
+  return card;
+}
+
+function markDirty(key, value) {
+  dirty[key] = value;
+  document.getElementById("card-"+key)?.classList.add("dirty");
+  updateDirtyCount();
+}
+function updateDirtyCount() {
+  const n = Object.keys(dirty).length;
+  document.getElementById("dirty-indicator").innerHTML = n > 0 ? `<span class="dirty-count">${n} unsaved change${n>1?"s":""}</span>` : "";
+}
+
+async function saveAll() {
+  if (!Object.keys(dirty).length) { showToast("Nothing to save","info"); return; }
+  const btn = document.getElementById("save-btn");
+  btn.textContent = "Saving…"; btn.disabled = true;
+  try {
+    const res = await (await fetch("/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(dirty)})).json();
+    if (res.errors?.length) { showToast("Errors: "+res.errors.join(", "),"error"); }
+    else {
+      showToast(`Saved ${res.updated.length} parameter(s) ✓`,"success");
+      for (const [k,v] of Object.entries(dirty)) if (fullConfig[k]) fullConfig[k].value=v;
+      dirty={}; document.querySelectorAll(".param-card.dirty").forEach(c=>c.classList.remove("dirty"));
+      updateDirtyCount(); document.getElementById("last-saved").textContent=new Date().toLocaleTimeString();
+    }
+  } catch(e) { showToast("Network error: "+e.message,"error"); }
+  btn.textContent="Save changes"; btn.disabled=false;
+}
+
+async function confirmReset() {
+  if (!confirm("Reset ALL parameters to factory defaults? This cannot be undone.")) return;
+  if ((await fetch("/config/reset",{method:"POST"})).ok) { dirty={}; await loadConfig(); showToast("All parameters reset to defaults","info"); updateDirtyCount(); }
+}
+function expandAll() { document.getElementById("filter-input").value=""; renderAll(); }
+function showToast(msg,type="info") {
+  const t=document.getElementById("toast"); t.textContent=msg; t.className="show "+type;
+  clearTimeout(t._t); t._t=setTimeout(()=>t.className="",3500);
+}
+document.getElementById("filter-input").addEventListener("input",renderAll);
+document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="s"){e.preventDefault();saveAll();}});
+
+async function requestRestart() {
+  const btn=document.getElementById("restart-btn"), st=document.getElementById("restart-status");
+  if (!confirm("Queue a restart for ALL nodes?\n\nEach node reboots at its next config poll (within 60 s).\nYou can cancel until the first node polls.")) return;
+  btn.disabled=true; btn.textContent="Queuing…";
+  try {
+    const d=await(await fetch("/restart",{method:"POST"})).json();
+    if (d.status==="restart_pending") {
+      showToast("Restart queued — nodes reboot within 90 s","success"); st.textContent="⏳ restart pending";
+      btn.textContent="✕ Cancel restart"; btn.onclick=cancelRestart; btn.disabled=false;
+    } else { showToast("Unexpected response","error"); resetRestartBtn(); }
+  } catch(e) { showToast("Network error: "+e.message,"error"); resetRestartBtn(); }
+}
+async function cancelRestart() {
+  const st=document.getElementById("restart-status");
+  try { const d=await(await fetch("/restart/cancel",{method:"POST"})).json(); showToast(d.was_pending?"Restart cancelled":"No restart was pending","info"); } catch(e) { showToast("Cancel failed","error"); }
+  resetRestartBtn();
+}
+function resetRestartBtn() {
+  const btn=document.getElementById("restart-btn"), st=document.getElementById("restart-status");
+  btn.innerHTML="⟳ Restart all nodes"; btn.onclick=requestRestart; btn.disabled=false; st.textContent="";
+}
+
+loadConfig();
+setInterval(updateQuietHoursBanner, 60000);
+</script>
+</body>
+</html>"""
+
+# ---------------------------------------------------------------------------
+# Web UI — Fleet dashboard
+# ---------------------------------------------------------------------------
+
+FLEET_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Echoes — Fleet Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #0b0d0c;  --surface: #111413;  --border: #1c201c;
+    --green:    #3ddc5e;  --green-bg: #0d2e18;
+    --amber:    #e0a020;  --amber-bg: #2e1e04;
+    --red:      #e03a3a;  --red-bg:   #2e0d0d;
+    --grey:     #2e3530;  --text: #c4d0c4;  --muted: #46564a;  --label: #7a9a7e;
+    --mono: 'Share Tech Mono', monospace;
+    --sans: 'Barlow Condensed', sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh; padding: 20px 24px 28px; background-image: radial-gradient(ellipse 70% 35% at 50% 0%, rgba(61,220,94,0.035) 0%, transparent 60%); }
+  nav { font-family: var(--mono); font-size: 10px; letter-spacing: 0.18em; color: var(--muted); margin-bottom: 20px; display: flex; gap: 20px; }
+  nav a { color: var(--muted); text-decoration: none; transition: color 0.15s; }
+  nav a:hover { color: var(--green); }
+  nav a.active { color: var(--green); }
+  header { display: flex; align-items: flex-end; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 20px; gap: 16px; flex-wrap: wrap; }
+  .brand-title { font-size: 22px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #deeade; line-height: 1; }
+  .brand-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 5px; }
+  .stats { display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap; }
+  .stat { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+  .stat-value { font-family: var(--mono); font-size: 24px; line-height: 1; }
+  .stat-label { font-size: 9px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); }
+  .sv-green{color:var(--green)} .sv-amber{color:var(--amber)} .sv-red{color:var(--red)} .sv-grey{color:var(--muted)}
+  .ticker { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 10px; color: var(--label); margin-bottom: 14px; }
+  .ticker-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: blink 2s ease-in-out infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 3px; padding: 16px; }
+  .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .panel-title { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); }
+  .legend { display: flex; gap: 14px; font-family: var(--mono); font-size: 9px; color: var(--muted); }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .ld { width: 7px; height: 7px; border-radius: 50%; }
+  .ld-g{background:var(--green)} .ld-a{background:var(--amber)} .ld-r{background:var(--red)} .ld-x{background:var(--muted)}
+  .node-grid { display: flex; flex-direction: column; gap: 6px; }
+  .node-row { display: flex; gap: 6px; }
+  .nd { position: relative; width: 18px; height: 18px; border-radius: 50%; cursor: default; transition: transform 0.12s ease; flex-shrink: 0; }
+  .nd:hover { transform: scale(1.5); z-index: 20; }
+  .nd.online  { background: var(--green); animation: pulse-g 2.8s ease-in-out infinite; }
+  .nd.stale   { background: var(--amber); animation: pulse-a 2s ease-in-out infinite; }
+  .nd.offline { background: var(--red);   animation: pulse-r 1.5s ease-in-out infinite; }
+  .nd.never   { background: var(--grey);  border: 1px solid var(--border); }
+  @keyframes pulse-g { 0%,100%{box-shadow:0 0 4px rgba(61,220,94,.4)} 50%{box-shadow:0 0 10px rgba(61,220,94,.8)} }
+  @keyframes pulse-a { 0%,100%{box-shadow:0 0 4px rgba(224,160,32,.3)} 50%{box-shadow:0 0 9px rgba(224,160,32,.7)} }
+  @keyframes pulse-r { 0%,100%{box-shadow:0 0 4px rgba(224,58,58,.3);opacity:1} 50%{box-shadow:0 0 10px rgba(224,58,58,.7);opacity:.7} }
+
+  /* Tooltip */
+  .tt { display: none; position: absolute; left: 50%; bottom: calc(100% + 9px); transform: translateX(-50%); background: #080b09; border: 1px solid var(--border); border-radius: 3px; padding: 9px 11px; width: 230px; z-index: 100; pointer-events: none; box-shadow: 0 6px 20px rgba(0,0,0,.7); font-family: var(--mono); }
+  .nd:hover .tt { display: block; }
+  .tt-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 7px; margin-bottom: 7px; border-bottom: 1px solid var(--border); }
+  .tt-id { font-size: 12px; color: #e8f0e8; }
+  .tt-badge { font-size: 8px; letter-spacing: .14em; text-transform: uppercase; padding: 1px 5px; border-radius: 2px; }
+  .online  .tt-badge { color: var(--green); background: var(--green-bg); }
+  .stale   .tt-badge { color: var(--amber); background: var(--amber-bg); }
+  .offline .tt-badge { color: var(--red);   background: var(--red-bg); }
+  .never   .tt-badge { color: var(--muted); background: #1a1e1a; }
+  .tt-row { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; font-size: 10px; }
+  .tt-key { color: var(--muted); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+  .tt-val { color: var(--text); text-align: right; word-break: break-all; }
+  .tt-ts { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); font-size: 9px; color: var(--label); line-height: 1.5; }
+
+  footer { margin-top: 16px; display: flex; justify-content: space-between; font-family: var(--mono); font-size: 9px; color: var(--muted); flex-wrap: wrap; gap: 6px; }
+  #clock { color: var(--label); }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/">⚙ Config</a>
+  <a href="/fleet" class="active">◉ Fleet</a>
+</nav>
+<header>
+  <div>
+    <div class="brand-title">Fleet Monitor</div>
+    <div class="brand-sub">Echoes of the Machine · port 8002 · poll 60 s</div>
+  </div>
+  <div class="stats">
+    <div class="stat"><span class="stat-value sv-green" id="s-online">—</span><span class="stat-label">Online</span></div>
+    <div class="stat"><span class="stat-value sv-amber" id="s-stale">—</span><span class="stat-label">Stale</span></div>
+    <div class="stat"><span class="stat-value sv-red"   id="s-offline">—</span><span class="stat-label">Offline</span></div>
+    <div class="stat"><span class="stat-value sv-grey"  id="s-never">—</span><span class="stat-label">Unseen</span></div>
+  </div>
+</header>
+<div class="ticker"><div class="ticker-dot"></div><span id="ticker-text">Connecting…</span></div>
+<div class="panel">
+  <div class="panel-header">
+    <span class="panel-title" id="panel-title">Node grid</span>
+    <div class="legend">
+      <div class="legend-item"><div class="ld ld-g"></div>Online &lt;90s</div>
+      <div class="legend-item"><div class="ld ld-a"></div>Stale &lt;180s</div>
+      <div class="legend-item"><div class="ld ld-r"></div>Offline</div>
+      <div class="legend-item"><div class="ld ld-x"></div>Never seen</div>
+    </div>
+  </div>
+  <div class="node-grid" id="grid"></div>
+</div>
+<footer>
+  <span>Echoes of the Machine · consolidated server :8002 · OTA + startup + config + fleet</span>
+  <span id="clock"></span>
+</footer>
+
+<script>
+const STALE_S = 90, OFFLINE_S = 180, FLEET_SIZE = 50, REFRESH_MS = 15000;
+
+function classify(n) {
+  if (!n?.last_seen_ts) return 'never';
+  const age = Date.now()/1000 - n.last_seen_ts;
+  return age < STALE_S ? 'online' : age < OFFLINE_S ? 'stale' : 'offline';
+}
+const STATUS_LABEL = {online:'ONLINE', stale:'STALE', offline:'OFFLINE', never:'NO DATA'};
+
+function ageStr(n) {
+  if (!n?.last_seen_ts) return '—';
+  const s = Math.floor(Date.now()/1000 - n.last_seen_ts);
+  return s < 60 ? s+'s ago' : s < 3600 ? Math.floor(s/60)+'m '+(s%60)+'s ago' : Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m ago';
+}
+function fmtTs(iso) {
+  if (!iso) return 'never';
+  const d = new Date(iso.replace(' ','T')), p = n => String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'  '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
+}
+
+function render(nodes) {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  const ord = {offline:0, stale:1, online:2, never:3};
+  nodes.sort((a,b) => ord[classify(a)] - ord[classify(b)]);
+  const slots = [...nodes];
+  while (slots.length < FLEET_SIZE) slots.push(null);
+
+  let counts = {online:0, stale:0, offline:0, never:0};
+  const ROW_SIZES = [12, 12, 13, 13];
+  let idx = 0;
+
+  ROW_SIZES.forEach(rowCount => {
+    const row = document.createElement('div');
+    row.className = 'node-row';
+    for (let i = 0; i < rowCount; i++) {
+      const n = slots[idx++] || null;
+      const cls = classify(n);
+      counts[cls]++;
+      const dot = document.createElement('div');
+      dot.className = 'nd ' + cls;
+
+      // All fields now available thanks to consolidated server
+      const mac   = n?.mac        ?? '—';
+      const type  = n?.node_type  ?? '—';
+      const fw    = n?.firmware   ?? '—';
+      const ip    = n?.ip         ?? '—';
+      const polls = n?.poll_count ?? 0;
+      const boots = n?.boot_count ?? 0;
+      const first = fmtTs(n?.first_seen);
+      const last  = fmtTs(n?.last_seen);
+
+      dot.innerHTML = `
+        <div class="tt">
+          <div class="tt-head">
+            <span class="tt-id">${mac}</span>
+            <span class="tt-badge">${STATUS_LABEL[cls]}</span>
+          </div>
+          <div class="tt-row"><span class="tt-key">Type</span><span class="tt-val">${type}</span></div>
+          <div class="tt-row"><span class="tt-key">Firmware</span><span class="tt-val">${fw}</span></div>
+          <div class="tt-row"><span class="tt-key">IP</span><span class="tt-val">${ip}</span></div>
+          <div class="tt-row"><span class="tt-key">Age</span><span class="tt-val">${ageStr(n)}</span></div>
+          <div class="tt-row"><span class="tt-key">Polls / Boots</span><span class="tt-val">${polls} / ${boots}</span></div>
+          <div class="tt-ts">First seen<br>${first}<br><br>Last poll<br>${last}</div>
+        </div>`;
+      row.appendChild(dot);
+    }
+    grid.appendChild(row);
+  });
+
+  document.getElementById('s-online').textContent  = counts.online;
+  document.getElementById('s-stale').textContent   = counts.stale;
+  document.getElementById('s-offline').textContent = counts.offline;
+  document.getElementById('s-never').textContent   = counts.never;
+  document.getElementById('panel-title').textContent =
+    `Node grid — ${nodes.length} registered / ${FLEET_SIZE} expected`;
+}
+
+async function poll() {
+  try {
+    const nodes = await (await fetch('/nodes')).json();
+    render(nodes);
+    document.getElementById('ticker-text').textContent =
+      `Live · ${nodes.length} nodes registered · refreshing every ${REFRESH_MS/1000}s`;
+  } catch(e) {
+    document.getElementById('ticker-text').textContent = 'Server unreachable — retrying…';
+  }
+}
+
+function updateClock() {
+  const d=new Date(), p=n=>String(n).padStart(2,'0');
+  document.getElementById('clock').textContent =
+    d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'  '+
+    p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds())+' LOCAL';
+}
+
+poll(); setInterval(poll, REFRESH_MS); setInterval(updateClock, 1000); updateClock();
+</script>
+</body>
+</html>"""
+
+# ---------------------------------------------------------------------------
+# Route handlers for web UIs
+# ---------------------------------------------------------------------------
+
+@app.route("/")
+def web_ui():
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route("/fleet")
+def fleet_dashboard():
+    return render_template_string(FLEET_TEMPLATE)
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
+    log.info("=" * 60)
+    log.info("Echoes of the Machine — Consolidated Server")
+    log.info(f"Port         : 8002")
+    log.info(f"Config file  : {CONFIG_FILE}")
+    log.info(f"Firmware dir : {FIRMWARE_DIR}")
+    log.info(f"Log dir      : {LOG_DIR}")
+    log.info("Routes:")
+    log.info("  GET  /firmware/<file>   OTA binary + version")
+    log.info("  POST /startup           node boot reports")
+    log.info("  GET  /config            60-second device poll")
+    log.info("  GET  /nodes             fleet registry JSON")
+    log.info("  GET  /                  config web UI")
+    log.info("  GET  /fleet             fleet dashboard")
+    log.info("=" * 60)
+    app.run(host="0.0.0.0", port=8002, debug=False, threaded=True)

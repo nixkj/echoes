@@ -32,7 +32,7 @@
  * SERVER SETTINGS
  *
  * REMOTE_CONFIG_URL is built from CONFIG_SERVER_IP and
- * CONFIG_CONFIG_SERVER_PORT, which are set via 'idf.py menuconfig'
+ * CONFIG_SERVER_PORT, which are set via 'idf.py menuconfig'
  * under "Server Configuration".  You should not need to edit this
  * file directly — set the IP and port in menuconfig instead.
  * ========================================================================= */
@@ -45,7 +45,7 @@
 
 /** URL of the config endpoint on the Python server. */
 #define REMOTE_CONFIG_URL   "http://" CONFIG_SERVER_IP ":" \
-                                STRINGIFY(CONFIG_CONFIG_SERVER_PORT) \
+                                STRINGIFY(CONFIG_SERVER_PORT) \
                                 "/config"
 
 /** How often to poll for updates (ms). */
