@@ -93,7 +93,7 @@ CONFIG_WIFI_PASSWORD=""
 Then edit `main/ota.h` to set your server IP and starting firmware version:
 
 ```c
-#define FIRMWARE_VERSION "5.3.0"
+#define FIRMWARE_VERSION "5.3.2"
 #define OTA_URL          "http://192.168.101.2:8000/firmware/echoes.bin"
 #define VERSION_URL      "http://192.168.101.2:8000/firmware/version.txt"
 ```
@@ -410,7 +410,7 @@ I (xxx) MAIN: System started successfully!
 
 ## Version History
 
-**5.3.1** — Current
+**5.3.2** — Current
 - General tidy up of documentation and code with repo going public
 - WiFi credentials moved to `idf.py menuconfig` (Kconfig) — no longer stored in source
 - Status dashboard to see the state of all nodes

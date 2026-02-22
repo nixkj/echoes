@@ -360,11 +360,10 @@ main() {
         tidyup)
             # Remove editor backup files (*~ and .*.un~ vim/emacs files) from
             # anywhere in the project tree, and delete the build/ directory.
-            # Also removes sdkconfig — re-run 'idf.py menuconfig' afterwards
             # to restore your WiFi credentials before the next build.
-            find . -type f \( -name '*~' -o -name '.*.un~' \) -delete
-            rm -rf build sdkconfig
-            print_success "Tidy complete — editor backups, build/, and sdkconfig removed"
+            find . -type f \( -name '*~' -o -name '.*.un~' -o -name '.DS_Store' \) -delete
+            rm -rf build
+            print_success "Tidy complete — editor backups and build/ removed"
             ;;
         flash)
             check_idf
