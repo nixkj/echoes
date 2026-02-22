@@ -68,7 +68,11 @@ without (basic).  The firmware auto-detects which hardware is present at boot:
 mkdir -p ~/esp
 cd ~/esp
 git clone --recursive https://github.com/espressif/esp-idf.git esp-idf-v5.5.2
-cd esp-idf-v5.5.2 && git checkout v5.5.2
+cd esp-idf-v5.5.2
+git checkout v5.5.2
+git submodule update --init --recursive
+# Can just do esp32 to save time/space
+#./install.sh esp32
 ./install.sh
 . ./export.sh
 ```
