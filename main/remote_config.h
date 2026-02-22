@@ -181,19 +181,32 @@ void remote_config_task(void *param);
 /**
  * @brief Get a read-only pointer to the current live configuration.
  *
- * The pointer is stable for the lifetime of the application.  Access is
- * protected by an internal mutex so the struct is always consistent — it
- * will never be observed mid-update by the polling task.  Read values once
- * into locals if you need a stable snapshot across multiple dereferences
- * (e.g. several fields used together in a calculation), because a config
- * update could occur between two separate calls to remote_config_get().
+ * Returns a pointer to the module-level struct.  Suitable for reading a
+ * single field (e.g. `remote_config_get()->volume`) because the fetch
+ * task updates the struct via a mutex-protected memcpy that is effectively
+ * atomic on Xtensa for any individual aligned field.
  *
- * The mutex is non-blocking from the caller's perspective: the call is
- * brief (struct copy is ~200 bytes) so contention is negligible.
+ * **If you need several fields to be mutually consistent** (e.g. multiple
+ * thresholds used together in a calculation), use remote_config_snapshot()
+ * instead — a config update could land between two separate dereferences
+ * of the pointer returned here.
  *
  * @return Const pointer to the live remote_config_t.
  */
 const remote_config_t *remote_config_get(void);
+
+/**
+ * @brief Copy the current configuration into a caller-provided buffer
+ *        under the protection of the config mutex.
+ *
+ * All fields in @p out are guaranteed to come from the same config fetch
+ * cycle, so they are mutually consistent.  Use this whenever you need
+ * multiple fields together (detection thresholds, quiet-hours window, etc.).
+ *
+ * @param out  Destination struct — filled on success, untouched on failure.
+ * @return true on success, false if the mutex could not be acquired.
+ */
+bool remote_config_snapshot(remote_config_t *out);
 
 /**
  * @brief Return true if the current wall-clock time falls within the

@@ -144,7 +144,7 @@ After the OTA server is running, copy your firmware binary and set the version:
 
 ```bash
 cp build/echoes.bin ~/firmware_server/firmware/echoes.bin
-echo "5.4.2" > ~/firmware_server/firmware/version.txt
+echo "5.5.0" > ~/firmware_server/firmware/version.txt
 ```
 
 Or use `./build.sh deploy` after a successful build to do both steps at once.
@@ -205,7 +205,7 @@ echoes/
 ### Using build.sh (recommended)
 
 ```bash
-./build.sh version patch     # 5.4.2 → 5.4.3 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh version patch     # 5.5.0 → 5.5.1 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
 ./build.sh deploy            # Copy binary + write version.txt to ~/firmware_server/firmware/
 ```
@@ -222,7 +222,7 @@ Or in one step:
 # Edit FIRMWARE_VERSION in main/ota.h, then:
 idf.py build
 cp build/echoes.bin ~/firmware_server/firmware/echoes.bin
-echo "5.4.2" > ~/firmware_server/firmware/version.txt
+echo "5.5.0" > ~/firmware_server/firmware/version.txt
 ```
 
 Each device checks for updates once at boot. It compares the running version string against `version.txt`; if they differ it downloads and flashes the new binary, then restarts. The attempt retries up to 3 times with linear backoff (15 s, 30 s, 45 s).
@@ -239,9 +239,9 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 5.4.3 → 5.4.4) |
-| `./build.sh version minor` | Increment minor version (e.g. 5.4.3 → 5.5.0) |
-| `./build.sh version major` | Increment major version (e.g. 5.4.3 → 6.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 5.5.0 → 5.5.1) |
+| `./build.sh version minor` | Increment minor version (e.g. 5.5.0 → 5.6.0) |
+| `./build.sh version major` | Increment major version (e.g. 5.5.0 → 6.0.0) |
 | `./build.sh deploy` | Copy binary and write `version.txt` to `~/firmware_server/firmware/` |
 | `./build.sh services` | Install all three servers as systemd services (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -398,7 +398,7 @@ availability.
 I (567) ECHOES: LEDs initialized
 I (569) MAIN: ========================================
 I (574) MAIN: Echoes of the Machine
-I (577) MAIN: Firmware Version: 5.4.3
+I (577) MAIN: Firmware Version: 5.5.0
 I (580) MAIN: ========================================
 I (602) RCFG: Remote config initialised with defaults
 I (603) MAIN: Initializing system...
@@ -441,7 +441,10 @@ I (17040) ECHOES: Audio detection task started
 
 ## Version History
 
-**5.4.3** — Current
+**5.5.0** — Current
+- Robustness - mutexes.
+
+**5.4.3**
 - Server IP and all three server ports (OTA :8000, startup :8001, config :8002) moved to `idf.py menuconfig` (Kconfig) — no longer hardcoded in headers
 - Race condition fix: `remote_config` struct now updated via mutex-protected atomic swap; `remote_config_is_quiet_hours()` snapshots fields under lock
 - Documentation and deploy script improvements: `mkdir -p` in install scripts, `requirements.txt` for all three servers, stale version references cleaned up

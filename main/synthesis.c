@@ -7,10 +7,17 @@
 #include <string.h>
 #include <math.h>
 #include "esp_random.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+/* Compile-time and runtime guard: abort if a bird call generator writes
+ * past the end of the shared audio_buffer_t.  Catches any future bird
+ * that is longer than MAX_BIRD_CALL_SAMPLES (3 s @ 16 kHz = 48 000). */
+#define ASSERT_POS(pos) configASSERT((pos) <= MAX_BIRD_CALL_SAMPLES)
 
 /* ========================================================================
  * HELPER FUNCTIONS
@@ -160,6 +167,7 @@ size_t generate_piet_my_vrou(bird_synthesizer_t *synth, audio_buffer_t *out) {
     pos += generate_silence(synth, out->buffer, pos, 110);
     pos += generate_sweep(synth, out->buffer, pos, 1420, 1080, 290, 0.72f);
     
+    ASSERT_POS(pos);
     out->num_samples = pos;
     return pos;
 }
@@ -178,6 +186,7 @@ size_t generate_cape_robin_chat(bird_synthesizer_t *synth, audio_buffer_t *out) 
         pos += generate_silence(synth, out->buffer, pos, 80);
     }
     
+    ASSERT_POS(pos);
     out->num_samples = pos;
     return pos;
 }
@@ -193,6 +202,7 @@ size_t generate_southern_boubou(bird_synthesizer_t *synth, audio_buffer_t *out) 
     pos += generate_silence(synth, out->buffer, pos, 80);
     pos += generate_sweep(synth, out->buffer, pos, 2550, 2950, 190, 0.65f);
     
+    ASSERT_POS(pos);
     out->num_samples = pos;
     return pos;
 }
@@ -213,6 +223,7 @@ size_t generate_red_eyed_dove(bird_synthesizer_t *synth, audio_buffer_t *out) {
     pos += generate_silence(synth, out->buffer, pos, 120);
     pos += generate_tremolo(synth, out->buffer, pos, 460, 250, 8, 0.3f, 0.55f);
     
+    ASSERT_POS(pos);
     out->num_samples = pos;
     return pos;
 }
@@ -227,6 +238,7 @@ size_t generate_glossy_starling(bird_synthesizer_t *synth, audio_buffer_t *out) 
         pos += generate_silence(synth, out->buffer, pos, 60);
     }
     
+    ASSERT_POS(pos);
     out->num_samples = pos;
     return pos;
 }
@@ -241,6 +253,7 @@ size_t generate_spotted_eagle_owl(bird_synthesizer_t *synth, audio_buffer_t *out
         pos += generate_silence(synth, out->buffer, pos, 400);
     }
     
+    ASSERT_POS(pos);
     out->num_samples = pos;
     return pos;
 }
@@ -259,6 +272,7 @@ size_t generate_fork_tailed_drongo(bird_synthesizer_t *synth, audio_buffer_t *ou
         pos += generate_silence(synth, out->buffer, pos, 140);
     }
     
+    ASSERT_POS(pos);
     out->num_samples = pos;
     return pos;
 }
@@ -272,6 +286,7 @@ size_t generate_cape_canary(bird_synthesizer_t *synth, audio_buffer_t *out) {
         pos += generate_silence(synth, out->buffer, pos, 45);
     }
     
+    ASSERT_POS(pos);
     out->num_samples = pos;
     return pos;
 }
@@ -285,6 +300,7 @@ size_t generate_southern_masked_weaver(bird_synthesizer_t *synth, audio_buffer_t
         pos += generate_silence(synth, out->buffer, pos, 50);
     }
     
+    ASSERT_POS(pos);
     out->num_samples = pos;
     return pos;
 }
@@ -411,6 +427,7 @@ size_t generate_red_billed_quelea(bird_synthesizer_t *synth, audio_buffer_t *out
     pos += generate_silence(synth, out->buffer, pos, 20);
     pos += _quelea_harsh  (synth, out->buffer, pos, 2300,  80, 3, 0.82f);
 
+    ASSERT_POS(pos);
     out->num_samples = pos;
 
     /*
@@ -476,6 +493,7 @@ size_t generate_paradise_flycatcher(bird_synthesizer_t *synth, audio_buffer_t *o
         pos += generate_silence(synth, out->buffer, pos, 28);
     }
 
+    ASSERT_POS(pos);
     out->num_samples = pos;
     return pos;
 }
@@ -488,6 +506,14 @@ void bird_mapper_init(bird_call_mapper_t *mapper, uint32_t sample_rate) {
     mapper->synth.sample_rate = sample_rate;
     mapper->synth.chunk_size = CHUNK_SIZE;
     mapper->synth.quelea_gain = 1.2f;   /* default; overwritten by echoes.c from remote config */
+
+    /* Create the bird-list mutex.  Protects the whistle/voice/clap/birdsong
+     * bird arrays against concurrent read (detection task, autonomous call)
+     * and write (lux task, ESP-NOW rx task).                                */
+    if (mapper->lock == NULL) {
+        mapper->lock = (void *)xSemaphoreCreateMutex();
+        configASSERT(mapper->lock != NULL);
+    }
 
     /* Default (neutral) lists — overridden by bird_mapper_update_for_lux() */
 
@@ -520,6 +546,14 @@ void bird_mapper_init(bird_call_mapper_t *mapper, uint32_t sample_rate) {
 
 bird_info_t bird_mapper_get_bird(bird_call_mapper_t *mapper,
                                   detection_type_t detection_type) {
+    bird_info_t result = {"", "Unknown"};
+
+    /* Lock the bird lists — short hold: one random index + struct copy */
+    SemaphoreHandle_t mtx = (SemaphoreHandle_t)mapper->lock;
+    if (mtx && xSemaphoreTake(mtx, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return result;  /* busy — return safe default */
+    }
+
     bird_info_t *bird_list;
     uint8_t list_len;
     
@@ -541,15 +575,17 @@ bird_info_t bird_mapper_get_bird(bird_call_mapper_t *mapper,
             list_len = mapper->num_birdsong_birds;
             break;
         default:
-            return (bird_info_t){"", "Unknown"};
+            if (mtx) xSemaphoreGive(mtx);
+            return result;
     }
 
-    if (list_len == 0) return (bird_info_t){"", "Unknown"};
+    if (list_len > 0) {
+        uint32_t index = esp_random() % list_len;
+        result = bird_list[index];
+    }
 
-    /* Modulo directly against list_len — the previous code did (r % 5) % list_len
-     * which skewed selection toward lower indices whenever list_len < 5.       */
-    uint32_t index = esp_random() % list_len;
-    return bird_list[index];
+    if (mtx) xSemaphoreGive(mtx);
+    return result;
 }
 
 size_t bird_mapper_generate_call(bird_call_mapper_t *mapper,
@@ -594,6 +630,14 @@ void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
      *  < 500 lux : Overcast  — moderate variety
      *  >= 500 lux: Sunny     — full lively set (canary, starling, drongo, weaver)
      */
+
+    /* Hold the mapper lock while rewriting the bird lists so concurrent
+     * readers (bird_mapper_get_bird) never see a partially-updated list. */
+    SemaphoreHandle_t mtx = (SemaphoreHandle_t)mapper->lock;
+    if (mtx && xSemaphoreTake(mtx, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return;  /* busy — keep previous selection */
+    }
+
     if (lux < 10.0f) {
         /* Night: very mellow — owl for all categories */
         mapper->whistle_birds[0] = (bird_info_t){"red_eyed_dove",    "Red-eyed Dove"};
@@ -678,4 +722,6 @@ void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux) {
         mapper->birdsong_birds[2] = (bird_info_t){"cape_robin_chat",     "Cape Robin-Chat"};
         mapper->num_birdsong_birds = 3;
     }
+
+    if (mtx) xSemaphoreGive(mtx);
 }

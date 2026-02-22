@@ -445,13 +445,29 @@ void remote_config_task(void *param)
 
 const remote_config_t *remote_config_get(void)
 {
-    /* s_cfg is safe to read via this pointer because remote_config_fetch()
-     * only ever updates it via a single mutex-protected memcpy (s_cfg = tmp).
-     * On Xtensa, a memcpy of a cache-line-aligned struct is never observed
-     * half-written by another core — readers see either the old or the new
-     * value in full.  Callers that need several fields to be mutually
-     * consistent should call remote_config_snapshot() instead.             */
+    /* Returns a direct pointer — safe for reading a SINGLE field because
+     * remote_config_fetch() updates s_cfg via a mutex-protected memcpy that
+     * is effectively atomic per aligned field on Xtensa.
+     *
+     * For multiple fields that must be mutually consistent, callers should
+     * use remote_config_snapshot() instead.                                */
     return &s_cfg;
+}
+
+bool remote_config_snapshot(remote_config_t *out)
+{
+    if (!out) return false;
+    if (s_cfg_mutex == NULL) {
+        /* Pre-init fallback — copy defaults without locking */
+        *out = s_cfg;
+        return true;
+    }
+    if (xSemaphoreTake(s_cfg_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        *out = s_cfg;
+        xSemaphoreGive(s_cfg_mutex);
+        return true;
+    }
+    return false;
 }
 
 /* =========================================================================

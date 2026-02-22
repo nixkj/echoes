@@ -100,6 +100,8 @@ typedef struct bird_call_mapper_t {
     uint8_t num_clap_birds;
     bird_info_t birdsong_birds[MAX_BIRDS_PER_CATEGORY];  /**< Responds to DETECTION_BIRDSONG */
     uint8_t num_birdsong_birds;
+    void *lock;  /**< Mutex protecting bird lists (FreeRTOS SemaphoreHandle_t).
+                  *   Initialised in bird_mapper_init(); NULL before init. */
 } bird_call_mapper_t;
 
 /**
@@ -126,4 +128,4 @@ size_t bird_mapper_generate_call(bird_call_mapper_t *mapper,
  */
 void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux);
 
-#endif /* SYNTHESIS_H */
+#endif /* SA_BIRD_SYNTHESIS_H */

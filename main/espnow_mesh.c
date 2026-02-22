@@ -95,10 +95,12 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info,
         s_rx_head = (s_rx_head + 1) % FLOCK_RING_MAX;
     }
 
-    /* Post a copy to the processing queue (non-blocking) */
+    /* Post a copy to the processing queue (non-blocking).
+     * on_data_recv runs in WiFi task context, not a true ISR, so the
+     * standard xQueueSend (with zero timeout) is correct here.         */
     espnow_msg_t copy = *msg;
     if (s_rx_queue) {
-        xQueueSendFromISR(s_rx_queue, &copy, NULL);
+        xQueueSend(s_rx_queue, &copy, 0);
     }
 }
 

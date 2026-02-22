@@ -304,7 +304,18 @@ void system_init(void) {
  * ======================================================================== */
 
 void set_led(float white_level, float blue_level) {
-    if (remote_config_get()->silent_mode || remote_config_is_quiet_hours()) {
+    /* Cache the suppression state so the mutex inside remote_config_is_quiet_hours()
+     * is not hit on every LED update (flock mode strobes at 60 ms intervals).
+     * Re-evaluate every ~1 second — more than responsive enough for mode changes. */
+    static bool     s_suppressed       = false;
+    static uint32_t s_suppress_check_ms = 0;
+    uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    if ((now - s_suppress_check_ms) >= 1000u) {
+        s_suppress_check_ms = now;
+        const remote_config_t *cfg = remote_config_get();
+        s_suppressed = cfg->silent_mode || remote_config_is_quiet_hours();
+    }
+    if (s_suppressed) {
         white_level = 0.0f;
         blue_level  = 0.0f;
     }
@@ -671,8 +682,13 @@ void audio_detection_task(void *param) {
              * FULL SYSTEM: Sound detection and bird call playback
              * ============================================================ */
             
-            // Snapshot config once per loop for consistency
-            const remote_config_t *cfg = remote_config_get();
+            // Snapshot config once per loop — all fields are mutually consistent
+            remote_config_t cfg_snap;
+            if (!remote_config_snapshot(&cfg_snap)) {
+                vTaskDelay(pdMS_TO_TICKS(4));
+                continue;
+            }
+            const remote_config_t *cfg = &cfg_snap;
 
             // Recompute Goertzel coefficients if frequencies changed
             {
@@ -850,7 +866,12 @@ void audio_detection_task(void *param) {
  */
 float get_volume_for_lux(float lux)
 {
-    const remote_config_t *cfg = remote_config_get();
+    remote_config_t cfg_snap;
+    if (!remote_config_snapshot(&cfg_snap)) {
+        /* Fallback: use defaults to avoid silence */
+        return 0.5f;
+    }
+    const remote_config_t *cfg = &cfg_snap;
     if (lux <= cfg->volume_lux_min) return cfg->volume_scale_min;
     if (lux >= cfg->volume_lux_max) return cfg->volume_scale_max;
     float t = (lux - cfg->volume_lux_min) / (cfg->volume_lux_max - cfg->volume_lux_min);
@@ -879,7 +900,12 @@ void lux_based_birds_task(void *param) {
     float prev_lux       = -1.0f;     /* reading from the previous tick */
 
     while (1) {
-        const remote_config_t *cfg = remote_config_get();
+        remote_config_t cfg_snap;
+        if (!remote_config_snapshot(&cfg_snap)) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+        const remote_config_t *cfg = &cfg_snap;
 
         float lux = get_lux_level();
 
