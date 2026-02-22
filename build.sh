@@ -363,7 +363,7 @@ main() {
             # to restore your WiFi credentials before the next build.
             find . -type f \( -name '*~' -o -name '.*.un~' -o -name '.DS_Store' \) -delete
             rm -rf build
-            print_success "Tidy complete — editor backups and build/ removed"
+            print_success "Tidy complete — editor backups and build/* removed"
             ;;
         flash)
             check_idf

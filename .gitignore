@@ -20,7 +20,6 @@
 *.swp
 *.swo
 *.bak
-*.tmp
 *.orig
 
 # Python caches

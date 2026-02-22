@@ -126,4 +126,4 @@ size_t bird_mapper_generate_call(bird_call_mapper_t *mapper,
  */
 void bird_mapper_update_for_lux(bird_call_mapper_t *mapper, float lux);
 
-#endif /* SA_BIRD_SYNTHESIS_H */
+#endif /* SYNTHESIS_H */
