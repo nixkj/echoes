@@ -29,11 +29,24 @@
 #include "esp_err.h"
 
 /* =========================================================================
- * SERVER SETTINGS — change to match your deployment
+ * SERVER SETTINGS
+ *
+ * REMOTE_CONFIG_URL is built from CONFIG_SERVER_IP and
+ * CONFIG_CONFIG_SERVER_PORT, which are set via 'idf.py menuconfig'
+ * under "Server Configuration".  You should not need to edit this
+ * file directly — set the IP and port in menuconfig instead.
  * ========================================================================= */
 
+/* STRINGIFY helper — also defined in ota.h; guard prevents double definition */
+#ifndef STRINGIFY
+#  define STRINGIFY_INNER(x) #x
+#  define STRINGIFY(x)       STRINGIFY_INNER(x)
+#endif
+
 /** URL of the config endpoint on the Python server. */
-#define REMOTE_CONFIG_URL           "http://192.168.101.2:8002/config"
+#define REMOTE_CONFIG_URL   "http://" CONFIG_SERVER_IP ":" \
+                                STRINGIFY(CONFIG_CONFIG_SERVER_PORT) \
+                                "/config"
 
 /** How often to poll for updates (ms). */
 #define REMOTE_CONFIG_POLL_INTERVAL_MS   60000   /* 60 seconds */
@@ -168,9 +181,15 @@ void remote_config_task(void *param);
 /**
  * @brief Get a read-only pointer to the current live configuration.
  *
- * The pointer is stable for the lifetime of the application.  Fields may
- * be updated atomically by the polling task; read values once into locals
- * if you need a consistent snapshot across multiple uses.
+ * The pointer is stable for the lifetime of the application.  Access is
+ * protected by an internal mutex so the struct is always consistent — it
+ * will never be observed mid-update by the polling task.  Read values once
+ * into locals if you need a stable snapshot across multiple dereferences
+ * (e.g. several fields used together in a calculation), because a config
+ * update could occur between two separate calls to remote_config_get().
+ *
+ * The mutex is non-blocking from the caller's perspective: the call is
+ * brief (struct copy is ~200 bytes) so contention is negligible.
  *
  * @return Const pointer to the live remote_config_t.
  */

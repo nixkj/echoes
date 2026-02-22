@@ -60,6 +60,18 @@ fi
 
 print_success "Found firmware_server.py"
 
+# Create the firmware directory that the server will serve from.
+# build.sh deploy also does this, but we do it here too so the service
+# starts cleanly even before the first deploy has been run.
+FIRMWARE_SERVE_DIR="$HOME/firmware_server/firmware"
+if [ ! -d "$FIRMWARE_SERVE_DIR" ]; then
+    print_info "Creating firmware directory: $FIRMWARE_SERVE_DIR"
+    mkdir -p "$FIRMWARE_SERVE_DIR"
+    print_success "Firmware directory created"
+else
+    print_success "Firmware directory already exists: $FIRMWARE_SERVE_DIR"
+fi
+
 # Create service file
 print_info "Creating systemd service file..."
 

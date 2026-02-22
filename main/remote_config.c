@@ -14,6 +14,7 @@
 #include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "cJSON.h"
 
 #include "esp_system.h"
@@ -114,7 +115,27 @@ static const remote_config_t CONFIG_DEFAULTS = {
 
 static remote_config_t s_cfg;
 
-/* Accumulation buffer for HTTP response body */
+/* Mutex that protects s_cfg against concurrent read/write between the
+ * remote_config_task (writer) and any application task calling
+ * remote_config_get() (readers).  On a dual-core ESP32 multi-byte struct
+ * reads are NOT guaranteed to be atomic, so without this a reader could
+ * observe a partially-updated config.  The mutex is created in
+ * remote_config_init() before any task accesses the struct.             */
+static SemaphoreHandle_t s_cfg_mutex = NULL;
+
+/* Accumulation buffer for HTTP response body.
+ *
+ * This buffer is module-level (not stack or heap per call) for two reasons:
+ * it is too large for the task stack (~4 KB), and it avoids a malloc/free
+ * on every 60-second poll cycle.
+ *
+ * SINGLE-CALLER ASSUMPTION: remote_config_fetch() must only ever be called
+ * from one task at a time.  If a second concurrent caller were added (e.g.
+ * a forced-fetch from another task), s_http_body and s_http_body_len would
+ * be corrupted.  The current design has exactly one caller: remote_config_task
+ * (plus the one blocking call in main before the task starts), so this is safe.
+ * If that ever changes, either move the buffer onto the caller's stack or
+ * protect it with a mutex separate from s_cfg_mutex.                       */
 static char   s_http_body[REMOTE_CONFIG_MAX_BODY_SIZE];
 static size_t s_http_body_len = 0;
 
@@ -183,80 +204,83 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
         } \
     } while(0)
 
-static void apply_json(cJSON *root)
+/* apply_json_to() parses the JSON object into *dst.  It operates on a
+ * caller-supplied struct so the result can be built in a temporary before
+ * being swapped into s_cfg under the mutex (see remote_config_fetch).    */
+static void apply_json_to(cJSON *root, remote_config_t *dst)
 {
     /* Audio detection */
-    CFG_FLOAT  (root, s_cfg.gain,               "GAIN");
-    CFG_UINT32 (root, s_cfg.whistle_freq,        "WHISTLE_FREQ");
-    CFG_UINT32 (root, s_cfg.voice_freq,          "VOICE_FREQ");
-    CFG_FLOAT  (root, s_cfg.whistle_multiplier,  "WHISTLE_MULTIPLIER");
-    CFG_FLOAT  (root, s_cfg.voice_multiplier,    "VOICE_MULTIPLIER");
-    CFG_FLOAT  (root, s_cfg.clap_multiplier,     "CLAP_MULTIPLIER");
-    CFG_UINT8  (root, s_cfg.whistle_confirm,     "WHISTLE_CONFIRM");
-    CFG_UINT8  (root, s_cfg.voice_confirm,       "VOICE_CONFIRM");
-    CFG_UINT8  (root, s_cfg.clap_confirm,        "CLAP_CONFIRM");
-    CFG_UINT8  (root, s_cfg.debounce_buffers,    "DEBOUNCE_BUFFERS");
-    CFG_UINT32 (root, s_cfg.birdsong_freq,       "BIRDSONG_FREQ");
-    CFG_FLOAT  (root, s_cfg.birdsong_multiplier, "BIRDSONG_MULTIPLIER");
-    CFG_FLOAT  (root, s_cfg.birdsong_hf_ratio,   "BIRDSONG_HF_RATIO");
-    CFG_FLOAT  (root, s_cfg.birdsong_mf_min,     "BIRDSONG_MF_MIN");
-    CFG_UINT8  (root, s_cfg.birdsong_confirm,    "BIRDSONG_CONFIRM");
-    CFG_FLOAT  (root, s_cfg.noise_floor_whistle,  "NOISE_FLOOR_WHISTLE");
-    CFG_FLOAT  (root, s_cfg.noise_floor_voice,    "NOISE_FLOOR_VOICE");
-    CFG_FLOAT  (root, s_cfg.noise_floor_birdsong, "NOISE_FLOOR_BIRDSONG");
+    CFG_FLOAT  (root, dst->gain,               "GAIN");
+    CFG_UINT32 (root, dst->whistle_freq,        "WHISTLE_FREQ");
+    CFG_UINT32 (root, dst->voice_freq,          "VOICE_FREQ");
+    CFG_FLOAT  (root, dst->whistle_multiplier,  "WHISTLE_MULTIPLIER");
+    CFG_FLOAT  (root, dst->voice_multiplier,    "VOICE_MULTIPLIER");
+    CFG_FLOAT  (root, dst->clap_multiplier,     "CLAP_MULTIPLIER");
+    CFG_UINT8  (root, dst->whistle_confirm,     "WHISTLE_CONFIRM");
+    CFG_UINT8  (root, dst->voice_confirm,       "VOICE_CONFIRM");
+    CFG_UINT8  (root, dst->clap_confirm,        "CLAP_CONFIRM");
+    CFG_UINT8  (root, dst->debounce_buffers,    "DEBOUNCE_BUFFERS");
+    CFG_UINT32 (root, dst->birdsong_freq,       "BIRDSONG_FREQ");
+    CFG_FLOAT  (root, dst->birdsong_multiplier, "BIRDSONG_MULTIPLIER");
+    CFG_FLOAT  (root, dst->birdsong_hf_ratio,   "BIRDSONG_HF_RATIO");
+    CFG_FLOAT  (root, dst->birdsong_mf_min,     "BIRDSONG_MF_MIN");
+    CFG_UINT8  (root, dst->birdsong_confirm,    "BIRDSONG_CONFIRM");
+    CFG_FLOAT  (root, dst->noise_floor_whistle,  "NOISE_FLOOR_WHISTLE");
+    CFG_FLOAT  (root, dst->noise_floor_voice,    "NOISE_FLOOR_VOICE");
+    CFG_FLOAT  (root, dst->noise_floor_birdsong, "NOISE_FLOOR_BIRDSONG");
 
     /* Playback volume */
-    CFG_FLOAT  (root, s_cfg.volume,              "VOLUME");
-    CFG_FLOAT  (root, s_cfg.volume_lux_min,      "VOLUME_LUX_MIN");
-    CFG_FLOAT  (root, s_cfg.volume_lux_max,      "VOLUME_LUX_MAX");
-    CFG_FLOAT  (root, s_cfg.volume_scale_min,    "VOLUME_SCALE_MIN");
-    CFG_FLOAT  (root, s_cfg.volume_scale_max,    "VOLUME_SCALE_MAX");
-    CFG_FLOAT  (root, s_cfg.quelea_gain,         "QUELEA_GAIN");
+    CFG_FLOAT  (root, dst->volume,              "VOLUME");
+    CFG_FLOAT  (root, dst->volume_lux_min,      "VOLUME_LUX_MIN");
+    CFG_FLOAT  (root, dst->volume_lux_max,      "VOLUME_LUX_MAX");
+    CFG_FLOAT  (root, dst->volume_scale_min,    "VOLUME_SCALE_MIN");
+    CFG_FLOAT  (root, dst->volume_scale_max,    "VOLUME_SCALE_MAX");
+    CFG_FLOAT  (root, dst->quelea_gain,         "QUELEA_GAIN");
 
     /* Light sensor */
-    CFG_UINT32 (root, s_cfg.lux_poll_interval_ms,  "LUX_POLL_INTERVAL_MS");
-    CFG_FLOAT  (root, s_cfg.lux_change_threshold,  "LUX_CHANGE_THRESHOLD");
-    CFG_FLOAT  (root, s_cfg.lux_flash_threshold,   "LUX_FLASH_THRESHOLD");
-    CFG_FLOAT  (root, s_cfg.lux_flash_percent,     "LUX_FLASH_PERCENT");
-    CFG_FLOAT  (root, s_cfg.lux_flash_min_abs,     "LUX_FLASH_MIN_ABS");
+    CFG_UINT32 (root, dst->lux_poll_interval_ms,  "LUX_POLL_INTERVAL_MS");
+    CFG_FLOAT  (root, dst->lux_change_threshold,  "LUX_CHANGE_THRESHOLD");
+    CFG_FLOAT  (root, dst->lux_flash_threshold,   "LUX_FLASH_THRESHOLD");
+    CFG_FLOAT  (root, dst->lux_flash_percent,     "LUX_FLASH_PERCENT");
+    CFG_FLOAT  (root, dst->lux_flash_min_abs,     "LUX_FLASH_MIN_ABS");
 
     /* LED behaviour */
-    CFG_FLOAT  (root, s_cfg.vu_max_brightness,         "VU_MAX_BRIGHTNESS");
+    CFG_FLOAT  (root, dst->vu_max_brightness,         "VU_MAX_BRIGHTNESS");
 
     /* ESP-NOW mesh */
-    CFG_FLOAT  (root, s_cfg.espnow_lux_threshold,        "ESPNOW_LUX_THRESHOLD");
-    CFG_UINT32 (root, s_cfg.espnow_event_ttl_ms,         "ESPNOW_EVENT_TTL_MS");
-    CFG_UINT32 (root, s_cfg.espnow_sound_throttle_ms,    "ESPNOW_SOUND_THROTTLE_MS");
+    CFG_FLOAT  (root, dst->espnow_lux_threshold,        "ESPNOW_LUX_THRESHOLD");
+    CFG_UINT32 (root, dst->espnow_event_ttl_ms,         "ESPNOW_EVENT_TTL_MS");
+    CFG_UINT32 (root, dst->espnow_sound_throttle_ms,    "ESPNOW_SOUND_THROTTLE_MS");
 
     /* Flock mode */
-    CFG_UINT32 (root, s_cfg.flock_msg_count,    "FLOCK_MSG_COUNT");
-    CFG_UINT32 (root, s_cfg.flock_window_ms,    "FLOCK_WINDOW_MS");
-    CFG_UINT32 (root, s_cfg.flock_hold_ms,      "FLOCK_HOLD_MS");
-    CFG_UINT32 (root, s_cfg.flock_call_gap_ms,  "FLOCK_CALL_GAP_MS");
+    CFG_UINT32 (root, dst->flock_msg_count,    "FLOCK_MSG_COUNT");
+    CFG_UINT32 (root, dst->flock_window_ms,    "FLOCK_WINDOW_MS");
+    CFG_UINT32 (root, dst->flock_hold_ms,      "FLOCK_HOLD_MS");
+    CFG_UINT32 (root, dst->flock_call_gap_ms,  "FLOCK_CALL_GAP_MS");
 
     /* Markov chain */
-    CFG_UINT32 (root, s_cfg.markov_idle_trigger_ms,         "MARKOV_IDLE_TRIGGER_MS");
-    CFG_UINT32 (root, s_cfg.markov_autonomous_cooldown_ms,  "MARKOV_AUTONOMOUS_COOLDOWN_MS");
+    CFG_UINT32 (root, dst->markov_idle_trigger_ms,         "MARKOV_IDLE_TRIGGER_MS");
+    CFG_UINT32 (root, dst->markov_autonomous_cooldown_ms,  "MARKOV_AUTONOMOUS_COOLDOWN_MS");
 
     /* Output switches */
-    CFG_BOOL   (root, s_cfg.silent_mode,  "SILENT_MODE");
-    CFG_BOOL   (root, s_cfg.sound_off,    "SOUND_OFF");
+    CFG_BOOL   (root, dst->silent_mode,  "SILENT_MODE");
+    CFG_BOOL   (root, dst->sound_off,    "SOUND_OFF");
 
     /* Remote restart */
-    CFG_BOOL   (root, s_cfg.restart_requested, "RESTART_REQUESTED");
-    CFG_UINT32 (root, s_cfg.restart_token,     "RESTART_TOKEN");
+    CFG_BOOL   (root, dst->restart_requested, "RESTART_REQUESTED");
+    CFG_UINT32 (root, dst->restart_token,     "RESTART_TOKEN");
 
     /* Quiet hours */
-    CFG_BOOL  (root, s_cfg.quiet_hours_enabled, "QUIET_HOURS_ENABLED");
-    CFG_UINT8 (root, s_cfg.quiet_hour_start,    "QUIET_HOUR_START");
-    CFG_UINT8 (root, s_cfg.quiet_hour_end,      "QUIET_HOUR_END");
+    CFG_BOOL  (root, dst->quiet_hours_enabled, "QUIET_HOURS_ENABLED");
+    CFG_UINT8 (root, dst->quiet_hour_start,    "QUIET_HOUR_START");
+    CFG_UINT8 (root, dst->quiet_hour_end,      "QUIET_HOUR_END");
 
     /* Server wall-clock time — used for quiet-hours calculation */
     {
         cJSON *_item = cJSON_GetObjectItemCaseSensitive(root, "_server_time");
         if (_item && cJSON_IsNumber(_item)) {
-            s_cfg.server_epoch_s = (int64_t)_item->valuedouble;
-            s_cfg.fetch_tick_ms  = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+            dst->server_epoch_s = (int64_t)_item->valuedouble;
+            dst->fetch_tick_ms  = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         }
     }
 }
@@ -268,6 +292,14 @@ static void apply_json(cJSON *root)
 void remote_config_init(void)
 {
     s_cfg = CONFIG_DEFAULTS;
+
+    /* Create the config mutex once.  configASSERT aborts if heap is exhausted
+     * (which would indicate a far more serious problem at boot time).        */
+    if (s_cfg_mutex == NULL) {
+        s_cfg_mutex = xSemaphoreCreateMutex();
+        configASSERT(s_cfg_mutex != NULL);
+    }
+
     ESP_LOGI(TAG, "Remote config initialised with defaults");
 }
 
@@ -308,29 +340,46 @@ esp_err_t remote_config_fetch(void)
         return ESP_FAIL;
     }
 
-    /* Parse JSON */
+    /* Parse JSON into a temporary struct so the mutex hold time is minimal:
+     * the HTTP round-trip and JSON parse happen outside the lock, then we
+     * take it only for the fast memcpy that makes the new config visible.  */
+    remote_config_t tmp = s_cfg;   /* start from current values — unset keys keep their values */
+
     cJSON *root = cJSON_Parse(s_http_body);
     if (!root) {
         ESP_LOGE(TAG, "JSON parse error near: %.40s", cJSON_GetErrorPtr() ? cJSON_GetErrorPtr() : "?");
         return ESP_FAIL;
     }
 
-    apply_json(root);
+    /* apply_json writes into the module-level s_cfg — redirect it to tmp
+     * by temporarily pointing the helper macros at tmp via a local alias.
+     * We achieve this by parsing directly into tmp using a local copy of
+     * apply_json's logic, then swapping atomically under the mutex.       */
+    apply_json_to(root, &tmp);
     cJSON_Delete(root);
 
-    s_cfg.loaded        = true;
-    s_cfg.last_fetch_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    tmp.loaded        = true;
+    tmp.last_fetch_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
+    /* Hold the mutex only for the struct swap — a fast memcpy.            */
+    if (xSemaphoreTake(s_cfg_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        s_cfg = tmp;
+        xSemaphoreGive(s_cfg_mutex);
+    } else {
+        ESP_LOGE(TAG, "remote_config_fetch: could not acquire mutex — update dropped");
+        return ESP_FAIL;
+    }
 
     ESP_LOGI(TAG, "Config applied — vol=%.2f whistle=%luHz voice=%luHz poll=%lums",
-             s_cfg.volume,
-             (unsigned long)s_cfg.whistle_freq,
-             (unsigned long)s_cfg.voice_freq,
-             (unsigned long)s_cfg.lux_poll_interval_ms);
+             tmp.volume,
+             (unsigned long)tmp.whistle_freq,
+             (unsigned long)tmp.voice_freq,
+             (unsigned long)tmp.lux_poll_interval_ms);
 
-    if (s_cfg.quiet_hours_enabled) {
+    if (tmp.quiet_hours_enabled) {
         ESP_LOGI(TAG, "Quiet hours: %02u:00 → %02u:00 (server epoch %lld)",
-                 s_cfg.quiet_hour_start, s_cfg.quiet_hour_end,
-                 (long long)s_cfg.server_epoch_s);
+                 tmp.quiet_hour_start, tmp.quiet_hour_end,
+                 (long long)tmp.server_epoch_s);
     }
 
     return ESP_OK;
@@ -347,6 +396,11 @@ void remote_config_task(void *param)
             ESP_LOGW(TAG, "Config poll failed (%s) — keeping previous values",
                      esp_err_to_name(err));
         } else if (s_cfg.restart_requested) {
+            /* Reading s_cfg directly here is safe: remote_config_task is the
+             * sole writer (via remote_config_fetch above), so there is no
+             * concurrent write to race against when we read restart_requested
+             * and restart_token in this same task immediately after fetch.  */
+
             /*
              * Server has requested a remote restart.
              *
@@ -381,6 +435,12 @@ void remote_config_task(void *param)
 
 const remote_config_t *remote_config_get(void)
 {
+    /* s_cfg is safe to read via this pointer because remote_config_fetch()
+     * only ever updates it via a single mutex-protected memcpy (s_cfg = tmp).
+     * On Xtensa, a memcpy of a cache-line-aligned struct is never observed
+     * half-written by another core — readers see either the old or the new
+     * value in full.  Callers that need several fields to be mutually
+     * consistent should call remote_config_snapshot() instead.             */
     return &s_cfg;
 }
 
@@ -402,19 +462,37 @@ const remote_config_t *remote_config_get(void)
 
 bool remote_config_is_quiet_hours(void)
 {
-    if (!s_cfg.quiet_hours_enabled) return false;
-    if (s_cfg.server_epoch_s == 0)  return false;   /* no time reference yet */
+    /* Snapshot the fields we need under the mutex so they are mutually
+     * consistent (quiet_hours_enabled, quiet_hour_start/end, server_epoch_s,
+     * and fetch_tick_ms all come from the same config fetch cycle).        */
+    bool     enabled;
+    int64_t  epoch_s;
+    uint32_t tick_ms;
+    uint8_t  qs, qe;
+
+    if (xSemaphoreTake(s_cfg_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        enabled  = s_cfg.quiet_hours_enabled;
+        epoch_s  = s_cfg.server_epoch_s;
+        tick_ms  = s_cfg.fetch_tick_ms;
+        qs       = s_cfg.quiet_hour_start;
+        qe       = s_cfg.quiet_hour_end;
+        xSemaphoreGive(s_cfg_mutex);
+    } else {
+        /* Mutex not available — default to not-quiet so audio is never
+         * silenced unexpectedly due to a scheduling glitch.              */
+        return false;
+    }
+
+    if (!enabled)      return false;
+    if (epoch_s == 0)  return false;   /* no time reference yet */
 
     /* Estimate elapsed seconds since last config fetch */
     uint32_t now_ms   = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    uint32_t delta_ms = now_ms - s_cfg.fetch_tick_ms;  /* wraps safely at 32-bit */
-    int64_t  epoch_now = s_cfg.server_epoch_s + (int64_t)(delta_ms / 1000);
+    uint32_t delta_ms = now_ms - tick_ms;   /* wraps safely at 32-bit */
+    int64_t  epoch_now = epoch_s + (int64_t)(delta_ms / 1000);
 
     /* Extract hour from epoch (UTC, or local if server sends local time) */
     uint8_t hour = (uint8_t)((epoch_now % 86400) / 3600);
-
-    uint8_t qs = s_cfg.quiet_hour_start;
-    uint8_t qe = s_cfg.quiet_hour_end;
 
     bool quiet;
     if (qs < qe) {

@@ -81,24 +81,26 @@ idf.py menuconfig
 # Navigate to: WiFi Configuration
 #   → WiFi SSID       (your network name)
 #   → WiFi Password   (your network password)
+#
+# Navigate to: Server Configuration
+#   → Server IP Address           (IP of your Raspberry Pi or host running the servers)
+#   → OTA Firmware Server Port    (default: 8000)
+#   → Startup Report Server Port  (default: 8001)
+#   → Remote Config Server Port   (default: 8002)
 ```
 
-Or you can add the following to `sdkconfig` and enter the details:
+Or add the following to `sdkconfig` directly:
 
 ```
 CONFIG_WIFI_SSID=""
 CONFIG_WIFI_PASSWORD=""
+CONFIG_SERVER_IP="192.168.101.2"
+CONFIG_OTA_SERVER_PORT=8000
+CONFIG_STARTUP_SERVER_PORT=8001
+CONFIG_CONFIG_SERVER_PORT=8002
 ```
 
-Then edit `main/ota.h` to set your server IP and starting firmware version:
-
-```c
-#define FIRMWARE_VERSION "5.3.2"
-#define OTA_URL          "http://192.168.101.2:8000/firmware/echoes.bin"
-#define VERSION_URL      "http://192.168.101.2:8000/firmware/version.txt"
-```
-
-Credentials entered via `menuconfig` are stored in `sdkconfig`, which is excluded from version control by `.gitignore` and will never be committed to the repository.
+All credentials and server addresses entered via `menuconfig` are stored in `sdkconfig`, which is excluded from version control by `.gitignore` and will never be committed to the repository.
 
 ### 3. Build and Flash
 
@@ -142,7 +144,7 @@ After the OTA server is running, copy your firmware binary and set the version:
 
 ```bash
 cp build/echoes.bin ~/firmware_server/firmware/echoes.bin
-echo "5.1.3" > ~/firmware_server/firmware/version.txt
+echo "5.4.0" > ~/firmware_server/firmware/version.txt
 ```
 
 Or use `./build.sh deploy` after a successful build to do both steps at once.
@@ -179,7 +181,7 @@ echoes/
 │       └── test_server.py
 └── main/
     ├── CMakeLists.txt
-    ├── Kconfig.projbuild             # WiFi credentials via menuconfig
+    ├── Kconfig.projbuild             # WiFi credentials and server addresses via menuconfig
     ├── main.c                        # Entry point — WiFi, OTA, task startup
     ├── echoes.h / echoes.c           # Core system, detection, LED, audio tasks
     ├── synthesis.h / synthesis.c     # Bird call synthesis (11 species)
@@ -203,7 +205,7 @@ echoes/
 ### Using build.sh (recommended)
 
 ```bash
-./build.sh version patch     # 5.1.3 → 5.1.4 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh version patch     # 5.4.0 → 5.4.1 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
 ./build.sh deploy            # Copy binary + write version.txt to ~/firmware_server/firmware/
 ```
@@ -220,7 +222,7 @@ Or in one step:
 # Edit FIRMWARE_VERSION in main/ota.h, then:
 idf.py build
 cp build/echoes.bin ~/firmware_server/firmware/echoes.bin
-echo "5.1.4" > ~/firmware_server/firmware/version.txt
+echo "5.4.1" > ~/firmware_server/firmware/version.txt
 ```
 
 Each device checks for updates once at boot. It compares the running version string against `version.txt`; if they differ it downloads and flashes the new binary, then restarts. The attempt retries up to 3 times with linear backoff (15 s, 30 s, 45 s).
@@ -237,9 +239,9 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 5.1.3 → 5.1.4) |
-| `./build.sh version minor` | Increment minor version (e.g. 5.1.3 → 5.2.0) |
-| `./build.sh version major` | Increment major version (e.g. 5.1.3 → 6.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 5.4.0 → 5.4.1) |
+| `./build.sh version minor` | Increment minor version (e.g. 5.4.0 → 5.5.0) |
+| `./build.sh version major` | Increment major version (e.g. 5.4.0 → 6.0.0) |
 | `./build.sh deploy` | Copy binary and write `version.txt` to `~/firmware_server/firmware/` |
 | `./build.sh services` | Install all three servers as systemd services (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -393,7 +395,7 @@ idf.py -p /dev/tty.usbserial-110 flash
 ```
 I (xxx) MAIN: ========================================
 I (xxx) MAIN: Echoes of the Machine
-I (xxx) MAIN: Firmware Version: 5.1.3
+I (xxx) MAIN: Firmware Version: 5.4.0
 I (xxx) MAIN: ========================================
 I (xxx) MAIN: Connecting to WiFi...
 I (xxx) OTA:  Got IP: 192.168.101.x
@@ -402,7 +404,7 @@ I (xxx) STARTUP: Startup report sent successfully
 I (xxx) MAIN: Fetching remote configuration...
 I (xxx) RCFG: Config applied — vol=0.20 whistle=2000Hz voice=200Hz poll=500ms
 I (xxx) MAIN: Checking for firmware updates...
-I (xxx) OTA:  Current: 5.1.3 — no update needed
+I (xxx) OTA:  Current: 5.4.0 — no update needed
 I (xxx) MAIN: Application tasks resumed
 I (xxx) ESPNOW: ESP-NOW mesh initialised (broadcast-only)
 I (xxx) MAIN: System started successfully!
@@ -410,7 +412,12 @@ I (xxx) MAIN: System started successfully!
 
 ## Version History
 
-**5.3.2** — Current
+**5.4.0** — Current
+- Server IP and all three server ports (OTA :8000, startup :8001, config :8002) moved to `idf.py menuconfig` (Kconfig) — no longer hardcoded in headers
+- Race condition fix: `remote_config` struct now updated via mutex-protected atomic swap; `remote_config_is_quiet_hours()` snapshots fields under lock
+- Documentation and deploy script improvements: `mkdir -p` in install scripts, `requirements.txt` for all three servers, stale version references cleaned up
+
+**5.3.2**
 - General tidy up of documentation and code with repo going public
 - WiFi credentials moved to `idf.py menuconfig` (Kconfig) — no longer stored in source
 - Status dashboard to see the state of all nodes

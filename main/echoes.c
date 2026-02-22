@@ -577,6 +577,12 @@ void play_bird_call(const char *bird_name, const audio_buffer_t *audio_buffer)
     }
     _play_locked(bird_name, audio_buffer);
     xSemaphoreGive(s_playback_mutex);
+    /* Brief delay AFTER releasing the mutex so the DMA ring has time to drain
+     * before the next caller starts writing new data.  Placing it outside the
+     * lock is intentional: a waiting caller will acquire the mutex and begin
+     * generating the next call (a CPU-only step) during this window, which is
+     * fine — i2s_channel_write() is the only operation that touches the DMA
+     * hardware, and that happens inside _play_locked() under the mutex.     */
     vTaskDelay(pdMS_TO_TICKS(100));
 }
 
@@ -593,6 +599,8 @@ void generate_and_play_bird_call(bird_call_mapper_t *mapper,
     bird_mapper_generate_call(mapper, function_name, &g_audio_buffer);
     _play_locked(display_name, &g_audio_buffer);
     xSemaphoreGive(s_playback_mutex);
+    /* See play_bird_call() for explanation of why this delay is correctly
+     * placed outside the mutex.                                            */
     vTaskDelay(pdMS_TO_TICKS(100));
 }
 
@@ -611,6 +619,8 @@ static void generate_and_play_bird_call_nowait(bird_call_mapper_t *mapper,
     bird_mapper_generate_call(mapper, function_name, &g_audio_buffer);
     _play_locked(display_name, &g_audio_buffer);
     xSemaphoreGive(s_playback_mutex);
+    /* See play_bird_call() for explanation of why this delay is correctly
+     * placed outside the mutex.                                            */
     vTaskDelay(pdMS_TO_TICKS(100));
 }
 

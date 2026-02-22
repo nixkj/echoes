@@ -21,10 +21,28 @@
 #define WIFI_MAXIMUM_RETRY  5
 #define WIFI_TIMEOUT_MS     20000  // 20 second timeout
 
-/* OTA Configuration */
-#define FIRMWARE_VERSION    "5.3.2"
-#define OTA_URL             "http://192.168.101.2:8000/firmware/echoes.bin"
-#define VERSION_URL         "http://192.168.101.2:8000/firmware/version.txt"
+/* OTA Configuration
+ *
+ * OTA_URL and VERSION_URL are built from CONFIG_SERVER_IP and
+ * CONFIG_OTA_SERVER_PORT, which are set via 'idf.py menuconfig'
+ * under "Server Configuration".  You should not need to edit this
+ * file directly — set the IP and port in menuconfig instead.
+ */
+#define FIRMWARE_VERSION    "5.4.0"
+
+/* STRINGIFY is needed to turn an integer Kconfig value into a string
+ * literal so it can be concatenated with other string literals.       */
+#ifndef STRINGIFY
+#  define STRINGIFY_INNER(x) #x
+#  define STRINGIFY(x)       STRINGIFY_INNER(x)
+#endif
+
+#define OTA_URL             "http://" CONFIG_SERVER_IP ":" \
+                                STRINGIFY(CONFIG_OTA_SERVER_PORT) \
+                                "/firmware/echoes.bin"
+#define VERSION_URL         "http://" CONFIG_SERVER_IP ":" \
+                                STRINGIFY(CONFIG_OTA_SERVER_PORT) \
+                                "/firmware/version.txt"
 
 /* Update check settings */
 #define OTA_CHECK_INTERVAL_MS    (24 * 60 * 60 * 1000)  // Check once per day

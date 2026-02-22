@@ -1,0 +1,2 @@
+# No third-party dependencies — firmware_server.py uses Python stdlib only
+# (http.server, socketserver, os, pathlib, json, datetime).

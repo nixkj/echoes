@@ -143,6 +143,11 @@ void app_main(void)
         TaskHandle_t h_lux    = NULL;
         TaskHandle_t h_flock  = NULL;
 
+        /* Stack note: audio_detection_task does floating-point DSP (Goertzel,
+         * adaptive thresholds) and calls into synthesis from the same stack.
+         * 4096 bytes is sufficient on Xtensa with the hardware FPU, but if
+         * intermittent watchdog resets appear in the field this task's stack
+         * should be the first thing to increase (try 8192).               */
         xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, &h_audio);
         if (h_audio)  vTaskSuspend(h_audio);
 
@@ -265,6 +270,7 @@ void app_main(void)
      * IS connected the tasks were already created and resumed above).      */
     if (!wifi_connected) {
         ESP_LOGI(TAG, "Starting Echoes of the Machine (no-WiFi path)...");
+        /* Stack: see WiFi path above for sizing rationale. */
         xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, NULL);
 
         if (hw_config == HW_CONFIG_FULL) {

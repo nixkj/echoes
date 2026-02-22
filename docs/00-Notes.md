@@ -36,10 +36,8 @@
 
 # Resources
 
-## Keywords
+## Search Terms (for sourcing components)
 
-- MicroPython v1.27.0 on 2025-12-09; Generic ESP32 module with ESP32
-  - Wroom32
 - Adafruit MAX98357A I2S 3W Class D Amplifier Breakout
 - Adafruit ICS-43434 I2S MEMS Microphone Breakout
 - SEN0097 LIGHT SENSOR-BH1750 or ALS-PT19 Analogue Light Sensor
@@ -81,6 +79,6 @@
 - Fork-tailed Drongo (Dicrurus adsimilis): Search "Dicrurus adsimilis" — Mimicry and sharp calls.
 - Cape Canary (Serinus canicollis): Search "Serinus canicollis" — Sweet twittering songs.
 - Red-eyed Dove (Streptopelia semitorquata): Search "Streptopelia semitorquata" - pigeon-like coo that's more repetitive and "declarative".
-- Southern Masked Weaver (Ploceus velatus): Search "Ploceus velatus" - 
+- Southern Masked Weaver (Ploceus velatus): Search "Ploceus velatus" — Buzzy, chattering weaving calls. Responds to clap detections.
 - Hadada Ibis (Bostrychia hagedash, also known as Hadeda): Search "Bostrychia hagedash" — Very common, lots of loud "haa-haa-de-dah" flight calls from SA suburbs and wetlands. *Too challenging to implement*
 - African Pied Crow (Corvus albus): Search "Corvus albus" — Harsh cawing calls. *To challenging to implement*
