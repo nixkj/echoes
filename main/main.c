@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_ota_ops.h"
+#include <math.h>
 
 #include "echoes.h"
 #include "synthesis.h"
@@ -167,9 +168,9 @@ void app_main(void)
          * esp_ota_begin() refuses to flash while the running partition is unconfirmed
          * (ESP_ERR_OTA_ROLLBACK_INVALID_STATE).
          *
-         * We wait here for up to 2 minutes.  If the system stays alive that long it has
+         * We wait here for up to 1 minute.  If the system stays alive that long it has
          * proven stability and we mark valid, then proceed to check for updates.
-         * If the firmware crashes before 2 minutes the bootloader will automatically
+         * If the firmware crashes before 1 minute the bootloader will automatically
          * roll back to the previous image on the next boot — which is the intended
          * safety behaviour.                                                          */
         {
@@ -178,8 +179,20 @@ void app_main(void)
             if (esp_ota_get_state_partition(running, &img_state) == ESP_OK &&
                 img_state == ESP_OTA_IMG_PENDING_VERIFY) {
 
-                ESP_LOGI(TAG, "OTA validation: new firmware detected — waiting 2 min to confirm stability...");
-                vTaskDelay(pdMS_TO_TICKS(120000));   /* 2 minutes */
+                ESP_LOGI(TAG, "OTA validation: new firmware detected — waiting 1 min to confirm stability...");
+
+		/* Slow blue pulse while waiting — signals "validating" without appearing dead. */
+		const int pulse_ms     = 2000;   /* one full breath cycle */
+		const int step_ms      = 50;
+		const int total_steps  = 60000 / step_ms;   /* 1 minutes */
+
+		for (int i = 0; i < total_steps; i++) {
+		    float phase     = (float)(i % (pulse_ms / step_ms)) / (pulse_ms / step_ms);
+		    float intensity = 0.3f * (0.5f + 0.5f * sinf(2.0f * M_PI * phase));
+		    set_led(0.0f, intensity);
+		    vTaskDelay(pdMS_TO_TICKS(step_ms));
+		}
+		set_led(0.0f, 0.0f);
 
                 /* Re-check state in case something reset it during the wait */
                 if (esp_ota_get_state_partition(running, &img_state) == ESP_OK &&

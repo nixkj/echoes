@@ -312,7 +312,6 @@ void set_led(float white_level, float blue_level) {
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty_white);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 
-    // Blue LED enabled for testing phase
     uint32_t duty_blue = (uint32_t)(65535.0f * blue_level);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty_blue);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
@@ -996,6 +995,9 @@ _Static_assert(sizeof(k_all_birds) / sizeof(k_all_birds[0]) == NUM_ALL_BIRDS,
 void flock_task(void *param)
 {
     (void)param;
+
+    /* Verify QUELEA_IDX points to the right entry — catches table reordering at runtime. */
+    assert(strcmp(k_all_birds[QUELEA_IDX].function_name, "red_billed_quelea") == 0);
 
     if (!has_audio_output()) {
         /* Minimal hardware: LED-only flock strobe */
