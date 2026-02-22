@@ -10,7 +10,7 @@ A cross-disciplinary interactive art exhibition exploring cybernetics and feedba
 - 🐦 Responds with synthesised South African bird calls (11 species)
 - 💡 Light-adaptive bird selection and lux-scaled playback volume
 - 📡 ESP-NOW broadcast mesh — nodes influence each other's bird selection
-- 🐦‍⬛ Flock mode — triggered by network activity bursts across the fleet
+- 🐦‍⬛ Flock mode — triggered by ESP-NOW message bursts; continuous calls with double-flash LED cue before each
 - 🧠 Markov chain — learns event sequences and fires autonomous calls during silence
 - 🌐 WiFi connectivity with OTA firmware updates
 - ⚙️ Remote configuration — all parameters tunable live from a server UI without reflashing
@@ -259,31 +259,20 @@ The server also supports:
 
 ## LED Indicators
 
-### Normal Operation
-
-| LED | Behaviour | Meaning |
+| Phase | White | Blue |
 |---|---|---|
-| White | Pulses during playback (VU meter) | Bird call playing |
-| White | Strobes rapidly | Flock mode active |
-| White | Dim ambient glow | Idle (brightness scales with ambient light) |
-
-### Boot Sequence
-
-| LED | Behaviour | Meaning |
-|---|---|---|
-| Blue | Steady on | Booting |
-| White | Single mid blink | Startup report sent successfully |
-| Blue | Single mid blink | Startup report failed |
-| White | 1 s pulse | System ready |
-
-### WiFi / OTA Status
-
-| LED | Behaviour | Meaning |
-|---|---|---|
-| Blue | 3× blink | WiFi connection failed |
-| Blue | Steady | OTA download in progress |
-| White | 1 s pulse | OTA update successful (device restarting) |
-| Blue | 5× rapid blink | OTA update failed |
+| Power on / booting | off | on (solid) |
+| OTA validation (post-update) | off | slow pulse, ~1 min |
+| WiFi connection failed | off | 3× blink |
+| OTA download in progress | off | on (solid) |
+| OTA update successful (restarting) | 500 ms pulse | off |
+| OTA update failed | off | 5× rapid blink |
+| Startup report sent OK | brief mid blink | off |
+| Startup report failed | off | brief mid blink |
+| System ready | 500 ms pulse | off |
+| Running — idle | dim ambient glow (lux-scaled) | off |
+| Running — bird call playing | VU meter pulse | off |
+| Running — flock mode | brief double-flash before each call | off |
 
 ## Bird Calls (11 species)
 
@@ -316,7 +305,7 @@ Remote event influence expires after 30 seconds (configurable), after which each
 
 ### Flock Mode
 
-When 12 or more ESP-NOW messages arrive within a 6-second window (both thresholds remotely configurable), all nodes enter flock mode: rapid LED strobing and continuous bird calls with a 60 % Red-billed Quelea / 40 % random split. Flock mode holds for 10 seconds after the last qualifying burst then decays automatically.
+When 12 or more ESP-NOW messages arrive within a 6-second window (both thresholds remotely configurable), all nodes enter flock mode: continuous bird calls with a 60 % Red-billed Quelea / 40 % random split, each preceded by a brief double-flash of the white LED (two 40 ms pulses). Flock mode holds for 10 seconds after the last qualifying burst then decays automatically.
 
 ## Markov Chain
 
@@ -426,18 +415,6 @@ I (17034) MAIN: Starting Echoes of the Machine (no-WiFi path)...
 I (17040) ECHOES: Audio detection task started
 ```
 
-## LED Boot Behaviour
-
-| Phase | White | Blue |
-|---|---|---|
-| Power on / booting | off | on (solid) |
-| OTA validation (post-update) | off | slow pulse, ~1 min |
-| Startup report sent OK | brief flash | off |
-| Startup report failed | off | brief flash |
-| WiFi not found | off | 3× blink |
-| System ready | brief flash | off |
-| Running — audio detection | VU meter | off |
-| Running — flock mode | strobe | off |
 
 ## Version History
 
