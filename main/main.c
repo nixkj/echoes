@@ -181,18 +181,18 @@ void app_main(void)
 
                 ESP_LOGI(TAG, "OTA validation: new firmware detected — waiting 1 min to confirm stability...");
 
-		/* Slow blue pulse while waiting — signals "validating" without appearing dead. */
-		const int pulse_ms     = 2000;   /* one full breath cycle */
-		const int step_ms      = 50;
-		const int total_steps  = 60000 / step_ms;   /* 1 minutes */
+                /* Slow blue pulse while waiting — signals "validating" without appearing dead. */
+                const int pulse_ms     = 2000;   /* one full breath cycle */
+                const int step_ms      = 50;
+                const int total_steps  = 60000 / step_ms;   /* 1 minutes */
 
-		for (int i = 0; i < total_steps; i++) {
-		    float phase     = (float)(i % (pulse_ms / step_ms)) / (pulse_ms / step_ms);
-		    float intensity = 0.3f * (0.5f + 0.5f * sinf(2.0f * M_PI * phase));
-		    set_led(0.0f, intensity);
-		    vTaskDelay(pdMS_TO_TICKS(step_ms));
-		}
-		set_led(0.0f, 0.0f);
+                for (int i = 0; i < total_steps; i++) {
+                    float phase     = (float)(i % (pulse_ms / step_ms)) / (pulse_ms / step_ms);
+                    float intensity = 0.3f * (0.5f + 0.5f * sinf(2.0f * M_PI * phase));
+                    set_led(0.0f, intensity);
+                    vTaskDelay(pdMS_TO_TICKS(step_ms));
+                }
+                set_led(0.0f, 0.0f);
 
                 /* Re-check state in case something reset it during the wait */
                 if (esp_ota_get_state_partition(running, &img_state) == ESP_OK &&

@@ -372,7 +372,7 @@ size_t generate_red_billed_quelea(bird_synthesizer_t *synth, audio_buffer_t *out
     /*
      * Red-billed Quelea — colony chatter, unmistakably LOUD.
      * Written with VOLUME-bypass helpers so the global 0.20 master level
-     * does not apply.  A post-process gain of 4.0× is applied at the end
+     * does not apply.  A post-process gain of 1.2× is applied at the end
      * so Quelea sits well above every other bird in perceived loudness.
      *
      * Phrase layout (~1.4 s total):

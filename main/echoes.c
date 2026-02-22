@@ -538,6 +538,7 @@ static void _play_locked(const char *bird_name, const audio_buffer_t *audio_buff
 
     size_t total_bytes = audio_buffer->num_samples * sizeof(int16_t);
     size_t bytes_sent  = 0;
+    /* Protected by s_playback_mutex — all callers of _play_locked hold it. */
     static int16_t s_scaled_chunk[CHUNK_SIZE];
 
     while (bytes_sent < total_bytes) {
