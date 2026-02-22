@@ -45,11 +45,6 @@ size_t generate_tone(bird_synthesizer_t *synth, int16_t *buffer, size_t offset,
     float duration_s = duration_ms / 1000.0f;
     size_t num_samples = (size_t)(synth->sample_rate * duration_s);
 
-    /* Phase accumulator: integrates instantaneous frequency each sample so
-     * vibrato modulation produces smooth FM with no phase discontinuities. */
-    float phase = 0.0f;
-    const float phase_inc_base = 2.0f * M_PI / synth->sample_rate;
-
     for (size_t i = 0; i < num_samples; i++) {
         float t = (float)i / synth->sample_rate;
 
@@ -57,10 +52,10 @@ size_t generate_tone(bird_synthesizer_t *synth, int16_t *buffer, size_t offset,
         if (vibrato_rate > 0.0f) {
             freq_mod = freq * (1.0f + vibrato_depth * sinf(2.0f * M_PI * vibrato_rate * t));
         }
-        phase += phase_inc_base * freq_mod;
 
         float env = envelope(t, duration_s, 0.02f, 0.05f);
-        float sample_f = 32767.0f * amplitude * VOLUME * env * sinf(phase);
+        float sample_f = 32767.0f * amplitude * VOLUME * env * 
+                       sinf(2.0f * M_PI * freq_mod * t);
         buffer[offset + i] = (int16_t)sample_f;
     }
 
@@ -73,21 +68,14 @@ size_t generate_sweep(bird_synthesizer_t *synth, int16_t *buffer, size_t offset,
     float duration_s = duration_ms / 1000.0f;
     size_t num_samples = (size_t)(synth->sample_rate * duration_s);
 
-    /* Phase accumulator: integrates instantaneous frequency each sample.
-     * Using sinf(2π * freq * t) with a time-varying freq causes phase
-     * discontinuities because freq*t is not the integral of freq dt.
-     * Accumulating phase correctly produces a smooth, click-free sweep. */
-    float phase = 0.0f;
-    const float phase_inc_base = 2.0f * M_PI / synth->sample_rate;
-
     for (size_t i = 0; i < num_samples; i++) {
         float t = (float)i / synth->sample_rate;
         float progress = t / duration_s;
         float freq = start_freq + (end_freq - start_freq) * progress;
-        phase += phase_inc_base * freq;
 
         float env = envelope(t, duration_s, 0.01f, 0.03f);
-        float sample_f = 32767.0f * amplitude * VOLUME * env * sinf(phase);
+        float sample_f = 32767.0f * amplitude * VOLUME * env * 
+                       sinf(2.0f * M_PI * freq * t);
         buffer[offset + i] = (int16_t)sample_f;
     }
 
@@ -100,19 +88,13 @@ size_t generate_tremolo(bird_synthesizer_t *synth, int16_t *buffer, size_t offse
     float duration_s = duration_ms / 1000.0f;
     size_t num_samples = (size_t)(synth->sample_rate * duration_s);
 
-    /* Phase accumulator for the carrier: base_freq is constant here so the
-     * accumulator vs sinf(2π*f*t) difference is negligible, but kept
-     * consistent with generate_tone/generate_sweep for correctness. */
-    float phase = 0.0f;
-    const float phase_inc = 2.0f * M_PI * base_freq / synth->sample_rate;
-
     for (size_t i = 0; i < num_samples; i++) {
         float t = (float)i / synth->sample_rate;
-        phase += phase_inc;
 
         float am = 1.0f - trem_depth * (1.0f - (1.0f + sinf(2.0f * M_PI * trem_rate * t)) / 2.0f);
         float env = envelope(t, duration_s, 0.02f, 0.05f);
-        float sample_f = 32767.0f * amplitude * VOLUME * env * am * sinf(phase);
+        float sample_f = 32767.0f * amplitude * VOLUME * env * am * 
+                       sinf(2.0f * M_PI * base_freq * t);
         buffer[offset + i] = (int16_t)sample_f;
     }
 
@@ -305,127 +287,83 @@ size_t generate_southern_masked_weaver(bird_synthesizer_t *synth, audio_buffer_t
     return pos;
 }
 
-
-/**
- * @brief Internal helpers for Quelea that bypass the global VOLUME constant.
- *
- * Every other generator multiplies by VOLUME (0.20) which caps output at 20%
- * of full scale even at amplitude=1.0.  Quelea is a flood-signal bird —
- * it must be unmistakably loud.  These private helpers write at full synthesis
- * amplitude, and generate_red_billed_quelea() applies a post-process gain
- * boost at the end to reach the desired level independently of VOLUME.
- */
-static size_t _quelea_sweep(bird_synthesizer_t *synth, int16_t *buf, size_t off,
-                            float f0, float f1, uint32_t ms, float amp)
-{
-    float dur = ms / 1000.0f;
-    size_t n   = (size_t)(synth->sample_rate * dur);
-    float phase = 0.0f;
-    const float phase_inc_base = 2.0f * M_PI / synth->sample_rate;
-    for (size_t i = 0; i < n; i++) {
-        float t    = (float)i / synth->sample_rate;
-        float freq = f0 + (f1 - f0) * (t / dur);
-        float env  = envelope(t, dur, 0.01f, 0.03f);
-        phase += phase_inc_base * freq;
-        buf[off + i] = (int16_t)(32767.0f * amp * env * sinf(phase));
-    }
-    return n;
-}
-
-static size_t _quelea_tremolo(bird_synthesizer_t *synth, int16_t *buf, size_t off,
-                               float freq, uint32_t ms, float trate, float tdepth, float amp)
-{
-    float dur = ms / 1000.0f;
-    size_t n   = (size_t)(synth->sample_rate * dur);
-    float phase = 0.0f;
-    const float phase_inc = 2.0f * M_PI * freq / synth->sample_rate;
-    for (size_t i = 0; i < n; i++) {
-        float t  = (float)i / synth->sample_rate;
-        float am = 1.0f - tdepth * (1.0f - (1.0f + sinf(2.0f * M_PI * trate * t)) / 2.0f);
-        float env = envelope(t, dur, 0.02f, 0.05f);
-        phase += phase_inc;
-        buf[off + i] = (int16_t)(32767.0f * amp * env * am * sinf(phase));
-    }
-    return n;
-}
-
-static size_t _quelea_harsh(bird_synthesizer_t *synth, int16_t *buf, size_t off,
-                             float freq, uint32_t ms, uint8_t harmonics, float amp)
-{
-    float dur = ms / 1000.0f;
-    size_t n   = (size_t)(synth->sample_rate * dur);
-    for (size_t i = 0; i < n; i++) {
-        float t   = (float)i / synth->sample_rate;
-        float env = envelope(t, dur, 0.01f, 0.08f);
-        float s   = 0.0f;
-        for (uint8_t h = 1; h <= harmonics; h++)
-            s += (1.0f / h) * sinf(2.0f * M_PI * freq * h * t);
-        s /= sqrtf((float)harmonics);
-        buf[off + i] = (int16_t)(32767.0f * amp * env * s);
-    }
-    return n;
-}
-
 size_t generate_red_billed_quelea(bird_synthesizer_t *synth, audio_buffer_t *out) {
     size_t pos = 0;
 
     /*
-     * Red-billed Quelea — colony chatter, unmistakably LOUD.
-     * Written with VOLUME-bypass helpers so the global 0.20 master level
-     * does not apply.  A post-process gain of 1.2× is applied at the end
-     * so Quelea sits well above every other bird in perceived loudness.
+     * Red-billed Quelea — colony chatter, unmistakable.
      *
-     * Phrase layout (~1.4 s total):
+     * Phrase layout (~2.0 s total):
      *   1. Opening chatter burst  — 4 harsh staccato notes
      *   2. Contact whistle        — fast upward sweep
      *   3. Colony tremolo burst   — 4 rapid tremolo notes
      *   4. Rising chirp + fall    — paired sweeps
      *   5. Dense re-burst         — 2 harsh + 1 tremolo
-     *   6. Closing sweep + buzz
+     *   6. Second colony tremolo  — 3 rapid tremolo notes
+     *   7. Mid-phrase rising pair — paired sweeps
+     *   8. Closing chatter + sweep + buzz
      */
 
     /* --- Phrase 1: opening chatter --- */
-    pos += _quelea_harsh  (synth, out->buffer, pos, 2200, 60, 2, 0.82f);
+    pos += generate_harsh  (synth, out->buffer, pos, 2200, 60, 2, 0.82f);
     pos += generate_silence(synth, out->buffer, pos, 28);
-    pos += _quelea_harsh  (synth, out->buffer, pos, 2400, 55, 2, 0.85f);
+    pos += generate_harsh  (synth, out->buffer, pos, 2400, 55, 2, 0.85f);
     pos += generate_silence(synth, out->buffer, pos, 25);
-    pos += _quelea_harsh  (synth, out->buffer, pos, 2300, 60, 2, 0.83f);
+    pos += generate_harsh  (synth, out->buffer, pos, 2300, 60, 2, 0.83f);
     pos += generate_silence(synth, out->buffer, pos, 28);
-    pos += _quelea_harsh  (synth, out->buffer, pos, 2500, 50, 3, 0.80f);
+    pos += generate_harsh  (synth, out->buffer, pos, 2500, 50, 3, 0.80f);
     pos += generate_silence(synth, out->buffer, pos, 45);
 
     /* --- Phrase 2: contact whistle --- */
-    pos += _quelea_sweep  (synth, out->buffer, pos, 1900, 3200, 120, 0.90f);
+    pos += generate_sweep  (synth, out->buffer, pos, 1900, 3200, 120, 0.90f);
     pos += generate_silence(synth, out->buffer, pos, 40);
 
     /* --- Phrase 3: colony tremolo burst --- */
-    pos += _quelea_tremolo(synth, out->buffer, pos, 2600, 70, 28, 0.55f, 0.85f);
+    pos += generate_tremolo(synth, out->buffer, pos, 2600, 70, 28, 0.55f, 0.85f);
     pos += generate_silence(synth, out->buffer, pos, 22);
-    pos += _quelea_tremolo(synth, out->buffer, pos, 2850, 65, 28, 0.60f, 0.88f);
+    pos += generate_tremolo(synth, out->buffer, pos, 2850, 65, 28, 0.60f, 0.88f);
     pos += generate_silence(synth, out->buffer, pos, 22);
-    pos += _quelea_tremolo(synth, out->buffer, pos, 2500, 70, 28, 0.55f, 0.85f);
+    pos += generate_tremolo(synth, out->buffer, pos, 2500, 70, 28, 0.55f, 0.85f);
     pos += generate_silence(synth, out->buffer, pos, 22);
-    pos += _quelea_tremolo(synth, out->buffer, pos, 2700, 60, 30, 0.58f, 0.87f);
+    pos += generate_tremolo(synth, out->buffer, pos, 2700, 60, 30, 0.58f, 0.87f);
     pos += generate_silence(synth, out->buffer, pos, 40);
 
     /* --- Phrase 4: rising chirp + fall --- */
-    pos += _quelea_sweep  (synth, out->buffer, pos, 2000, 3400, 100, 0.88f);
+    pos += generate_sweep  (synth, out->buffer, pos, 2000, 3400, 100, 0.88f);
     pos += generate_silence(synth, out->buffer, pos, 18);
-    pos += _quelea_sweep  (synth, out->buffer, pos, 3200, 2100,  80, 0.85f);
+    pos += generate_sweep  (synth, out->buffer, pos, 3200, 2100,  80, 0.85f);
     pos += generate_silence(synth, out->buffer, pos, 35);
 
     /* --- Phrase 5: dense re-burst --- */
-    pos += _quelea_harsh  (synth, out->buffer, pos, 2350, 55, 2, 0.83f);
+    pos += generate_harsh  (synth, out->buffer, pos, 2350, 55, 2, 0.83f);
     pos += generate_silence(synth, out->buffer, pos, 22);
-    pos += _quelea_harsh  (synth, out->buffer, pos, 2600, 50, 2, 0.85f);
+    pos += generate_harsh  (synth, out->buffer, pos, 2600, 50, 2, 0.85f);
     pos += generate_silence(synth, out->buffer, pos, 22);
-    pos += _quelea_tremolo(synth, out->buffer, pos, 2750, 80, 30, 0.60f, 0.88f);
+    pos += generate_tremolo(synth, out->buffer, pos, 2750, 80, 30, 0.60f, 0.88f);
     pos += generate_silence(synth, out->buffer, pos, 30);
 
-    /* --- Phrase 6: closing sweep + final buzz --- */
-    pos += _quelea_sweep  (synth, out->buffer, pos, 2100, 3300, 110, 0.88f);
+    /* --- Phrase 6: second colony tremolo burst --- */
+    pos += generate_tremolo(synth, out->buffer, pos, 2400, 75, 26, 0.55f, 0.86f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
+    pos += generate_tremolo(synth, out->buffer, pos, 2650, 70, 28, 0.58f, 0.88f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
+    pos += generate_tremolo(synth, out->buffer, pos, 2900, 65, 28, 0.60f, 0.85f);
+    pos += generate_silence(synth, out->buffer, pos, 40);
+
+    /* --- Phrase 7: mid-phrase rising pair --- */
+    pos += generate_sweep  (synth, out->buffer, pos, 1800, 3100, 105, 0.87f);
+    pos += generate_silence(synth, out->buffer, pos, 18);
+    pos += generate_sweep  (synth, out->buffer, pos, 3000, 2000,  85, 0.84f);
+    pos += generate_silence(synth, out->buffer, pos, 35);
+
+    /* --- Phrase 8: closing chatter + final sweep + buzz --- */
+    pos += generate_harsh  (synth, out->buffer, pos, 2200, 55, 2, 0.82f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
+    pos += generate_harsh  (synth, out->buffer, pos, 2450, 50, 2, 0.84f);
+    pos += generate_silence(synth, out->buffer, pos, 22);
+    pos += generate_sweep  (synth, out->buffer, pos, 2100, 3300, 110, 0.88f);
     pos += generate_silence(synth, out->buffer, pos, 20);
-    pos += _quelea_harsh  (synth, out->buffer, pos, 2300,  80, 3, 0.82f);
+    pos += generate_harsh  (synth, out->buffer, pos, 2300,  80, 3, 0.82f);
 
     ASSERT_POS(pos);
     out->num_samples = pos;
@@ -505,7 +443,7 @@ size_t generate_paradise_flycatcher(bird_synthesizer_t *synth, audio_buffer_t *o
 void bird_mapper_init(bird_call_mapper_t *mapper, uint32_t sample_rate) {
     mapper->synth.sample_rate = sample_rate;
     mapper->synth.chunk_size = CHUNK_SIZE;
-    mapper->synth.quelea_gain = 1.2f;   /* default; overwritten by echoes.c from remote config */
+    mapper->synth.quelea_gain = 1.5f;   /* default; overwritten by echoes.c from remote config */
 
     /* Create the bird-list mutex.  Protects the whistle/voice/clap/birdsong
      * bird arrays against concurrent read (detection task, autonomous call)

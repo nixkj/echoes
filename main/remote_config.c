@@ -64,7 +64,7 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .volume_lux_max              = 200.0f,
     .volume_scale_min            = 0.25f,
     .volume_scale_max            = 1.0f,
-    .quelea_gain                 = 1.2f,
+    .quelea_gain                 = 1.5f,
 
     /* Light sensor */
     .lux_poll_interval_ms        = 500,
