@@ -9,12 +9,12 @@ A cross-disciplinary interactive art exhibition exploring cybernetics and feedba
 - 🎵 Detects whistles, voice, claps, and birdsong
 - 🐦 Responds with synthesised South African bird calls (11 species)
 - 💡 Light-adaptive bird selection and lux-scaled playback volume
-- 📡 ESP-NOW broadcast mesh — nodes influence each other's bird selection
+- 📡 ESP-NOW broadcast mesh — nodes influence the bird selection of other nodes
 - 🐦‍⬛ Flock mode — triggered by ESP-NOW message bursts; continuous calls with double-flash LED cue before each
 - 🧠 Markov chain — learns event sequences and fires autonomous calls during silence
 - 🌐 WiFi connectivity with OTA firmware updates
-- ⚙️ Remote configuration — all parameters tunable live from a server UI without reflashing
-- 🔋 Power-efficient operation with WiFi modem sleep
+- ⚙️  Remote configuration — all parameters tunable from a server UI (60 sec poll/update interval) without reflashing
+- 🔋 Power-efficient operation with WiFi sleep and 
 - 🎛️ LED indicators for status and audio VU metering
 
 ## Hardware Requirements (refer to docs for more details)
