@@ -147,9 +147,19 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
     switch (evt->event_id) {
     case HTTP_EVENT_ON_DATA:
-        if (!esp_http_client_is_chunked_response(evt->client)) {
+        /* Accumulate body regardless of transfer encoding.  ESP-IDF's HTTP
+         * client reassembles chunked responses before delivering them here,
+         * so the old chunked guard was incorrectly discarding valid data
+         * whenever the server (e.g. Flask) used chunked Transfer-Encoding. */
+        {
             size_t remaining = sizeof(s_http_body) - s_http_body_len - 1;
-            size_t copy_len  = (evt->data_len < remaining) ? evt->data_len : remaining;
+            if ((size_t)evt->data_len > remaining) {
+                ESP_LOGW(TAG, "HTTP body truncated — response exceeds %u bytes; "
+                              "increase REMOTE_CONFIG_MAX_BODY_SIZE",
+                         (unsigned)sizeof(s_http_body));
+            }
+            size_t copy_len = ((size_t)evt->data_len < remaining)
+                              ? (size_t)evt->data_len : remaining;
             memcpy(s_http_body + s_http_body_len, evt->data, copy_len);
             s_http_body_len += copy_len;
         }
@@ -469,6 +479,11 @@ bool remote_config_is_quiet_hours(void)
     int64_t  epoch_s;
     uint32_t tick_ms;
     uint8_t  qs, qe;
+
+    /* Safety guard: mutex is created in remote_config_init().  If this
+     * function is called before init (e.g. during early boot), treat as
+     * not-quiet so nothing is silenced unexpectedly.                    */
+    if (s_cfg_mutex == NULL) return false;
 
     if (xSemaphoreTake(s_cfg_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         enabled  = s_cfg.quiet_hours_enabled;
