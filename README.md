@@ -491,6 +491,6 @@ Unless otherwise stated, the views expressed are those of the authors and do not
 
 If you reference or build upon this work, please cite or attribute:
 
-> Nixon, K., & Filinich Orozco, R. (2026). *Echoes of the Machine*. University of the Witwatersrand. https://github.com/nixkj/echoes
+> Nixon, K.J., & Filinich Orozco, R. (2026). *Echoes of the Machine*. University of the Witwatersrand. https://github.com/nixkj/echoes
 
 ---
