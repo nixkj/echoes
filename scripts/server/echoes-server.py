@@ -11,7 +11,7 @@ Replaces three separate processes:
 
 Everything now runs on port 8002.  The node registry is populated by
 startup POSTs (node_type, firmware, ip) and kept alive by 60-second
-config polls (last_seen, poll_count).  The fleet dashboard therefore
+config polls (last_seen, poll_count).  The flock dashboard therefore
 shows the full picture for the first time.
 
 Firmware files live in ~/firmware_server/firmware/ — the same path that
@@ -457,7 +457,7 @@ def startup_report():
 
 @app.route("/nodes")
 def get_nodes():
-    """Return fleet registry — one entry per known node."""
+    """Return flock registry — one entry per known node."""
     with _nodes_lock:
         return jsonify(list(_nodes.values()))
 
@@ -701,13 +701,58 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .toggle-on .toggle-thumb { transform: translateX(16px); background: #fff; }
   .toggle-on .toggle-label { color: var(--danger); font-weight: 700; }
   .toggle-on { border-color: var(--danger); background: rgba(240,74,106,0.08); }
+
+  /* ── Flock Grid ── */
+  .flock-section { margin-bottom: 36px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+  .flock-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 8px; }
+  .flock-title { font-family: var(--font-head); font-size: 11px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: var(--text-dim); display: flex; align-items: center; gap: 8px; }
+  .flock-title::before { content: ''; display: inline-block; width: 7px; height: 7px; background: var(--accent2); border-radius: 50%; animation: pulse 2s infinite; }
+  .flock-stats { display: flex; gap: 20px; }
+  .fstat { display: flex; align-items: baseline; gap: 5px; font-size: 11px; font-family: var(--font-mono); }
+  .fstat-val { font-size: 16px; }
+  .fstat-val.green { color: #3ddc5e; }
+  .fstat-val.amber { color: #e0a020; }
+  .fstat-val.red   { color: #e03a3a; }
+  .fstat-val.grey  { color: var(--muted); }
+  .fstat-lbl { color: var(--text-dim); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
+  .flock-legend { display: flex; gap: 12px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
+  .fleg { display: flex; align-items: center; gap: 4px; }
+  .fleg-dot { width: 7px; height: 7px; border-radius: 50%; }
+  .fleg-dot.green { background: #3ddc5e; }
+  .fleg-dot.amber { background: #e0a020; }
+  .fleg-dot.red   { background: #e03a3a; }
+  .fleg-dot.grey  { background: var(--muted); }
+  .flock-body { padding: 14px 18px; }
+  .flock-poll { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 10px; }
+  .flock-poll-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); animation: pulse 2s infinite; }
+  .fnode-grid { display: grid; grid-template-columns: repeat(50, 1fr); gap: 2px; }
+  @media (max-width: 700px) { .fnode-grid { grid-template-columns: repeat(25, 1fr); } }
+  .fnode { position: relative; aspect-ratio: 1; border-radius: 1px; cursor: default; border: none; transition: transform 0.12s ease; }
+  .fnode:hover { transform: scale(1.5); z-index: 5; }
+  .fnode.fonline  { background: #2a8c42; }
+  .fnode.fstale   { background: #7a5010; }
+  .fnode.foffline { background: #8c2a2a; }
+  .fnode.fnever   { background: #1e1e1e; }
+  /* Tooltip — fixed positioning via JS */
+  .ftooltip { display: none; position: fixed; background: #090b09; border: 1px solid var(--border); border-radius: 3px; padding: 8px 10px; min-width: 190px; z-index: 9999; pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,0.7); font-size: 10px; }
+  .ftooltip-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
+  .ftooltip-id { font-family: var(--font-mono); font-size: 11px; color: var(--text); }
+  .ftooltip-status { font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; padding: 1px 5px; border-radius: 2px; }
+  .fonline  .ftooltip-status { color: #3ddc5e; background: #1a5c2a; }
+  .fstale   .ftooltip-status { color: #e0a020; background: #4a3408; }
+  .foffline .ftooltip-status { color: #e03a3a; background: #5c1a1a; }
+  .fnever   .ftooltip-status { color: var(--muted); background: #1a1a1a; }
+  .ftooltip-row { display: flex; justify-content: space-between; gap: 10px; margin-top: 3px; font-size: 9px; }
+  .ftooltip-key { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
+  .ftooltip-val { font-family: var(--font-mono); color: var(--text); text-align: right; }
+  .ftooltip-ts { font-family: var(--font-mono); font-size: 8px; color: var(--text-dim); margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); word-break: break-all; }
 </style>
 </head>
 <body>
 <div class="layout">
   <header>
     <div class="logo-block">
-      <div class="logo-eyebrow">ESP32 Mesh Installation <a href="/fleet">◉ Fleet Monitor →</a></div>
+      <div class="logo-eyebrow">ESP32 Mesh Installation</div>
       <h1>Echoes of the <span>Machine</span></h1>
     </div>
     <div class="header-meta">
@@ -716,6 +761,31 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <span id="param-count">0</span> parameters
     </div>
   </header>
+
+  <!-- ── Flock Grid ── -->
+  <div class="flock-section">
+    <div class="flock-header">
+      <div class="flock-title">Flock Monitor — 50 Devices</div>
+      <div class="flock-stats">
+        <div class="fstat"><span class="fstat-val green" id="fs-online">—</span></div>
+        <div class="fstat"><span class="fstat-val amber" id="fs-stale">—</span></div>
+        <div class="fstat"><span class="fstat-val red" id="fs-offline">—</span></div>
+        <div class="fstat"><span class="fstat-val grey" id="fs-never">—</span></div>
+      </div>
+      <div class="flock-legend">
+        <span class="fleg"><span class="fleg-dot green"></span>Online</span>
+        <span class="fleg"><span class="fleg-dot amber"></span>Stale</span>
+        <span class="fleg"><span class="fleg-dot red"></span>Offline</span>
+        <span class="fleg"><span class="fleg-dot grey"></span>Never</span>
+      </div>
+    </div>
+    <div class="flock-body">
+      <div class="flock-poll"><div class="flock-poll-dot"></div><span id="flock-poll-label">Live · refreshing every 15 s · STALE &gt;90 s · OFFLINE &gt;180 s</span></div>
+      <div class="fnode-grid" id="flockGrid"></div>
+    </div>
+  </div>
+
+  <div id="quiet-hours-banner" style="display:none;margin-bottom:24px;padding:12px 18px;border-radius:4px;border:1px solid var(--muted);font-family:var(--font-mono);font-size:12px;"></div>
 
   <div class="controls-bar">
     <input class="filter-input" type="text" id="filter-input" placeholder="Filter parameters…">
@@ -729,7 +799,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <span id="restart-status"></span>
   </div>
 
-  <div id="quiet-hours-banner" style="display:none;margin-bottom:24px;padding:12px 18px;border-radius:4px;border:1px solid var(--muted);font-family:var(--font-mono);font-size:12px;"></div>
   <div id="param-sections"></div>
 </div>
 
@@ -886,221 +955,113 @@ function resetRestartBtn() {
   btn.innerHTML="⟳ Restart all nodes"; btn.onclick=requestRestart; btn.disabled=false; st.textContent="";
 }
 
+// ── Flock Grid ────────────────────────────────────────────────────────────
+const FLOCK_COUNT  = 50;
+const FLOCK_STALE  = 90_000;
+const FLOCK_OFFLINE= 180_000;
+
+function flockFakeMac(i) {
+  const b = [0xAC,0x67,0xB2,(i>>4)&0xFF,i&0xFF,(i*13+7)&0xFF];
+  return b.map(x=>x.toString(16).toUpperCase().padStart(2,'0')).join(':');
+}
+let flockNodes = Array.from({length:FLOCK_COUNT},(_,i)=>{
+  const id=i+1, roll=Math.random();
+  let offsetMs;
+  if (id===7||id===23||id===38) { offsetMs=null; }
+  else if (roll<0.72) { offsetMs=Math.random()*58000; }
+  else if (roll<0.87) { offsetMs=90000+Math.random()*60000; }
+  else { offsetMs=200000+Math.random()*120000; }
+  return { id, mac:flockFakeMac(i), node_type:i%7===0?'echoes-minimal':'echoes-full', firmware:'5.2.0',
+           last_seen_ms:offsetMs!==null?Date.now()-offsetMs:null };
+});
+
+function flockClassify(n) {
+  if (n.last_seen_ms===null) return 'fnever';
+  const age=Date.now()-n.last_seen_ms;
+  if (age<FLOCK_STALE) return 'fonline';
+  if (age<FLOCK_OFFLINE) return 'fstale';
+  return 'foffline';
+}
+function flockAgeStr(n) {
+  if (n.last_seen_ms===null) return '—';
+  const s=Math.floor((Date.now()-n.last_seen_ms)/1000);
+  if (s<60) return `${s}s ago`;
+  if (s<3600) return `${Math.floor(s/60)}m ${s%60}s ago`;
+  return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m ago`;
+}
+function flockFmtDate(ms) {
+  if (ms===null) return 'No data received';
+  const d=new Date(ms), p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function flockStatusLabel(cls) {
+  return {fonline:'ONLINE',fstale:'STALE',foffline:'OFFLINE',fnever:'NEVER'}[cls];
+}
+
+// Shared tooltip element
+const fTip = document.createElement('div');
+fTip.className = 'ftooltip';
+document.body.appendChild(fTip);
+
+function buildFlockGrid() {
+  const g=document.getElementById('flockGrid');
+  g.innerHTML='';
+  let online=0,stale=0,offline=0,never=0;
+  flockNodes.forEach(n=>{
+    const cls=flockClassify(n);
+    if (cls==='fonline') online++;
+    else if (cls==='fstale') stale++;
+    else if (cls==='foffline') offline++;
+    else never++;
+    const div=document.createElement('div');
+    div.className=`fnode ${cls}`;
+    div.innerHTML=``;
+    div.addEventListener('mouseenter', e=>{
+      fTip.className=`ftooltip ${cls}`;
+      fTip.innerHTML=`<div class="ftooltip-hdr"><span class="ftooltip-id">NODE-${String(n.id).padStart(2,'0')}</span><span class="ftooltip-status">${flockStatusLabel(cls)}</span></div>
+        <div class="ftooltip-row"><span class="ftooltip-key">MAC</span><span class="ftooltip-val">${n.mac}</span></div>
+        <div class="ftooltip-row"><span class="ftooltip-key">Type</span><span class="ftooltip-val">${n.node_type}</span></div>
+        <div class="ftooltip-row"><span class="ftooltip-key">FW</span><span class="ftooltip-val">${n.firmware}</span></div>
+        <div class="ftooltip-row"><span class="ftooltip-key">Age</span><span class="ftooltip-val">${flockAgeStr(n)}</span></div>
+        <div class="ftooltip-ts">⏱ ${flockFmtDate(n.last_seen_ms)}</div>`;
+      fTip.style.display='block';
+      positionFlockTip(e);
+    });
+    div.addEventListener('mousemove', positionFlockTip);
+    div.addEventListener('mouseleave', ()=>{ fTip.style.display='none'; });
+    g.appendChild(div);
+  });
+  document.getElementById('fs-online').textContent=online;
+  document.getElementById('fs-stale').textContent=stale;
+  document.getElementById('fs-offline').textContent=offline;
+  document.getElementById('fs-never').textContent=never;
+}
+
+function positionFlockTip(e) {
+  const tw=fTip.offsetWidth||200, th=fTip.offsetHeight||120;
+  const margin=10;
+  let x=e.clientX+14, y=e.clientY-th-10;
+  if (x+tw+margin>window.innerWidth)  x=e.clientX-tw-14;
+  if (y<margin) y=e.clientY+14;
+  if (y+th+margin>window.innerHeight) y=window.innerHeight-th-margin;
+  fTip.style.left=x+'px'; fTip.style.top=y+'px';
+}
+
+function flockSimulate() {
+  flockNodes.forEach(n=>{
+    if (n.last_seen_ms===null) return;
+    const age=Date.now()-n.last_seen_ms;
+    if (age>55000&&age<90000&&Math.random()<0.05) n.last_seen_ms=Date.now()-Math.random()*5000;
+    if (age>=90000&&Math.random()<0.015) n.last_seen_ms=Date.now()-Math.random()*20000;
+  });
+}
+
+buildFlockGrid();
+setInterval(()=>{ flockSimulate(); buildFlockGrid(); }, 15000);
+// Production: replace simulation with fetch('/flock/nodes') and call buildFlockGrid()
+
 loadConfig();
 setInterval(updateQuietHoursBanner, 60000);
-</script>
-</body>
-</html>"""
-
-# ---------------------------------------------------------------------------
-# Web UI — Fleet dashboard
-# ---------------------------------------------------------------------------
-
-FLEET_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Echoes — Fleet Monitor</title>
-<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700&display=swap" rel="stylesheet">
-<style>
-  :root {
-    --bg:       #0b0d0c;  --surface: #111413;  --border: #1c201c;
-    --green:    #3ddc5e;  --green-bg: #0d2e18;
-    --amber:    #e0a020;  --amber-bg: #2e1e04;
-    --red:      #e03a3a;  --red-bg:   #2e0d0d;
-    --grey:     #2e3530;  --text: #c4d0c4;  --muted: #46564a;  --label: #7a9a7e;
-    --mono: 'Share Tech Mono', monospace;
-    --sans: 'Barlow Condensed', sans-serif;
-  }
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh; padding: 20px 24px 28px; background-image: radial-gradient(ellipse 70% 35% at 50% 0%, rgba(61,220,94,0.035) 0%, transparent 60%); }
-  nav { font-family: var(--mono); font-size: 10px; letter-spacing: 0.18em; color: var(--muted); margin-bottom: 20px; display: flex; gap: 20px; }
-  nav a { color: var(--muted); text-decoration: none; transition: color 0.15s; }
-  nav a:hover { color: var(--green); }
-  nav a.active { color: var(--green); }
-  header { display: flex; align-items: flex-end; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 20px; gap: 16px; flex-wrap: wrap; }
-  .brand-title { font-size: 22px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #deeade; line-height: 1; }
-  .brand-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 5px; }
-  .stats { display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap; }
-  .stat { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
-  .stat-value { font-family: var(--mono); font-size: 24px; line-height: 1; }
-  .stat-label { font-size: 9px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); }
-  .sv-green{color:var(--green)} .sv-amber{color:var(--amber)} .sv-red{color:var(--red)} .sv-grey{color:var(--muted)}
-  .ticker { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 10px; color: var(--label); margin-bottom: 14px; }
-  .ticker-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: blink 2s ease-in-out infinite; }
-  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
-  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 3px; padding: 16px; }
-  .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
-  .panel-title { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); }
-  .legend { display: flex; gap: 14px; font-family: var(--mono); font-size: 9px; color: var(--muted); }
-  .legend-item { display: flex; align-items: center; gap: 4px; }
-  .ld { width: 7px; height: 7px; border-radius: 50%; }
-  .ld-g{background:var(--green)} .ld-a{background:var(--amber)} .ld-r{background:var(--red)} .ld-x{background:var(--muted)}
-  .node-grid { display: flex; flex-direction: column; gap: 6px; }
-  .node-row { display: flex; gap: 6px; }
-  .nd { position: relative; width: 18px; height: 18px; border-radius: 50%; cursor: default; transition: transform 0.12s ease; flex-shrink: 0; }
-  .nd:hover { transform: scale(1.5); z-index: 20; }
-  .nd.online  { background: var(--green); animation: pulse-g 2.8s ease-in-out infinite; }
-  .nd.stale   { background: var(--amber); animation: pulse-a 2s ease-in-out infinite; }
-  .nd.offline { background: var(--red);   animation: pulse-r 1.5s ease-in-out infinite; }
-  .nd.never   { background: var(--grey);  border: 1px solid var(--border); }
-  @keyframes pulse-g { 0%,100%{box-shadow:0 0 4px rgba(61,220,94,.4)} 50%{box-shadow:0 0 10px rgba(61,220,94,.8)} }
-  @keyframes pulse-a { 0%,100%{box-shadow:0 0 4px rgba(224,160,32,.3)} 50%{box-shadow:0 0 9px rgba(224,160,32,.7)} }
-  @keyframes pulse-r { 0%,100%{box-shadow:0 0 4px rgba(224,58,58,.3);opacity:1} 50%{box-shadow:0 0 10px rgba(224,58,58,.7);opacity:.7} }
-
-  /* Tooltip */
-  .tt { display: none; position: absolute; left: 50%; bottom: calc(100% + 9px); transform: translateX(-50%); background: #080b09; border: 1px solid var(--border); border-radius: 3px; padding: 9px 11px; width: 230px; z-index: 100; pointer-events: none; box-shadow: 0 6px 20px rgba(0,0,0,.7); font-family: var(--mono); }
-  .nd:hover .tt { display: block; }
-  .tt-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 7px; margin-bottom: 7px; border-bottom: 1px solid var(--border); }
-  .tt-id { font-size: 12px; color: #e8f0e8; }
-  .tt-badge { font-size: 8px; letter-spacing: .14em; text-transform: uppercase; padding: 1px 5px; border-radius: 2px; }
-  .online  .tt-badge { color: var(--green); background: var(--green-bg); }
-  .stale   .tt-badge { color: var(--amber); background: var(--amber-bg); }
-  .offline .tt-badge { color: var(--red);   background: var(--red-bg); }
-  .never   .tt-badge { color: var(--muted); background: #1a1e1a; }
-  .tt-row { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; font-size: 10px; }
-  .tt-key { color: var(--muted); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
-  .tt-val { color: var(--text); text-align: right; word-break: break-all; }
-  .tt-ts { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); font-size: 9px; color: var(--label); line-height: 1.5; }
-
-  footer { margin-top: 16px; display: flex; justify-content: space-between; font-family: var(--mono); font-size: 9px; color: var(--muted); flex-wrap: wrap; gap: 6px; }
-  #clock { color: var(--label); }
-</style>
-</head>
-<body>
-<nav>
-  <a href="/">⚙ Config</a>
-  <a href="/fleet" class="active">◉ Fleet</a>
-</nav>
-<header>
-  <div>
-    <div class="brand-title">Fleet Monitor</div>
-    <div class="brand-sub">Echoes of the Machine · port 8002 · poll 60 s</div>
-  </div>
-  <div class="stats">
-    <div class="stat"><span class="stat-value sv-green" id="s-online">—</span><span class="stat-label">Online</span></div>
-    <div class="stat"><span class="stat-value sv-amber" id="s-stale">—</span><span class="stat-label">Stale</span></div>
-    <div class="stat"><span class="stat-value sv-red"   id="s-offline">—</span><span class="stat-label">Offline</span></div>
-    <div class="stat"><span class="stat-value sv-grey"  id="s-never">—</span><span class="stat-label">Unseen</span></div>
-  </div>
-</header>
-<div class="ticker"><div class="ticker-dot"></div><span id="ticker-text">Connecting…</span></div>
-<div class="panel">
-  <div class="panel-header">
-    <span class="panel-title" id="panel-title">Node grid</span>
-    <div class="legend">
-      <div class="legend-item"><div class="ld ld-g"></div>Online &lt;90s</div>
-      <div class="legend-item"><div class="ld ld-a"></div>Stale &lt;180s</div>
-      <div class="legend-item"><div class="ld ld-r"></div>Offline</div>
-      <div class="legend-item"><div class="ld ld-x"></div>Never seen</div>
-    </div>
-  </div>
-  <div class="node-grid" id="grid"></div>
-</div>
-<footer>
-  <span>Echoes of the Machine · consolidated server :8002 · OTA + startup + config + fleet</span>
-  <span id="clock"></span>
-</footer>
-
-<script>
-const STALE_S = 90, OFFLINE_S = 180, FLEET_SIZE = 50, REFRESH_MS = 15000;
-
-function classify(n) {
-  if (!n?.last_seen_ts) return 'never';
-  const age = Date.now()/1000 - n.last_seen_ts;
-  return age < STALE_S ? 'online' : age < OFFLINE_S ? 'stale' : 'offline';
-}
-const STATUS_LABEL = {online:'ONLINE', stale:'STALE', offline:'OFFLINE', never:'NO DATA'};
-
-function ageStr(n) {
-  if (!n?.last_seen_ts) return '—';
-  const s = Math.floor(Date.now()/1000 - n.last_seen_ts);
-  return s < 60 ? s+'s ago' : s < 3600 ? Math.floor(s/60)+'m '+(s%60)+'s ago' : Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m ago';
-}
-function fmtTs(iso) {
-  if (!iso) return 'never';
-  const d = new Date(iso.replace(' ','T')), p = n => String(n).padStart(2,'0');
-  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'  '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
-}
-
-function render(nodes) {
-  const grid = document.getElementById('grid');
-  grid.innerHTML = '';
-  const ord = {offline:0, stale:1, online:2, never:3};
-  nodes.sort((a,b) => ord[classify(a)] - ord[classify(b)]);
-  const slots = [...nodes];
-  while (slots.length < FLEET_SIZE) slots.push(null);
-
-  let counts = {online:0, stale:0, offline:0, never:0};
-  const ROW_SIZES = [12, 12, 13, 13];
-  let idx = 0;
-
-  ROW_SIZES.forEach(rowCount => {
-    const row = document.createElement('div');
-    row.className = 'node-row';
-    for (let i = 0; i < rowCount; i++) {
-      const n = slots[idx++] || null;
-      const cls = classify(n);
-      counts[cls]++;
-      const dot = document.createElement('div');
-      dot.className = 'nd ' + cls;
-
-      // All fields now available thanks to consolidated server
-      const mac   = n?.mac        ?? '—';
-      const type  = n?.node_type  ?? '—';
-      const fw    = n?.firmware   ?? '—';
-      const ip    = n?.ip         ?? '—';
-      const polls = n?.poll_count ?? 0;
-      const boots = n?.boot_count ?? 0;
-      const first = fmtTs(n?.first_seen);
-      const last  = fmtTs(n?.last_seen);
-
-      dot.innerHTML = `
-        <div class="tt">
-          <div class="tt-head">
-            <span class="tt-id">${mac}</span>
-            <span class="tt-badge">${STATUS_LABEL[cls]}</span>
-          </div>
-          <div class="tt-row"><span class="tt-key">Type</span><span class="tt-val">${type}</span></div>
-          <div class="tt-row"><span class="tt-key">Firmware</span><span class="tt-val">${fw}</span></div>
-          <div class="tt-row"><span class="tt-key">IP</span><span class="tt-val">${ip}</span></div>
-          <div class="tt-row"><span class="tt-key">Age</span><span class="tt-val">${ageStr(n)}</span></div>
-          <div class="tt-row"><span class="tt-key">Polls / Boots</span><span class="tt-val">${polls} / ${boots}</span></div>
-          <div class="tt-ts">First seen<br>${first}<br><br>Last poll<br>${last}</div>
-        </div>`;
-      row.appendChild(dot);
-    }
-    grid.appendChild(row);
-  });
-
-  document.getElementById('s-online').textContent  = counts.online;
-  document.getElementById('s-stale').textContent   = counts.stale;
-  document.getElementById('s-offline').textContent = counts.offline;
-  document.getElementById('s-never').textContent   = counts.never;
-  document.getElementById('panel-title').textContent =
-    `Node grid — ${nodes.length} registered / ${FLEET_SIZE} expected`;
-}
-
-async function poll() {
-  try {
-    const nodes = await (await fetch('/nodes')).json();
-    render(nodes);
-    document.getElementById('ticker-text').textContent =
-      `Live · ${nodes.length} nodes registered · refreshing every ${REFRESH_MS/1000}s`;
-  } catch(e) {
-    document.getElementById('ticker-text').textContent = 'Server unreachable — retrying…';
-  }
-}
-
-function updateClock() {
-  const d=new Date(), p=n=>String(n).padStart(2,'0');
-  document.getElementById('clock').textContent =
-    d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'  '+
-    p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds())+' LOCAL';
-}
-
-poll(); setInterval(poll, REFRESH_MS); setInterval(updateClock, 1000); updateClock();
 </script>
 </body>
 </html>"""
@@ -1113,9 +1074,6 @@ poll(); setInterval(poll, REFRESH_MS); setInterval(updateClock, 1000); updateClo
 def web_ui():
     return render_template_string(HTML_TEMPLATE)
 
-@app.route("/fleet")
-def fleet_dashboard():
-    return render_template_string(FLEET_TEMPLATE)
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -1133,8 +1091,7 @@ if __name__ == "__main__":
     log.info("  GET  /firmware/<file>   OTA binary + version")
     log.info("  POST /startup           node boot reports")
     log.info("  GET  /config            60-second device poll")
-    log.info("  GET  /nodes             fleet registry JSON")
-    log.info("  GET  /                  config web UI")
-    log.info("  GET  /fleet             fleet dashboard")
+    log.info("  GET  /nodes             flock registry JSON")
+    log.info("  GET  /                  config + flock web UI")
     log.info("=" * 60)
     app.run(host="0.0.0.0", port=8002, debug=False, threaded=True)
