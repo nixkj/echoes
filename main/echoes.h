@@ -113,6 +113,13 @@
 #define FLOCK_CALL_GAP_MS       200     // inter-call silence during flock mode
 #define FLOCK_QUELEA_PERCENT    60      // % of flock calls that play Quelea (rest = random)
 
+/* Task Watchdog Timer
+ * If audio_detection_task fails to return from i2s_channel_read() within this
+ * window (e.g. microphone peripheral stalled) the TWDT triggers a panic and
+ * the device reboots.  2 minutes is long enough to survive any legitimate
+ * burst of activity but short enough to recover from a hard peripheral hang. */
+#define WDT_TIMEOUT_S           120     // 2-minute task watchdog timeout
+
 /* Light sensor polling
  * LUX_POLL_INTERVAL_MS  : how often the sensor is read.  100 ms is the
  *   practical floor for the BH1750 (120 ms typ measurement time); safe for

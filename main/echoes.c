@@ -23,6 +23,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_task_wdt.h"
 
 static const char *TAG = "ECHOES";
 
@@ -656,6 +657,16 @@ void audio_detection_task(void *param) {
         ESP_LOGI(TAG, "🎤 LED VU meter mode active (digital stepped output)");
     }
     
+    /* Subscribe this task to the 2-minute task watchdog.  The watchdog is
+     * fed each time i2s_channel_read() returns (see loop below).  If the
+     * microphone peripheral stalls and the read never returns, the TWDT
+     * fires after WDT_TIMEOUT_S seconds and reboots the device.          */
+    esp_err_t wdt_err = esp_task_wdt_add(NULL);
+    if (wdt_err != ESP_OK) {
+        ESP_LOGW(TAG, "Could not subscribe audio task to watchdog: %s",
+                 esp_err_to_name(wdt_err));
+    }
+
     while (1) {
         size_t bytes_read = 0;
         esp_err_t ret = i2s_channel_read(
@@ -665,6 +676,7 @@ void audio_detection_task(void *param) {
             &bytes_read,
             portMAX_DELAY
         );
+        esp_task_wdt_reset();  /* fed: i2s_channel_read returned, task is alive */
 
         if (ret != ESP_OK || bytes_read == 0) {
             ESP_LOGE(TAG, "I2S read error: %s", esp_err_to_name(ret));
