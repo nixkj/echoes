@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# install.sh — Deploy the consolidated Echoes server (echoes-server)
+# install.sh — Install the Echoes server (echoes-server) as a systemd service
 #
-# Replaces three separate services:
-#   echoes-firmware       (was port 8000)
-#   echoes-startup-server (was port 8001)
-#   echoes-config         (was port 8002)
+# Installs echoes-server on port 8002. Removes legacy service units
+# (echoes-firmware, echoes-startup-server, echoes-config) if present.
 #
 # May be run from any directory:  sudo bash /path/to/scripts/server/install.sh
 set -e
@@ -21,7 +19,7 @@ RUN_USER="echoes"
 RUN_GROUP="echoes"
 OLD_SERVICES="echoes-config echoes-startup-server echoes-firmware"
 
-echo "=== Echoes of the Machine — Consolidated Server Installer ==="
+echo "=== Echoes of the Machine — Server Installer ==="
 echo "Install dir : $INSTALL_DIR"
 echo "Run as user : $RUN_USER (group: $RUN_GROUP)"
 echo "Log dir     : $LOG_DIR"
@@ -50,7 +48,7 @@ else
     echo "✓ User '$RUN_USER' already exists"
 fi
 
-# ── 3. Stop and disable the old three services ───────────────────────────
+# ── 3. Remove legacy service units (if present from a previous install) ──
 for svc in $OLD_SERVICES; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
         echo "Stopping  $svc"

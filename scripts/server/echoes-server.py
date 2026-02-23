@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-Echoes of the Machine — Consolidated Server  (port 8002)
+Echoes of the Machine — Server  (port 8002)
 
-Replaces three separate processes:
+Single process serving all node endpoints:
 
-  firmware_server.py   was :8000   GET  /firmware/version.txt
-                                   GET  /firmware/echoes.bin
-  startup_server.py    was :8001   POST /startup
-  server.py            was :8002   GET/POST /config  (and web UI)
+  GET  /firmware/version.txt   OTA version check
+  GET  /firmware/echoes.bin    OTA binary download
+  POST /startup                Node boot report (identity + error state)
+  GET  /config                 Remote config JSON (60-second heartbeat)
+  POST /config                 Config write from dashboard
+  GET  /nodes                  Fleet registry JSON (dashboard)
+  GET  /                       Fleet dashboard web UI
 
-Everything now runs on port 8002.  The node registry is populated by
-startup POSTs (node_type, firmware, ip) and kept alive by 60-second
-config polls (last_seen, poll_count).  The fleet dashboard therefore
-shows the full picture for the first time.
+The node registry is populated by startup POSTs (node_type, firmware, ip)
+and kept alive by 60-second config polls (last_seen, poll_count), giving
+the fleet dashboard a complete, live picture of all nodes.
 
-Firmware files live in ~/firmware/ — the same path that
-build.sh deploy has always written to, so no workflow change is needed.
+Firmware files are served from /opt/echoes/firmware — written there by
+build.sh deploy.
 """
 
 from flask import Flask, jsonify, request, render_template_string, send_from_directory
@@ -358,9 +360,8 @@ _restart_token     = 0
 #   POST /startup  — sets node_type, firmware, ip, increments boot_count
 #   GET  /config   — updates last_seen / poll_count (liveness heartbeat)
 #
-# Because consolidation means both calls hit the same process, the
-# dashboard now has the complete picture: identity from startup +
-# liveness from config polls.
+# Both update paths hit the same process, so the dashboard has the
+# complete picture: identity from startup + liveness from config polls.
 
 _nodes: dict = {}
 _nodes_lock  = threading.Lock()
@@ -476,7 +477,7 @@ def _node_poll(mac: str, ip: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# OTA firmware routes  (was firmware_server.py on :8000)
+# OTA firmware routes
 # ---------------------------------------------------------------------------
 
 @app.route("/firmware/<path:filename>")
@@ -501,39 +502,37 @@ def serve_firmware(filename):
                                mimetype="application/octet-stream" if is_bin else "text/plain")
 
 # ---------------------------------------------------------------------------
-# Startup report route  (was startup_server.py on :8001)
+# Startup report route
 # ---------------------------------------------------------------------------
 
 @app.route("/startup", methods=["POST"])
 def startup_report():
     """Receive boot report from a node.  Populates node_type, firmware, IP."""
-    data       = request.get_json(force=True, silent=True) or {}
-    mac        = data.get("mac",           "").strip().upper()
-    node_type  = data.get("node_type",     "unknown")
-    firmware   = data.get("firmware",      "unknown")
-    has_errors = data.get("has_errors",    False)
-    error_msg  = data.get("error_message", "")
-    ip         = request.remote_addr or "unknown"
+    log.info("POST /startup received")
+    try:
+        data       = request.get_json(force=True, silent=True) or {}
+        mac        = data.get("mac",           "").strip().upper()
+        node_type  = data.get("node_type",     "unknown")
+        firmware   = data.get("firmware",      "unknown")
+        has_errors = data.get("has_errors",    False)
+        error_msg  = data.get("error_message", "")
+        ip         = request.remote_addr or "unknown"
 
-    if has_errors and error_msg:
-        log.warning(f"STARTUP  {mac}  type={node_type}  fw={firmware}  ip={ip}  ERROR: {error_msg}")
-    
-    if mac:
-        _node_startup(mac, node_type, firmware, ip)
+        if has_errors and error_msg:
+            log.warning(f"STARTUP  {mac}  type={node_type}  fw={firmware}  ip={ip}  ERROR: {error_msg}")
 
-    # Write a dedicated startup-report line (mirrors the format from the old
-    # standalone startup_server.py that operators rely on for fleet tracking).
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if has_errors and error_msg:
+        if mac:
+            _node_startup(mac, node_type, firmware, ip)
+
+        # Write a line to the dedicated startup report log.
+        timestamp  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        errors_str = error_msg if (has_errors and error_msg) else ("unknown error" if has_errors else "no errors")
         startup_log.info(
-            f"[{timestamp}] Startup Report | MAC: {mac} | Type: {node_type} | "
-            f"Firmware: {firmware} | IP: {ip} | Errors: YES | Error: {error_msg}"
+            f"[{timestamp}] echoes startup: {mac} {node_type} {firmware} {ip} {errors_str}"
         )
-    else:
-        startup_log.info(
-            f"[{timestamp}] Startup Report | MAC: {mac} | Type: {node_type} | "
-            f"Firmware: {firmware} | IP: {ip} | Errors: NO"
-        )
+
+    except Exception as e:
+        log.exception(f"Exception in /startup endpoint: {e}")
 
     # Content-Length is mandatory — ESP-IDF returns ESP_ERR_HTTP_INCOMPLETE_DATA
     # when it is absent (chunked encoding, which BaseHTTPRequestHandler defaults to).
