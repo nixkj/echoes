@@ -219,6 +219,15 @@ void app_main(void)
             }
         }
 
+        /* Initialise ESP-NOW before resuming tasks.
+         *
+         * flock_task attempts a broadcast within milliseconds of being
+         * resumed.  If espnow_mesh_init() has not been called yet the
+         * send fails with "esp now not init!" and the first light/sound
+         * event is lost.  Initialising here guarantees the stack is ready
+         * before any task can call it.                                    */
+        espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
+
         /* Resume application tasks now that OTA is resolved */
         if (h_audio)  vTaskResume(h_audio);
         if (h_lux)    vTaskResume(h_lux);
@@ -282,6 +291,12 @@ void app_main(void)
      * IS connected the tasks were already created and resumed above).      */
     if (!wifi_connected) {
         ESP_LOGI(TAG, "Starting Echoes of the Machine (no-WiFi path)...");
+
+        /* Initialise ESP-NOW before creating tasks for the same reason as
+         * the WiFi path above — flock_task will attempt a broadcast
+         * immediately on first run.                                        */
+        espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
+
         /* Stack: see WiFi path above for sizing rationale. */
         xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, NULL);
 

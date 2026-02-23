@@ -65,6 +65,9 @@ static float               s_local_lux       = -1.0f;
 /* Timestamp of last sound broadcast */
 static uint32_t s_last_sound_broadcast_ms = 0;
 
+/* Guard against double-initialisation */
+static bool s_initialized = false;
+
 /* ========================================================================
  * INTERNAL HELPERS
  * ======================================================================== */
@@ -221,6 +224,16 @@ static void espnow_rx_task(void *param)
 
 bool espnow_mesh_init(bird_call_mapper_t *mapper, markov_chain_t *mc)
 {
+    if (s_initialized) {
+        /* Called a second time (e.g. scheduling race during boot).
+         * Just update the module references and return — the radio stack
+         * is already up and the broadcast peer is already registered.   */
+        ESP_LOGW(TAG, "Already initialised — updating references only");
+        s_mapper = mapper;
+        s_markov = mc;
+        return true;
+    }
+
     s_markov = mc;
     s_mapper = mapper;
 
@@ -254,8 +267,13 @@ bool espnow_mesh_init(bird_call_mapper_t *mapper, markov_chain_t *mc)
     peer.ifidx    = ESP_IF_WIFI_STA;
 
     err = esp_now_add_peer(&peer);
+    if (err == ESP_ERR_ESPNOW_EXIST) {
+        /* Peer was registered in a previous (partial) init — update it. */
+        ESP_LOGW(TAG, "Broadcast peer already exists — calling esp_now_mod_peer()");
+        err = esp_now_mod_peer(&peer);
+    }
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_now_add_peer failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to configure broadcast peer: %s", esp_err_to_name(err));
         esp_now_deinit();
         return false;
     }
@@ -269,6 +287,8 @@ bool espnow_mesh_init(bird_call_mapper_t *mapper, markov_chain_t *mc)
     }
 
     ESP_LOGI(TAG, "ESP-NOW mesh initialised (broadcast-only)");
+
+    s_initialized = true;
 
     /* Seed local lux now so blend_lux() has a valid reference immediately,
      * even if the lux broadcast task hasn't fired yet.  A negative result
