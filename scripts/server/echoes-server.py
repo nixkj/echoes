@@ -1084,38 +1084,6 @@ async function fetchFlockNodes() {
 fetchFlockNodes();
 setInterval(fetchFlockNodes, 15000);
 
-loadConfig(); showToast("All parameters reset to defaults","info"); updateDirtyCount(); }
-}
-function expandAll() { document.getElementById("filter-input").value=""; renderAll(); }
-function showToast(msg,type="info") {
-  const t=document.getElementById("toast"); t.textContent=msg; t.className="show "+type;
-  clearTimeout(t._t); t._t=setTimeout(()=>t.className="",3500);
-}
-document.getElementById("filter-input").addEventListener("input",renderAll);
-document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="s"){e.preventDefault();saveAll();}});
-
-async function requestRestart() {
-  const btn=document.getElementById("restart-btn"), st=document.getElementById("restart-status");
-  if (!confirm("Queue a restart for ALL nodes?\n\nEach node reboots at its next config poll (within 60 s).\nYou can cancel until the first node polls.")) return;
-  btn.disabled=true; btn.textContent="Queuing…";
-  try {
-    const d=await(await fetch("/restart",{method:"POST"})).json();
-    if (d.status==="restart_pending") {
-      showToast("Restart queued — nodes reboot within 90 s","success"); st.textContent="⏳ restart pending";
-      btn.textContent="✕ Cancel restart"; btn.onclick=cancelRestart; btn.disabled=false;
-    } else { showToast("Unexpected response","error"); resetRestartBtn(); }
-  } catch(e) { showToast("Network error: "+e.message,"error"); resetRestartBtn(); }
-}
-async function cancelRestart() {
-  const st=document.getElementById("restart-status");
-  try { const d=await(await fetch("/restart/cancel",{method:"POST"})).json(); showToast(d.was_pending?"Restart cancelled":"No restart was pending","info"); } catch(e) { showToast("Cancel failed","error"); }
-  resetRestartBtn();
-}
-function resetRestartBtn() {
-  const btn=document.getElementById("restart-btn"), st=document.getElementById("restart-status");
-  btn.innerHTML="⟳ Restart all nodes"; btn.onclick=requestRestart; btn.disabled=false; st.textContent="";
-}
-
 
 loadConfig();
 setInterval(updateQuietHoursBanner, 60000);
