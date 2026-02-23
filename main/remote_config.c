@@ -19,26 +19,9 @@
 
 #include "esp_system.h"
 #include "esp_attr.h"
-#include "esp_mac.h"
+#include "startup.h"
 #include <string.h>
 #include <stdlib.h>
-#include <stdio.h>
-
-/* =========================================================================
- * INTERNAL HELPERS
- * ========================================================================= */
-
-/**
- * @brief Format the WiFi STA MAC address into buf as "AA:BB:CC:DD:EE:FF".
- *        buf must be at least 18 bytes.
- */
-static void format_mac(char *buf, size_t buf_len)
-{
-    uint8_t mac[6] = {0};
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    snprintf(buf, buf_len, "%02X:%02X:%02X:%02X:%02X:%02X",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-}
 
 /* =========================================================================
  * RTC SLOW MEMORY
@@ -351,12 +334,11 @@ esp_err_t remote_config_fetch(void)
         return ESP_FAIL;
     }
 
-    /* Identify this node to the config server so it can populate the fleet
-     * dashboard.  The server reads X-Device-MAC from every GET /config
-     * request and records it in its in-memory node registry.              */
-    char mac_str[18];
-    format_mac(mac_str, sizeof(mac_str));
-    esp_http_client_set_header(client, "X-Device-MAC", mac_str);
+    /* Send MAC address so the server can update node liveness on every poll */
+    char mac_str[18] = {0};
+    if (startup_get_mac_address(mac_str) == ESP_OK) {
+        esp_http_client_set_header(client, "X-Device-MAC", mac_str);
+    }
 
     esp_err_t err = esp_http_client_perform(client);
     int status    = esp_http_client_get_status_code(client);
