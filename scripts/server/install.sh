@@ -69,12 +69,15 @@ chown "$RUN_USER":"$RUN_GROUP" "$INSTALL_DIR" "$LOG_DIR"
 
 # Firmware directory — build.sh deploy writes here, server reads from here.
 # Placed under INSTALL_DIR so it is covered by the service's ReadWritePaths.
-# To allow your deploy user to write here: sudo usermod -aG echoes <deploy-user>
-# then: sudo chmod g+w /opt/echoes/firmware
+# g+ws: group-write lets any member of the 'echoes' group deploy firmware;
+#       the setgid bit ensures new files inherit the 'echoes' group automatically.
+# To grant a deploy user access:  sudo usermod -aG echoes <username>
+# (log out and back in, or run: newgrp echoes)
 FIRMWARE_DIR="$INSTALL_DIR/firmware"
 mkdir -p "$FIRMWARE_DIR"
 chown -R "$RUN_USER":"$RUN_GROUP" "$FIRMWARE_DIR"
-echo "Firmware dir: $FIRMWARE_DIR"
+chmod g+ws "$FIRMWARE_DIR"
+echo "Firmware dir: $FIRMWARE_DIR  (writable by group '$RUN_GROUP')"
 
 # ── 5. Install server script ─────────────────────────────────────────────
 cp "$SCRIPT_DIR/echoes-server.py" "$INSTALL_DIR/echoes-server.py"

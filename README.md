@@ -130,11 +130,10 @@ The installer will:
 - Set up log files at `/var/log/echoes/`
 - Install and start the `echoes-server` systemd service
 
-**Firmware deploy permissions** — the firmware directory is owned by the `echoes` system user. Your build machine user must be in the `echoes` group to deploy via `build.sh deploy`:
+**Firmware deploy permissions** — the firmware directory is owned by the `echoes` system user and made group-writable by the installer automatically. Your build machine user just needs to be in the `echoes` group:
 
 ```bash
 sudo usermod -aG echoes $USER
-sudo chmod g+w /opt/echoes/firmware
 # Log out and back in (or run: newgrp echoes)
 ```
 

@@ -13,11 +13,11 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-# Firmware is now served from /opt/echoes/firmware (owned by
-# the 'echoes' system user).  Your build user must be in the 'echoes' group
-# with group-write on that directory:
+# Firmware is now served from /opt/echoes/firmware (owned by the 'echoes'
+# system user, group-writable for members of the 'echoes' group).
+# The installer (scripts/server/install.sh) sets permissions automatically.
+# To grant your build user deploy access:
 #   sudo usermod -aG echoes $USER
-#   sudo chmod g+w /opt/echoes/firmware
 # Log out and back in (or run 'newgrp echoes') after usermod.
 FIRMWARE_DIR="/opt/echoes/firmware"
 PROJECT_DIR="$(pwd)"
@@ -167,10 +167,18 @@ deploy_ota() {
     local VERSION=$(get_current_version)
     print_info "Version: $VERSION"
     
-    # Create firmware directory if it doesn't exist
+    # Firmware directory must exist and be writable — created by install.sh
     if [ ! -d "$FIRMWARE_DIR" ]; then
-        print_info "Creating firmware directory..."
-        mkdir -p "$FIRMWARE_DIR"
+        print_error "Firmware directory not found: $FIRMWARE_DIR"
+        print_info "Run the server installer first: sudo bash scripts/server/install.sh"
+        return 1
+    fi
+    if [ ! -w "$FIRMWARE_DIR" ]; then
+        print_error "No write permission on $FIRMWARE_DIR"
+        print_info "Ensure your user is in the 'echoes' group:"
+        print_info "  sudo usermod -aG echoes \$USER"
+        print_info "Then log out and back in (or run: newgrp echoes)"
+        return 1
     fi
     
     # Copy binary
@@ -348,11 +356,9 @@ OTA Update Workflow:
   4. Power on ESP32 → It will auto-update
 
 Firmware directory: ${FIRMWARE_DIR}
-  The deploy step writes to this path (owned by the 'echoes' system user).
-  Your build user must be a member of the 'echoes' group with group-write
-  permission on that directory:
+  The deploy step writes to this path. The installer sets group-write
+  permissions automatically. To grant your build user deploy access:
     sudo usermod -aG echoes \$USER
-    sudo chmod g+w ${FIRMWARE_DIR}
   Log out and back in (or run 'newgrp echoes') after usermod.
 
 ESP32 Port Detection:
