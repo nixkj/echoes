@@ -202,7 +202,7 @@ All logs are written to `/var/log/echoes/`:
 ```bash
 ./build.sh version patch     # 6.2.1 → 6.2.2 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
-./build.sh deploy            # Copy binary + write version.txt to /opt/echoes/firmware/
+./build.sh deploy            # Copy binary + version.txt to /opt/echoes/firmware/; archive copy saved to firmware/archive/<version>/
 ```
 
 Or in one step:
@@ -219,6 +219,8 @@ idf.py build
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
 echo "6.2.2" > /opt/echoes/firmware/version.txt
 ```
+
+Each deploy also saves a copy of the binary to `/opt/echoes/firmware/archive/<version>/` alongside a `manifest.txt` recording the version, timestamp, deploying user, MD5, and file size. If the same version is deployed again the archive entry is suffixed with a datestamp rather than overwritten.
 
 Each device checks for updates once at boot. It compares the running version string against `version.txt`; if they differ it downloads and flashes the new binary, then restarts. The attempt retries up to 3 times with linear backoff (15 s, 30 s, 45 s).
 
@@ -237,7 +239,7 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 5.5.2 → 5.5.3) |
 | `./build.sh version minor` | Increment minor version (e.g. 5.5.2 → 5.6.0) |
 | `./build.sh version major` | Increment major version (e.g. 5.5.2 → 6.0.0) |
-| `./build.sh deploy` | Copy binary and write `version.txt` to `/opt/echoes/firmware/` |
+| `./build.sh deploy` | Copy binary and `version.txt` to `/opt/echoes/firmware/`; archive a versioned copy with manifest to `/opt/echoes/firmware/archive/<version>/` |
 | `./build.sh services` | Install the consolidated `echoes-server` as a systemd service (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
 | `./build.sh help` | Show usage summary |

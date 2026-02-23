@@ -199,6 +199,29 @@ deploy_ota() {
         MD5=$(md5 -q "${FIRMWARE_DIR}/echoes.bin")
         print_info "MD5: $MD5"
     fi
+
+    # Archive — keep a timestamped copy under firmware/archive/<version>/
+    local ARCHIVE_DIR="${FIRMWARE_DIR}/archive/${VERSION}"
+    local TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
+    local DATESTAMP=$(date "+%Y%m%d_%H%M%S")
+    if [ -d "$ARCHIVE_DIR" ]; then
+        # Version already archived — keep both, suffix with timestamp
+        ARCHIVE_DIR="${FIRMWARE_DIR}/archive/${VERSION}_${DATESTAMP}"
+        print_warning "Archive for $VERSION already exists — saving as ${VERSION}_${DATESTAMP}"
+    fi
+    mkdir -p "$ARCHIVE_DIR"
+    cp "${FIRMWARE_DIR}/echoes.bin"  "$ARCHIVE_DIR/echoes.bin"
+    echo "$VERSION"                  > "$ARCHIVE_DIR/version.txt"
+    # Write a manifest with build metadata
+    cat > "$ARCHIVE_DIR/manifest.txt" <<EOF
+version:    $VERSION
+deployed:   $TIMESTAMP
+deployed_by: ${USER:-unknown}
+md5:        ${MD5:-unknown}
+source:     ${BUILD_DIR}/${BINARY_NAME}
+size_bytes: $(stat -c%s "${FIRMWARE_DIR}/echoes.bin" 2>/dev/null || stat -f%z "${FIRMWARE_DIR}/echoes.bin")
+EOF
+    print_success "Archived to $ARCHIVE_DIR"
     
     print_success "OTA update deployed!"
     print_info "Firmware: ${FIRMWARE_DIR}/echoes.bin"
