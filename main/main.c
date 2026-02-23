@@ -280,13 +280,6 @@ void app_main(void)
     }
 
     
-    /* Initialise ESP-NOW mesh.
-     * ESP-NOW is peer-to-peer and runs directly on the WiFi radio layer —
-     * it does NOT require a connection to an AP.  wifi_init_and_connect()
-     * calls esp_wifi_start() unconditionally, so the radio is always up by
-     * this point regardless of whether the AP connection succeeded.        */
-    espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
-
     /* Start application tasks — only when WiFi was NOT connected (when WiFi
      * IS connected the tasks were already created and resumed above).      */
     if (!wifi_connected) {
