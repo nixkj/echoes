@@ -807,7 +807,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .fstat-val.green { color: #3ddc5e; }
   .fstat-val.amber { color: #e0a020; }
   .fstat-val.red   { color: #e03a3a; }
-  .fstat-val.grey  { color: var(--muted); }
   .fstat-lbl { color: var(--text-dim); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
   .flock-legend { display: flex; gap: 12px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
   .fleg { display: flex; align-items: center; gap: 4px; }
@@ -815,7 +814,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .fleg-dot.green { background: #3ddc5e; }
   .fleg-dot.amber { background: #e0a020; }
   .fleg-dot.red   { background: #e03a3a; }
-  .fleg-dot.grey  { background: var(--muted); }
   .flock-body { padding: 14px 18px; }
   .flock-poll { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 10px; }
   .flock-poll-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); animation: pulse 2s infinite; }
@@ -826,7 +824,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .fnode.fonline  { background: #2a8c42; }
   .fnode.fstale   { background: #7a5010; }
   .fnode.foffline { background: #8c2a2a; }
-  .fnode.fnever   { background: #1e1e1e; }
   /* Tooltip — fixed positioning via JS */
   .ftooltip { display: none; position: fixed; background: #090b09; border: 1px solid var(--border); border-radius: 3px; padding: 10px 13px; min-width: 220px; z-index: 9999; pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,0.7); font-size: 12px; }
   .ftooltip-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
@@ -835,7 +832,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .fonline  .ftooltip-status { color: #3ddc5e; background: #1a5c2a; }
   .fstale   .ftooltip-status { color: #e0a020; background: #4a3408; }
   .foffline .ftooltip-status { color: #e03a3a; background: #5c1a1a; }
-  .fnever   .ftooltip-status { color: var(--muted); background: #1a1a1a; }
   .ftooltip-row { display: flex; justify-content: space-between; gap: 10px; margin-top: 4px; font-size: 11px; }
   .ftooltip-key { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
   .ftooltip-val { font-family: var(--font-mono); color: var(--text); text-align: right; }
@@ -864,13 +860,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="fstat"><span class="fstat-val green" id="fs-online">—</span></div>
         <div class="fstat"><span class="fstat-val amber" id="fs-stale">—</span></div>
         <div class="fstat"><span class="fstat-val red" id="fs-offline">—</span></div>
-        <div class="fstat"><span class="fstat-val grey" id="fs-never">—</span></div>
       </div>
       <div class="flock-legend">
         <span class="fleg"><span class="fleg-dot green"></span>Online</span>
         <span class="fleg"><span class="fleg-dot amber"></span>Stale</span>
         <span class="fleg"><span class="fleg-dot red"></span>Offline</span>
-        <span class="fleg"><span class="fleg-dot grey"></span>Never</span>
       </div>
     </div>
     <div class="flock-body">
@@ -1054,7 +1048,7 @@ const FLOCK_STALE   = 90_000;   // ms — matches server-side thresholds
 const FLOCK_OFFLINE = 180_000;
 
 function flockClassify(n) {
-  if (!n.last_seen_ts) return 'fnever';
+  if (!n.last_seen_ts) return 'foffline';
   const age = Date.now() - n.last_seen_ts * 1000;   // last_seen_ts is Unix seconds
   if (age < FLOCK_STALE)   return 'fonline';
   if (age < FLOCK_OFFLINE) return 'fstale';
@@ -1073,7 +1067,7 @@ function flockFmtDate(ts) {
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 function flockStatusLabel(cls) {
-  return {fonline:'ONLINE',fstale:'STALE',foffline:'OFFLINE',fnever:'NEVER'}[cls];
+  return {fonline:'ONLINE',fstale:'STALE',foffline:'OFFLINE'}[cls];
 }
 
 // Shared tooltip element
@@ -1086,7 +1080,7 @@ let flockNodes = [];
 function buildFlockGrid() {
   const g = document.getElementById('flockGrid');
   g.innerHTML = '';
-  let online=0, stale=0, offline=0, never=0;
+  let online=0, stale=0, offline=0;
 
   // Sort by MAC so grid positions are stable between refreshes
   const sorted = [...flockNodes].sort((a,b) => a.mac.localeCompare(b.mac));
@@ -1095,8 +1089,7 @@ function buildFlockGrid() {
     const cls = flockClassify(n);
     if      (cls === 'fonline')  online++;
     else if (cls === 'fstale')   stale++;
-    else if (cls === 'foffline') offline++;
-    else                         never++;
+    else                         offline++;
 
     const div = document.createElement('div');
     div.className = `fnode ${cls}`;
@@ -1125,7 +1118,6 @@ function buildFlockGrid() {
   document.getElementById('fs-online').textContent  = online;
   document.getElementById('fs-stale').textContent   = stale;
   document.getElementById('fs-offline').textContent = offline;
-  document.getElementById('fs-never').textContent   = never;
 }
 
 function positionFlockTip(e) {
