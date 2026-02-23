@@ -68,9 +68,10 @@ startup_log = _setup_startup_log(LOG_DIR)
 # Paths
 # ---------------------------------------------------------------------------
 
-_HERE        = Path(__file__).parent.resolve()
-CONFIG_FILE  = _HERE / "config.json"
-FIRMWARE_DIR = Path("/opt/echoes/firmware")
+_HERE         = Path(__file__).parent.resolve()
+CONFIG_FILE   = _HERE / "config.json"
+REGISTRY_FILE = _HERE / "node_registry.json"
+FIRMWARE_DIR  = Path("/opt/echoes/firmware")
 
 # ---------------------------------------------------------------------------
 # Flask app
@@ -359,6 +360,63 @@ _restart_token     = 0
 _nodes: dict = {}
 _nodes_lock  = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Node registry persistence
+# ---------------------------------------------------------------------------
+# Saved to REGISTRY_FILE on every boot report (immediate) and by a background
+# thread every REGISTRY_SAVE_INTERVAL_S seconds when liveness data is dirty.
+# This coalesces the high-frequency poll writes (up to 50 nodes × every 60 s)
+# into at most one disk write per interval — much kinder to SD cards.
+
+REGISTRY_SAVE_INTERVAL_S = 30   # background flush interval
+_registry_dirty = False         # set True by _node_poll; cleared by background saver
+
+
+def _load_nodes() -> None:
+    """Populate _nodes from node_registry.json (called once at module load)."""
+    if not REGISTRY_FILE.exists():
+        log.info("Node registry file not found — starting with empty registry")
+        return
+    try:
+        saved = json.loads(REGISTRY_FILE.read_text())
+        if isinstance(saved, list):
+            with _nodes_lock:
+                for entry in saved:
+                    mac = entry.get("mac", "")
+                    if mac:
+                        _nodes[mac] = entry
+            log.info(f"Node registry loaded: {len(_nodes)} node(s) from {REGISTRY_FILE}")
+    except Exception as e:
+        log.warning(f"Could not load node registry: {e} — starting empty")
+
+
+def _save_nodes() -> None:
+    """Persist current registry snapshot to REGISTRY_FILE (thread-safe)."""
+    try:
+        with _nodes_lock:
+            snapshot = list(_nodes.values())
+        REGISTRY_FILE.write_text(json.dumps(snapshot, indent=2))
+    except Exception as e:
+        log.warning(f"Could not save node registry: {e}")
+
+
+def _registry_background_saver() -> None:
+    """Background thread: flush registry to disk when dirty, every REGISTRY_SAVE_INTERVAL_S."""
+    global _registry_dirty
+    while True:
+        time.sleep(REGISTRY_SAVE_INTERVAL_S)
+        if _registry_dirty:
+            _save_nodes()
+            _registry_dirty = False
+
+
+# Load persisted state immediately at import time (works with WSGI runners too)
+_load_nodes()
+
+# Start background saver daemon thread
+_saver_thread = threading.Thread(target=_registry_background_saver, daemon=True, name="registry-saver")
+_saver_thread.start()
+
 
 def _node_startup(mac: str, node_type: str, firmware: str, ip: str) -> None:
     """Record a boot event — sets static identity fields, increments boot_count."""
@@ -376,31 +434,41 @@ def _node_startup(mac: str, node_type: str, firmware: str, ip: str) -> None:
             "poll_count":   existing.get("poll_count", 0),
             "boot_count":   existing.get("boot_count", 0) + 1,
         }
+    # Boot events are infrequent and important — save immediately.
+    _save_nodes()
     log.info(f"STARTUP  {mac}  type={node_type}  fw={firmware}  ip={ip}")
 
 
-def _node_poll(mac: str) -> None:
-    """Record a 60-second config poll — updates liveness fields only."""
+def _node_poll(mac: str, ip: str) -> None:
+    """Record a 60-second config poll — updates liveness and IP fields."""
+    global _registry_dirty
     now = datetime.now().isoformat(timespec="seconds")
     with _nodes_lock:
         if mac in _nodes:
             _nodes[mac]["last_seen"]    = now
             _nodes[mac]["last_seen_ts"] = time.time()
             _nodes[mac]["poll_count"]  += 1
+            # Always refresh IP — it is available from every HTTP request and may
+            # change (DHCP lease renewal) independently of a node reboot.
+            if ip:
+                _nodes[mac]["ip"] = ip
         else:
             # Node polling before its first startup report (e.g. server restarted).
-            # Create a minimal skeleton; enriched on next boot.
+            # Skeleton entry: node_type/firmware enriched on next node reboot.
             _nodes[mac] = {
                 "mac":          mac,
                 "node_type":    "unknown",
                 "firmware":     "unknown",
-                "ip":           "unknown",
+                "ip":           ip or "unknown",
                 "first_seen":   now,
                 "last_seen":    now,
                 "last_seen_ts": time.time(),
                 "poll_count":   1,
                 "boot_count":   0,
             }
+    # Mark dirty — background thread will flush within REGISTRY_SAVE_INTERVAL_S.
+    _registry_dirty = True
+
 
 # ---------------------------------------------------------------------------
 # OTA firmware routes  (was firmware_server.py on :8000)
@@ -449,7 +517,7 @@ def startup_report():
         _node_startup(mac, node_type, firmware, ip)
 
     # Write a dedicated startup-report line (mirrors the format from the old
-    # standalone startup_server.py that operators rely on for fleet tracking).
+    # standalone startup_server.py that operators rely on for flock tracking).
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if has_errors and error_msg:
         startup_log.info(
@@ -504,7 +572,7 @@ def get_config():
     # Track liveness — MAC sent in X-Device-MAC header (set in remote_config.c)
     mac = request.headers.get("X-Device-MAC", "").strip().upper()
     if mac:
-        _node_poll(mac)
+        _node_poll(mac, request.remote_addr or "")
 
     flat = {k: v["value"] for k, v in _config.items()}
     flat["_server_time"]        = time.time()
@@ -760,18 +828,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .fnode.foffline { background: #8c2a2a; }
   .fnode.fnever   { background: #1e1e1e; }
   /* Tooltip — fixed positioning via JS */
-  .ftooltip { display: none; position: fixed; background: #090b09; border: 1px solid var(--border); border-radius: 3px; padding: 8px 10px; min-width: 190px; z-index: 9999; pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,0.7); font-size: 10px; }
+  .ftooltip { display: none; position: fixed; background: #090b09; border: 1px solid var(--border); border-radius: 3px; padding: 10px 13px; min-width: 220px; z-index: 9999; pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,0.7); font-size: 12px; }
   .ftooltip-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
-  .ftooltip-id { font-family: var(--font-mono); font-size: 11px; color: var(--text); }
-  .ftooltip-status { font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; padding: 1px 5px; border-radius: 2px; }
+  .ftooltip-id { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
+  .ftooltip-status { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; padding: 1px 5px; border-radius: 2px; }
   .fonline  .ftooltip-status { color: #3ddc5e; background: #1a5c2a; }
   .fstale   .ftooltip-status { color: #e0a020; background: #4a3408; }
   .foffline .ftooltip-status { color: #e03a3a; background: #5c1a1a; }
   .fnever   .ftooltip-status { color: var(--muted); background: #1a1a1a; }
-  .ftooltip-row { display: flex; justify-content: space-between; gap: 10px; margin-top: 3px; font-size: 9px; }
+  .ftooltip-row { display: flex; justify-content: space-between; gap: 10px; margin-top: 4px; font-size: 11px; }
   .ftooltip-key { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
   .ftooltip-val { font-family: var(--font-mono); color: var(--text); text-align: right; }
-  .ftooltip-ts { font-family: var(--font-mono); font-size: 8px; color: var(--text-dim); margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); word-break: break-all; }
+  .ftooltip-ts { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); word-break: break-all; }
 </style>
 </head>
 <body>

@@ -189,7 +189,7 @@ echoes/
 
 | Server | File | Port | Purpose |
 |---|---|---|---|
-| Consolidated server | `echoes-server.py` | 8002 | OTA firmware (`/firmware/*`), startup reports (`POST /startup`), web config UI + JSON API (`/`, `/config`), fleet dashboard (`/fleet`), node registry (`/nodes`) |
+| Consolidated server | `echoes-server.py` | 8002 | OTA firmware (`/firmware/*`), startup reports (`POST /startup`), config UI + flock dashboard (`/`), config JSON API (`/config`), node registry (`/nodes`) |
 
 All logs are written to `/var/log/echoes/`:
 - `echoes-server.log` — general server activity (rotating, 10 MB × 5)
@@ -250,7 +250,7 @@ All audio detection parameters, playback volume, LED behaviour, ESP-NOW threshol
 
 The server also supports:
 - **Remote restart** — reboots all nodes within a 90-second broadcast window
-- **Silent mode** — suppresses all sound and LED output fleet-wide
+- **Silent mode** — suppresses all sound and LED output flock-wide
 - **Sound off** — silences audio while keeping LED activity
 - **Quiet hours** — scheduled daily silence window (default 17:00–08:00)
 
@@ -420,7 +420,7 @@ I (17040) ECHOES: Audio detection task started
 - Server consolidation: three separate services (OTA :8000, startup :8001, config :8002) replaced by a single `echoes-server` process on port 8002
 - `echoes` system user and group created by installer; server runs under least-privilege account
 - Startup reports now written to a dedicated `startup_reports.log` (was silently dropped after consolidation)
-- Fleet dashboard now populated from live `/nodes` registry; previously showed randomised placeholder data with fabricated MACs and hardcoded firmware version
+- Flock dashboard now populated from live `/nodes` registry; previously showed randomised placeholder data with fabricated MACs and hardcoded firmware version
 - Firmware directory moved from `~/firmware_server/firmware/` to `/opt/echoes/firmware/`
 - Kconfig simplified to a single `SERVER_PORT` (was three separate port entries)
 
