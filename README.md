@@ -85,10 +85,8 @@ idf.py menuconfig
 #   → WiFi Password   (your network password)
 #
 # Navigate to: Server Configuration
-#   → Server IP Address           (IP of your Raspberry Pi or host running the servers)
-#   → OTA Firmware Server Port    (default: 8000)
-#   → Startup Report Server Port  (default: 8001)
-#   → Remote Config Server Port   (default: 8002)
+#   → Server IP Address  (IP of your Raspberry Pi or host running the server)
+#   → Server Port        (default: 8002 — all traffic goes here)
 ```
 
 Or add the following to `sdkconfig` directly:
@@ -97,9 +95,7 @@ Or add the following to `sdkconfig` directly:
 CONFIG_WIFI_SSID=""
 CONFIG_WIFI_PASSWORD=""
 CONFIG_SERVER_IP="192.168.101.2"
-CONFIG_OTA_SERVER_PORT=8000
-CONFIG_STARTUP_SERVER_PORT=8001
-CONFIG_CONFIG_SERVER_PORT=8002
+CONFIG_SERVER_PORT=8002
 ```
 
 All credentials and server addresses entered via `menuconfig` are stored in `sdkconfig`, which is excluded from version control by `.gitignore` and will never be committed to the repository.
@@ -113,40 +109,46 @@ idf.py -p /dev/tty.usbserial-110 erase-flash
 idf.py -p /dev/tty.usbserial-110 flash monitor
 ```
 
-### 4. Install the Servers
+### 4. Install the Server
 
-Three servers need to run on the host machine — a Raspberry Pi on the same network works well. Install all three as systemd services with:
+A single consolidated server handles OTA firmware, startup reports, and remote configuration — all on port 8002. Install it as a systemd service on the host machine (a Raspberry Pi on the same network works well):
 
 ```bash
 ./build.sh services
 ```
 
-Or individually:
+Or directly:
 
 ```bash
-sudo bash scripts/firmware_server/install.sh
-sudo bash scripts/startup_server/install.sh
-sudo bash scripts/config_server/install.sh
+sudo bash scripts/server/install.sh
 ```
 
-For testing without systemd, start each manually in a separate terminal:
+The installer will:
+- Create the `echoes` system group and user (if they do not already exist)
+- Install the server to `/opt/echoes/`
+- Create the firmware directory at `/opt/echoes/firmware/`
+- Set up log files at `/var/log/echoes/`
+- Install and start the `echoes-server` systemd service
+
+**Firmware deploy permissions** — the firmware directory is owned by the `echoes` system user. Your build machine user must be in the `echoes` group to deploy via `build.sh deploy`:
 
 ```bash
-# Firmware OTA server — port 8000
-python3 scripts/firmware_server/firmware_server.py
-
-# Startup report receiver — port 8001
-python3 scripts/startup_server/startup_server.py
-
-# Remote configuration UI — port 8002
-python3 scripts/config_server/server.py
+sudo usermod -aG echoes $USER
+sudo chmod g+w /opt/echoes/firmware
+# Log out and back in (or run: newgrp echoes)
 ```
 
-After the OTA server is running, copy your firmware binary and set the version:
+For testing without systemd, start the server manually:
 
 ```bash
-cp build/echoes.bin ~/firmware_server/firmware/echoes.bin
-echo "5.5.0" > ~/firmware_server/firmware/version.txt
+/opt/echoes/venv/bin/python /opt/echoes/echoes-server.py
+```
+
+After the server is running, copy your firmware binary and set the version:
+
+```bash
+cp build/echoes.bin /opt/echoes/firmware/echoes.bin
+echo "6.2.1" > /opt/echoes/firmware/version.txt
 ```
 
 Or use `./build.sh deploy` after a successful build to do both steps at once.
@@ -166,24 +168,14 @@ echoes/
 │   ├── VU_METER_CONFIG.md
 │   └── ESP32-DEV-032.jpg             # (+ other hardware reference images)
 ├── scripts/
-│   ├── config_server/
-│   │   ├── server.py                 # Remote configuration UI (port 8002)
-│   │   ├── echoes-config.service     # systemd unit file
-│   │   └── install.sh
-│   ├── firmware_server/
-│   │   ├── firmware_server.py        # OTA firmware server (port 8000)
-│   │   ├── echoes-firmware.service   # systemd unit file
-│   │   ├── SYSTEMD_SERVICE_GUIDE.md  # Guide for installing servers as services
-│   │   ├── install.sh
-│   │   └── uninstall-service.sh
-│   └── startup_server/
-│       ├── startup_server.py         # Startup report receiver (port 8001)
-│       ├── echoes-startup-server.service  # systemd unit file
-│       ├── install.sh
-│       └── test_server.py
+│   └── server/
+│       ├── echoes-server.py          # Consolidated server — OTA, startup reports, config UI (port 8002)
+│       ├── echoes-server.service     # systemd unit file
+│       ├── install.sh                # Creates echoes user/group, installs service
+│       └── requirements.txt
 └── main/
     ├── CMakeLists.txt
-    ├── Kconfig.projbuild             # WiFi credentials and server addresses via menuconfig
+    ├── Kconfig.projbuild             # WiFi credentials and server address via menuconfig
     ├── main.c                        # Entry point — WiFi, OTA, task startup
     ├── echoes.h / echoes.c           # Core system, detection, LED, audio tasks
     ├── synthesis.h / synthesis.c     # Bird call synthesis (11 species)
@@ -198,18 +190,20 @@ echoes/
 
 | Server | File | Port | Purpose |
 |---|---|---|---|
-| OTA firmware | `firmware_server.py` | 8000 | Serves `echoes.bin` and `version.txt` for OTA |
-| Startup reports | `startup_server.py` | 8001 | Receives boot identity POST from each node |
-| Remote config | `server.py` | 8002 | Web UI + JSON API for live parameter tuning |
+| Consolidated server | `echoes-server.py` | 8002 | OTA firmware (`/firmware/*`), startup reports (`POST /startup`), web config UI + JSON API (`/`, `/config`), fleet dashboard (`/fleet`), node registry (`/nodes`) |
+
+All logs are written to `/var/log/echoes/`:
+- `echoes-server.log` — general server activity (rotating, 10 MB × 5)
+- `startup_reports.log` — one line per node boot event (rotating, 10 MB × 10)
 
 ## Deploying a Firmware Update
 
 ### Using build.sh (recommended)
 
 ```bash
-./build.sh version patch     # 5.5.2 → 5.5.3 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh version patch     # 6.2.1 → 6.2.2 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
-./build.sh deploy            # Copy binary + write version.txt to ~/firmware_server/firmware/
+./build.sh deploy            # Copy binary + write version.txt to /opt/echoes/firmware/
 ```
 
 Or in one step:
@@ -223,8 +217,8 @@ Or in one step:
 ```bash
 # Edit FIRMWARE_VERSION in main/ota.h, then:
 idf.py build
-cp build/echoes.bin ~/firmware_server/firmware/echoes.bin
-echo "5.5.2" > ~/firmware_server/firmware/version.txt
+cp build/echoes.bin /opt/echoes/firmware/echoes.bin
+echo "6.2.2" > /opt/echoes/firmware/version.txt
 ```
 
 Each device checks for updates once at boot. It compares the running version string against `version.txt`; if they differ it downloads and flashes the new binary, then restarts. The attempt retries up to 3 times with linear backoff (15 s, 30 s, 45 s).
@@ -244,8 +238,8 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 5.5.2 → 5.5.3) |
 | `./build.sh version minor` | Increment minor version (e.g. 5.5.2 → 5.6.0) |
 | `./build.sh version major` | Increment major version (e.g. 5.5.2 → 6.0.0) |
-| `./build.sh deploy` | Copy binary and write `version.txt` to `~/firmware_server/firmware/` |
-| `./build.sh services` | Install all three servers as systemd services (run on host/Pi) |
+| `./build.sh deploy` | Copy binary and write `version.txt` to `/opt/echoes/firmware/` |
+| `./build.sh services` | Install the consolidated `echoes-server` as a systemd service (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
 | `./build.sh help` | Show usage summary |
 
@@ -352,14 +346,15 @@ The only unrecoverable scenario is if both OTA slots are simultaneously corrupte
 - Blue LED blinks 3× on failure; device continues without WiFi or OTA
 
 ### OTA Update Fails
-- Verify server: `curl http://192.168.101.2:8000/firmware/version.txt`
-- Confirm binary exists: `ls ~/firmware_server/firmware/`
+- Verify server: `curl http://192.168.101.2:8002/firmware/version.txt`
+- Confirm binary exists: `ls /opt/echoes/firmware/`
+- Confirm your build user is in the `echoes` group if deploy fails with a permissions error (`sudo usermod -aG echoes $USER`)
 - Each OTA slot is 1 MB — ensure your binary fits
 - Device retries up to 3 times with linear backoff before falling back
 to normal operation without updating
 
 ### Remote Config Not Applying
-- Verify `server.py` is running on port 8002
+- Verify `echoes-server` is running: `sudo systemctl status echoes-server`
 - Check device logs for `RCFG` tag — fetch errors are logged as warnings
 - Devices fall back to built-in defaults if the server is unreachable
 
@@ -420,7 +415,15 @@ I (17040) ECHOES: Audio detection task started
 
 ## Version History
 
-**5.5.2** — Current
+**6.2.1** — Current
+- Server consolidation: three separate services (OTA :8000, startup :8001, config :8002) replaced by a single `echoes-server` process on port 8002
+- `echoes` system user and group created by installer; server runs under least-privilege account
+- Startup reports now written to a dedicated `startup_reports.log` (was silently dropped after consolidation)
+- Fleet dashboard now populated from live `/nodes` registry; previously showed randomised placeholder data with fabricated MACs and hardcoded firmware version
+- Firmware directory moved from `~/firmware_server/firmware/` to `/opt/echoes/firmware/`
+- Kconfig simplified to a single `SERVER_PORT` (was three separate port entries)
+
+**5.5.2**
 - Robustness (mutexes), optimisation, and further tidying up.
 
 **5.4.3**

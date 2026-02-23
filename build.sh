@@ -13,7 +13,13 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-FIRMWARE_DIR="${HOME}/firmware_server/firmware"
+# Firmware is now served from /opt/echoes/firmware (owned by
+# the 'echoes' system user).  Your build user must be in the 'echoes' group
+# with group-write on that directory:
+#   sudo usermod -aG echoes $USER
+#   sudo chmod g+w /opt/echoes/firmware
+# Log out and back in (or run 'newgrp echoes') after usermod.
+FIRMWARE_DIR="/opt/echoes/firmware"
 PROJECT_DIR="$(pwd)"
 BUILD_DIR="${PROJECT_DIR}/build"
 BINARY_NAME="echoes.bin"
@@ -278,26 +284,23 @@ erase_flash() {
     fi
 }
 
-# Install all three servers as systemd services
+# Install the consolidated server as a systemd service
 install_services() {
-    print_header "Installing Server Services"
+    print_header "Installing Server Service"
 
-    local SCRIPT_DIR="${PROJECT_DIR}/scripts"
+    local INSTALLER="${PROJECT_DIR}/scripts/server/install.sh"
 
-    print_info "Installing OTA firmware server (port 8000)..."
-    sudo bash "${SCRIPT_DIR}/firmware_server/install.sh"
-    print_success "Firmware server installed"
+    if [ ! -f "$INSTALLER" ]; then
+        print_error "Installer not found: $INSTALLER"
+        return 1
+    fi
 
-    print_info "Installing startup report server (port 8001)..."
-    sudo bash "${SCRIPT_DIR}/startup_server/install.sh"
-    print_success "Startup server installed"
+    print_info "Installing consolidated echoes-server (ports 8002)..."
+    sudo bash "$INSTALLER"
+    print_success "echoes-server installed"
 
-    print_info "Installing remote config server (port 8002)..."
-    sudo bash "${SCRIPT_DIR}/config_server/install.sh"
-    print_success "Config server installed"
-
-    print_success "All services installed and started"
-    print_info "Check status with: sudo systemctl status echoes-firmware echoes-startup-server echoes-config"
+    print_success "Service installed and started"
+    print_info "Check status with: sudo systemctl status echoes-server"
 }
 
 # Show help
@@ -315,7 +318,7 @@ Commands:
   monitor           Open serial monitor
   deploy            Deploy firmware to OTA server
   version [type]    Increment version (major|minor|patch)
-  services          Install all three servers as systemd services
+  services          Install the consolidated echoes-server service
   all               Bump patch version, build, and deploy
   help              Show this help message
 
@@ -327,7 +330,7 @@ Examples:
   ./build.sh erase              # Erase flash
   ./build.sh deploy             # Deploy to OTA server
   ./build.sh version minor      # Increment minor version
-  ./build.sh services           # Install all servers as systemd services
+  ./build.sh services           # Install consolidated server as systemd service
   ./build.sh all                # Bump patch version, build, and deploy
 
 Workflow:
@@ -336,13 +339,21 @@ Workflow:
   3. ./build.sh flash           # Flash to device
   4. ./build.sh version patch   # Increment version
   5. ./build.sh deploy          # Deploy OTA update
-  6. ./build.sh services        # Install servers (first time, run on host/Pi)
+  6. ./build.sh services        # Install server (first time, run on host/Pi)
 
 OTA Update Workflow:
   1. ./build.sh version patch   # Update version number
   2. ./build.sh build           # Build new firmware
-  3. ./build.sh deploy          # Deploy to server
+  3. ./build.sh deploy          # Deploy to server at ${FIRMWARE_DIR}
   4. Power on ESP32 → It will auto-update
+
+Firmware directory: ${FIRMWARE_DIR}
+  The deploy step writes to this path (owned by the 'echoes' system user).
+  Your build user must be a member of the 'echoes' group with group-write
+  permission on that directory:
+    sudo usermod -aG echoes \$USER
+    sudo chmod g+w ${FIRMWARE_DIR}
+  Log out and back in (or run 'newgrp echoes') after usermod.
 
 ESP32 Port Detection:
   Automatically detects: /dev/tty.usbserial-*, /dev/ttyUSB*, etc.

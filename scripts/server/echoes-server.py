@@ -14,7 +14,7 @@ startup POSTs (node_type, firmware, ip) and kept alive by 60-second
 config polls (last_seen, poll_count).  The flock dashboard therefore
 shows the full picture for the first time.
 
-Firmware files live in ~/firmware_server/firmware/ — the same path that
+Firmware files live in ~/firmware/ — the same path that
 build.sh deploy has always written to, so no workflow change is needed.
 """
 
@@ -70,7 +70,7 @@ startup_log = _setup_startup_log(LOG_DIR)
 
 _HERE        = Path(__file__).parent.resolve()
 CONFIG_FILE  = _HERE / "config.json"
-FIRMWARE_DIR = Path("/opt/echoes/firmware_server/firmware")
+FIRMWARE_DIR = Path("/opt/echoes/firmware")
 
 # ---------------------------------------------------------------------------
 # Flask app
@@ -408,7 +408,7 @@ def _node_poll(mac: str) -> None:
 
 @app.route("/firmware/<path:filename>")
 def serve_firmware(filename):
-    """Serve OTA binary and version.txt from ~/firmware_server/firmware/."""
+    """Serve OTA binary and version.txt from /opt/echoes/firmware/."""
     # Guard against path traversal
     safe = os.path.normpath(filename)
     if safe.startswith("..") or safe.startswith("/"):

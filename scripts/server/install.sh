@@ -67,10 +67,10 @@ chown "$RUN_USER":"$RUN_GROUP" "$INSTALL_DIR" "$LOG_DIR"
 # Firmware directory — build.sh deploy writes here, server reads from here.
 # Placed under INSTALL_DIR so it is covered by the service's ReadWritePaths.
 # To allow your deploy user to write here: sudo usermod -aG echoes <deploy-user>
-# then: sudo chmod g+w /opt/echoes/firmware_server/firmware
-FIRMWARE_DIR="$INSTALL_DIR/firmware_server/firmware"
+# then: sudo chmod g+w /opt/echoes/firmware
+FIRMWARE_DIR="$INSTALL_DIR/firmware"
 mkdir -p "$FIRMWARE_DIR"
-chown -R "$RUN_USER":"$RUN_GROUP" "$INSTALL_DIR/firmware_server"
+chown -R "$RUN_USER":"$RUN_GROUP" "$FIRMWARE_DIR"
 echo "Firmware dir: $FIRMWARE_DIR"
 
 # ── 5. Install server script ─────────────────────────────────────────────
