@@ -6,13 +6,19 @@
 #   echoes-startup-server (was port 8001)
 #   echoes-config         (was port 8002)
 #
-# Run from the scripts/server directory with:  sudo bash install.sh
+# May be run from any directory:  sudo bash /path/to/scripts/server/install.sh
 set -e
+
+# Resolve the directory this script lives in so relative file references
+# (echoes-server.py, requirements.txt, echoes-server.service) work correctly
+# regardless of the working directory the caller used.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 INSTALL_DIR="/opt/echoes"
 SERVICE_NAME="echoes-server"
 LOG_DIR="/var/log/echoes"
 RUN_USER="echoes"
+RUN_GROUP="echoes"
 OLD_SERVICES="echoes-config echoes-startup-server echoes-firmware"
 
 echo "=== Echoes of the Machine — Consolidated Server Installer ==="
@@ -20,9 +26,6 @@ echo "Install dir : $INSTALL_DIR"
 echo "Run as user : $RUN_USER (group: $RUN_GROUP)"
 echo "Log dir     : $LOG_DIR"
 echo ""
-
-# ── 1. Create 'echoes' group and system user if they do not exist ────────
-RUN_GROUP="$RUN_USER"
 
 if ! getent group "$RUN_GROUP" >/dev/null 2>&1; then
     echo "Creating system group: $RUN_GROUP"
@@ -74,7 +77,7 @@ chown -R "$RUN_USER":"$RUN_GROUP" "$FIRMWARE_DIR"
 echo "Firmware dir: $FIRMWARE_DIR"
 
 # ── 5. Install server script ─────────────────────────────────────────────
-cp echoes-server.py "$INSTALL_DIR/echoes-server.py"
+cp "$SCRIPT_DIR/echoes-server.py" "$INSTALL_DIR/echoes-server.py"
 chown "$RUN_USER":"$RUN_GROUP" "$INSTALL_DIR/echoes-server.py"
 
 # Migrate config.json from old echoes-config install if present
@@ -90,12 +93,12 @@ if [ ! -d "$INSTALL_DIR/venv" ]; then
     python3 -m venv "$INSTALL_DIR/venv"
 fi
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
-"$INSTALL_DIR/venv/bin/pip" install --quiet -r requirements.txt
+"$INSTALL_DIR/venv/bin/pip" install --quiet -r "$SCRIPT_DIR/requirements.txt"
 
 # ── 7. Systemd service ───────────────────────────────────────────────────
 sed -e "s/User=pi/User=$RUN_USER/" \
     -e "s/User=$RUN_USER/User=$RUN_USER\nGroup=$RUN_GROUP/" \
-    echoes-server.service \
+    "$SCRIPT_DIR/echoes-server.service" \
     > /etc/systemd/system/${SERVICE_NAME}.service
 systemctl daemon-reload
 systemctl enable  "$SERVICE_NAME"
