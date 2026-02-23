@@ -228,9 +228,9 @@ void app_main(void)
          * before any task can call it.                                    */
         espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
 
-        /* Indicate system ready — pulse white LED before resuming tasks so
-         * app_main has sole ownership of the LED at this point and there is
-         * no race with audio_detection_task (priority 5 > app_main priority 1). */
+        /* Indicate system ready with white LED pulse — fired before vTaskResume
+         * so app_main has sole LED ownership; resumed tasks (priority 4–5)
+         * would otherwise preempt before set_led(0,0) runs.               */
         set_led(BRIGHT_FULL, 0);
         vTaskDelay(pdMS_TO_TICKS(500));
         set_led(0, 0);
@@ -292,10 +292,9 @@ void app_main(void)
          * immediately on first run.                                        */
         espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
 
-        /* Pulse white LED before creating tasks — same reasoning as the WiFi
-         * path: app_main has sole LED ownership here; once the tasks start
-         * (priority 4–5 vs app_main priority 1) they will immediately
-         * preempt and could race on the LED.                               */
+        /* Indicate system ready with white LED pulse — fired before xTaskCreate
+         * so app_main has sole LED ownership; created tasks (priority 4–5)
+         * would otherwise preempt before set_led(0,0) runs.               */
         set_led(BRIGHT_FULL, 0);
         vTaskDelay(pdMS_TO_TICKS(500));
         set_led(0, 0);

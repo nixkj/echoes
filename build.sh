@@ -81,9 +81,20 @@ build_firmware() {
         idf.py fullclean
     fi
     
+    # Check for a local config override one directory above the project.
+    # sdkconfig.local lets each developer keep site-specific settings (WiFi
+    # credentials, server IP, etc.) outside the repo without touching any
+    # tracked files.  ESP-IDF v5 merges multiple defaults files in order;
+    # later files take precedence, so local overrides win over sdkconfig.defaults.
+    local LOCAL_CFG="${PROJECT_DIR}/../sdkconfig.local"
     # Build
     print_info "Building project..."
-    idf.py build
+    if [ -f "$LOCAL_CFG" ]; then
+        print_info "Applying local overrides from $LOCAL_CFG"
+        SDKCONFIG_DEFAULTS="sdkconfig.defaults;${LOCAL_CFG}" idf.py build
+    else
+        idf.py build
+    fi
     
     # Check build result
     if [ -f "${BUILD_DIR}/${BINARY_NAME}" ]; then
@@ -378,6 +389,15 @@ OTA Update Workflow:
   3. ./build.sh deploy          # Deploy to server at ${FIRMWARE_DIR}
   4. Power on ESP32 → It will auto-update
 
+Local config overrides:
+  Create ../sdkconfig.local (one level above this repo) to set site-specific
+  values such as WiFi credentials and server IP without touching tracked files.
+  The build automatically detects and merges it — later entries take precedence
+  over sdkconfig.defaults.  Example ../sdkconfig.local:
+    CONFIG_WIFI_SSID="my_network"
+    CONFIG_WIFI_PASSWORD="my_password"
+    CONFIG_SERVER_IP="192.168.1.100"
+
 Firmware directory: ${FIRMWARE_DIR}
   The deploy step writes to this path. The installer sets group-write
   permissions automatically. To grant your build user deploy access:
@@ -400,7 +420,8 @@ main() {
         tidyup)
             # Remove editor backup files (*~ and .*.un~ vim/emacs files) from
             # anywhere in the project tree, and delete the build/ directory.
-            # to restore your WiFi credentials before the next build.
+            # Site-specific settings belong in ../sdkconfig.local (outside the
+            # repo) so they are never lost by a tidy.
             find . -type f \( -name '*~' -o -name '.*.un~' -o -name '.DS_Store' \) -delete
             rm -rf build
             print_success "Tidy complete — editor backups and build/* removed"
