@@ -12,16 +12,42 @@ set -e
 INSTALL_DIR="/opt/echoes"
 SERVICE_NAME="echoes-server"
 LOG_DIR="/var/log/echoes"
-RUN_USER="${SUDO_USER:-pi}"
+RUN_USER="echoes"
 OLD_SERVICES="echoes-config echoes-startup-server echoes-firmware"
 
 echo "=== Echoes of the Machine — Consolidated Server Installer ==="
 echo "Install dir : $INSTALL_DIR"
-echo "Run as user : $RUN_USER"
+echo "Run as user : $RUN_USER (group: $RUN_GROUP)"
 echo "Log dir     : $LOG_DIR"
 echo ""
 
-# ── 1. Stop and disable the old three services ───────────────────────────
+# ── 1. Create 'echoes' group and system user if they do not exist ────────
+RUN_GROUP="$RUN_USER"
+
+if ! getent group "$RUN_GROUP" >/dev/null 2>&1; then
+    echo "Creating system group: $RUN_GROUP"
+    groupadd --system "$RUN_GROUP"
+    echo "✓ Group '$RUN_GROUP' created"
+else
+    echo "✓ Group '$RUN_GROUP' already exists"
+fi
+
+if ! id -u "$RUN_USER" >/dev/null 2>&1; then
+    echo "Creating system user: $RUN_USER"
+    useradd \
+        --system \
+        --no-create-home \
+        --home-dir "$INSTALL_DIR" \
+        --shell /usr/sbin/nologin \
+        --gid "$RUN_GROUP" \
+        --comment "Echoes of the Machine server" \
+        "$RUN_USER"
+    echo "✓ User '$RUN_USER' created (primary group: $RUN_GROUP)"
+else
+    echo "✓ User '$RUN_USER' already exists"
+fi
+
+# ── 3. Stop and disable the old three services ───────────────────────────
 for svc in $OLD_SERVICES; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
         echo "Stopping  $svc"
@@ -33,30 +59,32 @@ for svc in $OLD_SERVICES; do
     fi
 done
 
-# ── 2. Create directories ────────────────────────────────────────────────
+# ── 4. Create directories ────────────────────────────────────────────────
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$LOG_DIR"
-chown "$RUN_USER":"$RUN_USER" "$INSTALL_DIR" "$LOG_DIR"
+chown "$RUN_USER":"$RUN_GROUP" "$INSTALL_DIR" "$LOG_DIR"
 
 # Firmware directory — build.sh deploy writes here, server reads from here.
-# Path is unchanged from the old firmware_server so no workflow changes needed.
-FIRMWARE_DIR=$(eval echo "~$RUN_USER/firmware_server/firmware")
+# Placed under INSTALL_DIR so it is covered by the service's ReadWritePaths.
+# To allow your deploy user to write here: sudo usermod -aG echoes <deploy-user>
+# then: sudo chmod g+w /opt/echoes/firmware_server/firmware
+FIRMWARE_DIR="$INSTALL_DIR/firmware_server/firmware"
 mkdir -p "$FIRMWARE_DIR"
-chown -R "$RUN_USER":"$RUN_USER" "$(eval echo "~$RUN_USER/firmware_server")"
+chown -R "$RUN_USER":"$RUN_GROUP" "$INSTALL_DIR/firmware_server"
 echo "Firmware dir: $FIRMWARE_DIR"
 
-# ── 3. Install server script ─────────────────────────────────────────────
+# ── 5. Install server script ─────────────────────────────────────────────
 cp echoes-server.py "$INSTALL_DIR/echoes-server.py"
-chown "$RUN_USER":"$RUN_USER" "$INSTALL_DIR/echoes-server.py"
+chown "$RUN_USER":"$RUN_GROUP" "$INSTALL_DIR/echoes-server.py"
 
 # Migrate config.json from old echoes-config install if present
 if [ -f "/opt/echoes-config/config.json" ] && [ ! -f "$INSTALL_DIR/config.json" ]; then
     echo "Migrating config.json from old echoes-config install"
     cp /opt/echoes-config/config.json "$INSTALL_DIR/config.json"
-    chown "$RUN_USER":"$RUN_USER" "$INSTALL_DIR/config.json"
+    chown "$RUN_USER":"$RUN_GROUP" "$INSTALL_DIR/config.json"
 fi
 
-# ── 4. Python venv + dependencies ────────────────────────────────────────
+# ── 6. Python venv + dependencies ────────────────────────────────────────
 if [ ! -d "$INSTALL_DIR/venv" ]; then
     echo "Creating Python venv…"
     python3 -m venv "$INSTALL_DIR/venv"
@@ -64,8 +92,10 @@ fi
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r requirements.txt
 
-# ── 5. Systemd service ───────────────────────────────────────────────────
-sed "s/User=pi/User=$RUN_USER/" echoes-server.service \
+# ── 7. Systemd service ───────────────────────────────────────────────────
+sed -e "s/User=pi/User=$RUN_USER/" \
+    -e "s/User=$RUN_USER/User=$RUN_USER\nGroup=$RUN_GROUP/" \
+    echoes-server.service \
     > /etc/systemd/system/${SERVICE_NAME}.service
 systemctl daemon-reload
 systemctl enable  "$SERVICE_NAME"

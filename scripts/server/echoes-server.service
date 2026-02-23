@@ -6,6 +6,7 @@ Wants=network.target
 [Service]
 Type=simple
 User=pi
+Group=echoes
 WorkingDirectory=/opt/echoes
 ExecStart=/opt/echoes/venv/bin/python /opt/echoes/echoes-server.py
 Restart=on-failure

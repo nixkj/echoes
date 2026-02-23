@@ -42,15 +42,27 @@ def _setup_logging(log_dir: Path) -> None:
     ch = logging.StreamHandler()
     ch.setFormatter(fmt)
     root.addHandler(ch)
-    # Rotating file
+    # Rotating file — general server log
     fh = RotatingFileHandler(log_dir / "echoes-server.log",
                              maxBytes=10 * 1024 * 1024, backupCount=5)
     fh.setFormatter(fmt)
     root.addHandler(fh)
 
+def _setup_startup_log(log_dir: Path) -> logging.Logger:
+    """Return a dedicated logger that writes startup reports to startup_reports.log."""
+    startup_logger = logging.getLogger("echoes.startup_reports")
+    startup_logger.setLevel(logging.INFO)
+    startup_logger.propagate = False   # don't duplicate into the root/server log
+    sh = RotatingFileHandler(log_dir / "startup_reports.log",
+                             maxBytes=10 * 1024 * 1024, backupCount=10)
+    sh.setFormatter(logging.Formatter("%(message)s"))  # pre-formatted lines
+    startup_logger.addHandler(sh)
+    return startup_logger
+
 LOG_DIR = Path(os.environ.get("ECHOES_LOG_DIR", "/var/log/echoes"))
 _setup_logging(LOG_DIR)
 log = logging.getLogger("echoes")
+startup_log = _setup_startup_log(LOG_DIR)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -58,7 +70,7 @@ log = logging.getLogger("echoes")
 
 _HERE        = Path(__file__).parent.resolve()
 CONFIG_FILE  = _HERE / "config.json"
-FIRMWARE_DIR = Path.home() / "firmware_server" / "firmware"
+FIRMWARE_DIR = Path("/opt/echoes/firmware_server/firmware")
 
 # ---------------------------------------------------------------------------
 # Flask app
@@ -435,6 +447,20 @@ def startup_report():
     
     if mac:
         _node_startup(mac, node_type, firmware, ip)
+
+    # Write a dedicated startup-report line (mirrors the format from the old
+    # standalone startup_server.py that operators rely on for fleet tracking).
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if has_errors and error_msg:
+        startup_log.info(
+            f"[{timestamp}] Startup Report | MAC: {mac} | Type: {node_type} | "
+            f"Firmware: {firmware} | IP: {ip} | Errors: YES | Error: {error_msg}"
+        )
+    else:
+        startup_log.info(
+            f"[{timestamp}] Startup Report | MAC: {mac} | Type: {node_type} | "
+            f"Firmware: {firmware} | IP: {ip} | Errors: NO"
+        )
 
     # Content-Length is mandatory — ESP-IDF returns ESP_ERR_HTTP_INCOMPLETE_DATA
     # when it is absent (chunked encoding, which BaseHTTPRequestHandler defaults to).
@@ -956,42 +982,26 @@ function resetRestartBtn() {
 }
 
 // ── Flock Grid ────────────────────────────────────────────────────────────
-const FLOCK_COUNT  = 50;
-const FLOCK_STALE  = 90_000;
-const FLOCK_OFFLINE= 180_000;
-
-function flockFakeMac(i) {
-  const b = [0xAC,0x67,0xB2,(i>>4)&0xFF,i&0xFF,(i*13+7)&0xFF];
-  return b.map(x=>x.toString(16).toUpperCase().padStart(2,'0')).join(':');
-}
-let flockNodes = Array.from({length:FLOCK_COUNT},(_,i)=>{
-  const id=i+1, roll=Math.random();
-  let offsetMs;
-  if (id===7||id===23||id===38) { offsetMs=null; }
-  else if (roll<0.72) { offsetMs=Math.random()*58000; }
-  else if (roll<0.87) { offsetMs=90000+Math.random()*60000; }
-  else { offsetMs=200000+Math.random()*120000; }
-  return { id, mac:flockFakeMac(i), node_type:i%7===0?'echoes-minimal':'echoes-full', firmware:'5.2.0',
-           last_seen_ms:offsetMs!==null?Date.now()-offsetMs:null };
-});
+const FLOCK_STALE   = 90_000;   // ms — matches server-side thresholds
+const FLOCK_OFFLINE = 180_000;
 
 function flockClassify(n) {
-  if (n.last_seen_ms===null) return 'fnever';
-  const age=Date.now()-n.last_seen_ms;
-  if (age<FLOCK_STALE) return 'fonline';
-  if (age<FLOCK_OFFLINE) return 'fstale';
+  if (!n.last_seen_ts) return 'fnever';
+  const age = Date.now() - n.last_seen_ts * 1000;   // last_seen_ts is Unix seconds
+  if (age < FLOCK_STALE)   return 'fonline';
+  if (age < FLOCK_OFFLINE) return 'fstale';
   return 'foffline';
 }
 function flockAgeStr(n) {
-  if (n.last_seen_ms===null) return '—';
-  const s=Math.floor((Date.now()-n.last_seen_ms)/1000);
-  if (s<60) return `${s}s ago`;
-  if (s<3600) return `${Math.floor(s/60)}m ${s%60}s ago`;
+  if (!n.last_seen_ts) return '—';
+  const s = Math.floor((Date.now() - n.last_seen_ts * 1000) / 1000);
+  if (s < 60)   return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ${s%60}s ago`;
   return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m ago`;
 }
-function flockFmtDate(ms) {
-  if (ms===null) return 'No data received';
-  const d=new Date(ms), p=n=>String(n).padStart(2,'0');
+function flockFmtDate(ts) {
+  if (!ts) return 'No data received';
+  const d = new Date(ts * 1000), p = n => String(n).padStart(2,'0');
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 function flockStatusLabel(cls) {
@@ -1003,38 +1013,51 @@ const fTip = document.createElement('div');
 fTip.className = 'ftooltip';
 document.body.appendChild(fTip);
 
+let flockNodes = [];
+
 function buildFlockGrid() {
-  const g=document.getElementById('flockGrid');
-  g.innerHTML='';
-  let online=0,stale=0,offline=0,never=0;
-  flockNodes.forEach(n=>{
-    const cls=flockClassify(n);
-    if (cls==='fonline') online++;
-    else if (cls==='fstale') stale++;
-    else if (cls==='foffline') offline++;
-    else never++;
-    const div=document.createElement('div');
-    div.className=`fnode ${cls}`;
-    div.innerHTML=``;
-    div.addEventListener('mouseenter', e=>{
-      fTip.className=`ftooltip ${cls}`;
-      fTip.innerHTML=`<div class="ftooltip-hdr"><span class="ftooltip-id">NODE-${String(n.id).padStart(2,'0')}</span><span class="ftooltip-status">${flockStatusLabel(cls)}</span></div>
-        <div class="ftooltip-row"><span class="ftooltip-key">MAC</span><span class="ftooltip-val">${n.mac}</span></div>
+  const g = document.getElementById('flockGrid');
+  g.innerHTML = '';
+  let online=0, stale=0, offline=0, never=0;
+
+  // Sort by MAC so grid positions are stable between refreshes
+  const sorted = [...flockNodes].sort((a,b) => a.mac.localeCompare(b.mac));
+
+  sorted.forEach(n => {
+    const cls = flockClassify(n);
+    if      (cls === 'fonline')  online++;
+    else if (cls === 'fstale')   stale++;
+    else if (cls === 'foffline') offline++;
+    else                         never++;
+
+    const div = document.createElement('div');
+    div.className = `fnode ${cls}`;
+    div.addEventListener('mouseenter', e => {
+      fTip.className = `ftooltip ${cls}`;
+      fTip.innerHTML =
+        `<div class="ftooltip-hdr"><span class="ftooltip-id">${n.mac}</span><span class="ftooltip-status">${flockStatusLabel(cls)}</span></div>
         <div class="ftooltip-row"><span class="ftooltip-key">Type</span><span class="ftooltip-val">${n.node_type}</span></div>
         <div class="ftooltip-row"><span class="ftooltip-key">FW</span><span class="ftooltip-val">${n.firmware}</span></div>
+        <div class="ftooltip-row"><span class="ftooltip-key">IP</span><span class="ftooltip-val">${n.ip}</span></div>
         <div class="ftooltip-row"><span class="ftooltip-key">Age</span><span class="ftooltip-val">${flockAgeStr(n)}</span></div>
-        <div class="ftooltip-ts">⏱ ${flockFmtDate(n.last_seen_ms)}</div>`;
-      fTip.style.display='block';
+        <div class="ftooltip-row"><span class="ftooltip-key">Polls</span><span class="ftooltip-val">${n.poll_count}</span></div>
+        <div class="ftooltip-row"><span class="ftooltip-key">Boots</span><span class="ftooltip-val">${n.boot_count}</span></div>
+        <div class="ftooltip-ts">⏱ ${flockFmtDate(n.last_seen_ts)}</div>`;
+      fTip.style.display = 'block';
       positionFlockTip(e);
     });
     div.addEventListener('mousemove', positionFlockTip);
-    div.addEventListener('mouseleave', ()=>{ fTip.style.display='none'; });
+    div.addEventListener('mouseleave', () => { fTip.style.display = 'none'; });
     g.appendChild(div);
   });
-  document.getElementById('fs-online').textContent=online;
-  document.getElementById('fs-stale').textContent=stale;
-  document.getElementById('fs-offline').textContent=offline;
-  document.getElementById('fs-never').textContent=never;
+
+  const total = flockNodes.length;
+  document.querySelector('.flock-title').textContent =
+    `Flock Monitor — ${total} Device${total !== 1 ? 's' : ''}`;
+  document.getElementById('fs-online').textContent  = online;
+  document.getElementById('fs-stale').textContent   = stale;
+  document.getElementById('fs-offline').textContent = offline;
+  document.getElementById('fs-never').textContent   = never;
 }
 
 function positionFlockTip(e) {
@@ -1047,18 +1070,52 @@ function positionFlockTip(e) {
   fTip.style.left=x+'px'; fTip.style.top=y+'px';
 }
 
-function flockSimulate() {
-  flockNodes.forEach(n=>{
-    if (n.last_seen_ms===null) return;
-    const age=Date.now()-n.last_seen_ms;
-    if (age>55000&&age<90000&&Math.random()<0.05) n.last_seen_ms=Date.now()-Math.random()*5000;
-    if (age>=90000&&Math.random()<0.015) n.last_seen_ms=Date.now()-Math.random()*20000;
-  });
+async function fetchFlockNodes() {
+  try {
+    const resp = await fetch('/nodes');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    flockNodes = await resp.json();
+    buildFlockGrid();
+  } catch(e) {
+    console.warn('Flock node fetch failed:', e);
+  }
 }
 
-buildFlockGrid();
-setInterval(()=>{ flockSimulate(); buildFlockGrid(); }, 15000);
-// Production: replace simulation with fetch('/flock/nodes') and call buildFlockGrid()
+fetchFlockNodes();
+setInterval(fetchFlockNodes, 15000);
+
+loadConfig(); showToast("All parameters reset to defaults","info"); updateDirtyCount(); }
+}
+function expandAll() { document.getElementById("filter-input").value=""; renderAll(); }
+function showToast(msg,type="info") {
+  const t=document.getElementById("toast"); t.textContent=msg; t.className="show "+type;
+  clearTimeout(t._t); t._t=setTimeout(()=>t.className="",3500);
+}
+document.getElementById("filter-input").addEventListener("input",renderAll);
+document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="s"){e.preventDefault();saveAll();}});
+
+async function requestRestart() {
+  const btn=document.getElementById("restart-btn"), st=document.getElementById("restart-status");
+  if (!confirm("Queue a restart for ALL nodes?\n\nEach node reboots at its next config poll (within 60 s).\nYou can cancel until the first node polls.")) return;
+  btn.disabled=true; btn.textContent="Queuing…";
+  try {
+    const d=await(await fetch("/restart",{method:"POST"})).json();
+    if (d.status==="restart_pending") {
+      showToast("Restart queued — nodes reboot within 90 s","success"); st.textContent="⏳ restart pending";
+      btn.textContent="✕ Cancel restart"; btn.onclick=cancelRestart; btn.disabled=false;
+    } else { showToast("Unexpected response","error"); resetRestartBtn(); }
+  } catch(e) { showToast("Network error: "+e.message,"error"); resetRestartBtn(); }
+}
+async function cancelRestart() {
+  const st=document.getElementById("restart-status");
+  try { const d=await(await fetch("/restart/cancel",{method:"POST"})).json(); showToast(d.was_pending?"Restart cancelled":"No restart was pending","info"); } catch(e) { showToast("Cancel failed","error"); }
+  resetRestartBtn();
+}
+function resetRestartBtn() {
+  const btn=document.getElementById("restart-btn"), st=document.getElementById("restart-status");
+  btn.innerHTML="⟳ Restart all nodes"; btn.onclick=requestRestart; btn.disabled=false; st.textContent="";
+}
+
 
 loadConfig();
 setInterval(updateQuietHoursBanner, 60000);
