@@ -228,6 +228,13 @@ void app_main(void)
          * before any task can call it.                                    */
         espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
 
+        /* Indicate system ready — pulse white LED before resuming tasks so
+         * app_main has sole ownership of the LED at this point and there is
+         * no race with audio_detection_task (priority 5 > app_main priority 1). */
+        set_led(BRIGHT_FULL, 0);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        set_led(0, 0);
+
         /* Resume application tasks now that OTA is resolved */
         if (h_audio)  vTaskResume(h_audio);
         if (h_lux)    vTaskResume(h_lux);
@@ -264,12 +271,7 @@ void app_main(void)
 
     } else {
         ESP_LOGI(TAG, "WiFi connection failed - continuing without OTA and startup report");
-        
-        /* Add error to report for logging purposes */
-        startup_report.has_errors = true;
-        snprintf(startup_report.error_message, sizeof(startup_report.error_message),
-                 "WiFi connection failed");
-        
+
         /* Flash blue LED to indicate no WiFi */
         for (int i = 0; i < 3; i++) {
             set_led(0, BRIGHT_FULL);
@@ -290,6 +292,14 @@ void app_main(void)
          * immediately on first run.                                        */
         espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
 
+        /* Pulse white LED before creating tasks — same reasoning as the WiFi
+         * path: app_main has sole LED ownership here; once the tasks start
+         * (priority 4–5 vs app_main priority 1) they will immediately
+         * preempt and could race on the LED.                               */
+        set_led(BRIGHT_FULL, 0);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        set_led(0, 0);
+
         /* Stack: see WiFi path above for sizing rationale. */
         xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, NULL);
 
@@ -302,20 +312,15 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "Echoes of the Machine running (tasks already started)");
     }
-    
+
     ESP_LOGI(TAG, "System started successfully!");
-    
+
     /* Log final startup summary */
     ESP_LOGI(TAG, "Startup Summary:");
-    ESP_LOGI(TAG, "  MAC: %s", startup_report.mac_address);
-    ESP_LOGI(TAG, "  Node Type: %s", startup_report.node_type);
-    ESP_LOGI(TAG, "  Errors: %s", startup_report.has_errors ? "YES" : "NO");
-    if (startup_report.has_errors) {
-        ESP_LOGI(TAG, "  Error Message: %s", startup_report.error_message);
+    ESP_LOGI(TAG, "  MAC:      %s", startup_report.mac_address);
+    ESP_LOGI(TAG, "  Type:     %s", startup_report.node_type);
+    ESP_LOGI(TAG, "  WiFi:     %s", wifi_connected ? "connected" : "no connection — startup report not sent");
+    if (wifi_connected) {
+        ESP_LOGI(TAG, "  Errors:   %s", startup_report.has_errors ? startup_report.error_message : "none");
     }
-    
-    /* Indicate system ready with white LED pulse */
-    set_led(BRIGHT_FULL, 0);
-    vTaskDelay(pdMS_TO_TICKS(500));
-    set_led(0, 0);
 }
