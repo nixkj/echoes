@@ -11,7 +11,7 @@ Replaces three separate processes:
 
 Everything now runs on port 8002.  The node registry is populated by
 startup POSTs (node_type, firmware, ip) and kept alive by 60-second
-config polls (last_seen, poll_count).  The flock dashboard therefore
+config polls (last_seen, poll_count).  The fleet dashboard therefore
 shows the full picture for the first time.
 
 Firmware files live in ~/firmware/ — the same path that
@@ -246,6 +246,11 @@ DEFAULT_CONFIG = {
     "ESPNOW_SOUND_THROTTLE_MS": {
         "value": 3000, "min": 500, "max": 30000, "step": 500, "type": "int",
         "description": "Minimum time between consecutive sound-event broadcasts from this node. Prevents flooding the mesh during rapid repeated detections.",
+        "unit": "ms"
+    },
+    "FLOCK_GRACE_MS": {
+        "value": 12000, "min": 0, "max": 60000, "step": 1000, "type": "int",
+        "description": "Boot grace period (ms) — flock mode is suppressed for this long after each node starts up. Prevents all nodes from triggering flock simultaneously during a mass restart, which can cause I2S stalls and stuck LEDs. Set to 0 to disable (not recommended).",
         "unit": "ms"
     },
     "FLOCK_MSG_COUNT": {
@@ -517,7 +522,7 @@ def startup_report():
         _node_startup(mac, node_type, firmware, ip)
 
     # Write a dedicated startup-report line (mirrors the format from the old
-    # standalone startup_server.py that operators rely on for flock tracking).
+    # standalone startup_server.py that operators rely on for fleet tracking).
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if has_errors and error_msg:
         startup_log.info(
@@ -551,7 +556,7 @@ def startup_report():
 
 @app.route("/nodes")
 def get_nodes():
-    """Return flock registry — one entry per known node."""
+    """Return fleet registry — one entry per known node."""
     with _nodes_lock:
         return jsonify(list(_nodes.values()))
 
@@ -796,27 +801,27 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .toggle-on .toggle-label { color: var(--danger); font-weight: 700; }
   .toggle-on { border-color: var(--danger); background: rgba(240,74,106,0.08); }
 
-  /* ── Flock Grid ── */
-  .flock-section { margin-bottom: 36px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
-  .flock-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 8px; }
-  .flock-title { font-family: var(--font-head); font-size: 11px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: var(--text-dim); display: flex; align-items: center; gap: 8px; }
-  .flock-title::before { content: ''; display: inline-block; width: 7px; height: 7px; background: var(--accent2); border-radius: 50%; animation: pulse 2s infinite; }
-  .flock-stats { display: flex; gap: 20px; }
+  /* ── Fleet Grid ── */
+  .fleet-section { margin-bottom: 36px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+  .fleet-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 8px; }
+  .fleet-title { font-family: var(--font-head); font-size: 11px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: var(--text-dim); display: flex; align-items: center; gap: 8px; }
+  .fleet-title::before { content: ''; display: inline-block; width: 7px; height: 7px; background: var(--accent2); border-radius: 50%; animation: pulse 2s infinite; }
+  .fleet-stats { display: flex; gap: 20px; }
   .fstat { display: flex; align-items: baseline; gap: 5px; font-size: 11px; font-family: var(--font-mono); }
   .fstat-val { font-size: 16px; }
   .fstat-val.green { color: #3ddc5e; }
   .fstat-val.amber { color: #e0a020; }
   .fstat-val.red   { color: #e03a3a; }
   .fstat-lbl { color: var(--text-dim); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
-  .flock-legend { display: flex; gap: 12px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
+  .fleet-legend { display: flex; gap: 12px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
   .fleg { display: flex; align-items: center; gap: 4px; }
   .fleg-dot { width: 7px; height: 7px; border-radius: 50%; }
   .fleg-dot.green { background: #3ddc5e; }
   .fleg-dot.amber { background: #e0a020; }
   .fleg-dot.red   { background: #e03a3a; }
-  .flock-body { padding: 14px 18px; }
-  .flock-poll { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 10px; }
-  .flock-poll-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); animation: pulse 2s infinite; }
+  .fleet-body { padding: 14px 18px; }
+  .fleet-poll { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 10px; }
+  .fleet-poll-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); animation: pulse 2s infinite; }
   .fnode-grid { display: grid; grid-template-columns: repeat(50, 1fr); gap: 2px; }
   @media (max-width: 700px) { .fnode-grid { grid-template-columns: repeat(25, 1fr); } }
   .fnode { position: relative; aspect-ratio: 1; border-radius: 1px; cursor: default; border: none; transition: transform 0.12s ease; }
@@ -852,24 +857,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
   </header>
 
-  <!-- ── Flock Grid ── -->
-  <div class="flock-section">
-    <div class="flock-header">
-      <div class="flock-title">Flock Monitor — 50 Devices</div>
-      <div class="flock-stats">
+  <!-- ── Fleet Grid ── -->
+  <div class="fleet-section">
+    <div class="fleet-header">
+      <div class="fleet-title">Fleet Monitor — 50 Devices</div>
+      <div class="fleet-stats">
         <div class="fstat"><span class="fstat-val green" id="fs-online">—</span></div>
         <div class="fstat"><span class="fstat-val amber" id="fs-stale">—</span></div>
         <div class="fstat"><span class="fstat-val red" id="fs-offline">—</span></div>
       </div>
-      <div class="flock-legend">
+      <div class="fleet-legend">
         <span class="fleg"><span class="fleg-dot green"></span>Online</span>
         <span class="fleg"><span class="fleg-dot amber"></span>Stale</span>
         <span class="fleg"><span class="fleg-dot red"></span>Offline</span>
       </div>
     </div>
-    <div class="flock-body">
-      <div class="flock-poll"><div class="flock-poll-dot"></div><span id="flock-poll-label">Live · refreshing every 15 s · STALE &gt;90 s · OFFLINE &gt;180 s</span></div>
-      <div class="fnode-grid" id="flockGrid"></div>
+    <div class="fleet-body">
+      <div class="fleet-poll"><div class="fleet-poll-dot"></div><span id="fleet-poll-label">Live · refreshing every 15 s · STALE &gt;90 s · OFFLINE &gt;180 s</span></div>
+      <div class="fnode-grid" id="fleetGrid"></div>
     </div>
   </div>
 
@@ -909,7 +914,7 @@ const SECTIONS = {
   "LED Behaviour":    ["VU_MAX_BRIGHTNESS"],
   "ESP-NOW Mesh":     ["ESPNOW_LUX_THRESHOLD","ESPNOW_EVENT_TTL_MS","ESPNOW_SOUND_THROTTLE_MS"],
   "Markov Chain":     ["MARKOV_IDLE_TRIGGER_MS","MARKOV_AUTONOMOUS_COOLDOWN_MS"],
-  "Flock Mode":       ["FLOCK_MSG_COUNT","FLOCK_WINDOW_MS","FLOCK_HOLD_MS","FLOCK_CALL_GAP_MS"],
+  "Flock Mode":       ["FLOCK_GRACE_MS","FLOCK_MSG_COUNT","FLOCK_WINDOW_MS","FLOCK_HOLD_MS","FLOCK_CALL_GAP_MS"],
 };
 
 let fullConfig = {}, dirty = {};
@@ -930,10 +935,10 @@ async function updateQuietHoursBanner() {
     banner.style.display = "block";
     if (d.quiet_now) {
       banner.style.cssText += ";background:rgba(240,74,106,0.08);border-color:var(--danger);color:var(--danger)";
-      banner.innerHTML = `🔇 <strong>QUIET HOURS ACTIVE</strong> — flock is silent until ${String(d.quiet_end).padStart(2,"0")}:00 &nbsp;·&nbsp; ${d.minutes_to_next_event} min remaining &nbsp;·&nbsp; server time ${d.server_time}`;
+      banner.innerHTML = `🔇 <strong>QUIET HOURS ACTIVE</strong> — fleet is silent until ${String(d.quiet_end).padStart(2,"0")}:00 &nbsp;·&nbsp; ${d.minutes_to_next_event} min remaining &nbsp;·&nbsp; server time ${d.server_time}`;
     } else {
       banner.style.cssText += ";background:rgba(200,240,74,0.06);border-color:var(--accent);color:var(--accent)";
-      banner.innerHTML = `🔊 Flock active — quiet hours begin at ${String(d.quiet_start).padStart(2,"0")}:00 &nbsp;·&nbsp; ${d.minutes_to_next_event} min until silence &nbsp;·&nbsp; server time ${d.server_time}`;
+      banner.innerHTML = `🔊 Fleet active — quiet hours begin at ${String(d.quiet_start).padStart(2,"0")}:00 &nbsp;·&nbsp; ${d.minutes_to_next_event} min until silence &nbsp;·&nbsp; server time ${d.server_time}`;
     }
   } catch(e) {}
 }
@@ -1043,30 +1048,30 @@ function resetRestartBtn() {
   btn.innerHTML="⟳ Restart all nodes"; btn.onclick=requestRestart; btn.disabled=false; st.textContent="";
 }
 
-// ── Flock Grid ────────────────────────────────────────────────────────────
+// ── Fleet Grid ────────────────────────────────────────────────────────────
 const FLOCK_STALE   = 90_000;   // ms — matches server-side thresholds
 const FLOCK_OFFLINE = 180_000;
 
-function flockClassify(n) {
+function fleetClassify(n) {
   if (!n.last_seen_ts) return 'foffline';
   const age = Date.now() - n.last_seen_ts * 1000;   // last_seen_ts is Unix seconds
   if (age < FLOCK_STALE)   return 'fonline';
   if (age < FLOCK_OFFLINE) return 'fstale';
   return 'foffline';
 }
-function flockAgeStr(n) {
+function fleetAgeStr(n) {
   if (!n.last_seen_ts) return '—';
   const s = Math.floor((Date.now() - n.last_seen_ts * 1000) / 1000);
   if (s < 60)   return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s/60)}m ${s%60}s ago`;
   return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m ago`;
 }
-function flockFmtDate(ts) {
+function fleetFmtDate(ts) {
   if (!ts) return 'No data received';
   const d = new Date(ts * 1000), p = n => String(n).padStart(2,'0');
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
-function flockStatusLabel(cls) {
+function fleetStatusLabel(cls) {
   return {fonline:'ONLINE',fstale:'STALE',foffline:'OFFLINE'}[cls];
 }
 
@@ -1075,18 +1080,18 @@ const fTip = document.createElement('div');
 fTip.className = 'ftooltip';
 document.body.appendChild(fTip);
 
-let flockNodes = [];
+let fleetNodes = [];
 
-function buildFlockGrid() {
-  const g = document.getElementById('flockGrid');
+function buildFleetGrid() {
+  const g = document.getElementById('fleetGrid');
   g.innerHTML = '';
   let online=0, stale=0, offline=0;
 
   // Sort by MAC so grid positions are stable between refreshes
-  const sorted = [...flockNodes].sort((a,b) => a.mac.localeCompare(b.mac));
+  const sorted = [...fleetNodes].sort((a,b) => a.mac.localeCompare(b.mac));
 
   sorted.forEach(n => {
-    const cls = flockClassify(n);
+    const cls = fleetClassify(n);
     if      (cls === 'fonline')  online++;
     else if (cls === 'fstale')   stale++;
     else                         offline++;
@@ -1096,31 +1101,31 @@ function buildFlockGrid() {
     div.addEventListener('mouseenter', e => {
       fTip.className = `ftooltip ${cls}`;
       fTip.innerHTML =
-        `<div class="ftooltip-hdr"><span class="ftooltip-id">${n.mac}</span><span class="ftooltip-status">${flockStatusLabel(cls)}</span></div>
+        `<div class="ftooltip-hdr"><span class="ftooltip-id">${n.mac}</span><span class="ftooltip-status">${fleetStatusLabel(cls)}</span></div>
         <div class="ftooltip-row"><span class="ftooltip-key">Type</span><span class="ftooltip-val">${n.node_type}</span></div>
         <div class="ftooltip-row"><span class="ftooltip-key">FW</span><span class="ftooltip-val">${n.firmware}</span></div>
         <div class="ftooltip-row"><span class="ftooltip-key">IP</span><span class="ftooltip-val">${n.ip}</span></div>
-        <div class="ftooltip-row"><span class="ftooltip-key">Age</span><span class="ftooltip-val">${flockAgeStr(n)}</span></div>
+        <div class="ftooltip-row"><span class="ftooltip-key">Age</span><span class="ftooltip-val">${fleetAgeStr(n)}</span></div>
         <div class="ftooltip-row"><span class="ftooltip-key">Polls</span><span class="ftooltip-val">${n.poll_count}</span></div>
         <div class="ftooltip-row"><span class="ftooltip-key">Boots</span><span class="ftooltip-val">${n.boot_count}</span></div>
-        <div class="ftooltip-ts">⏱ ${flockFmtDate(n.last_seen_ts)}</div>`;
+        <div class="ftooltip-ts">⏱ ${fleetFmtDate(n.last_seen_ts)}</div>`;
       fTip.style.display = 'block';
-      positionFlockTip(e);
+      positionFleetTip(e);
     });
-    div.addEventListener('mousemove', positionFlockTip);
+    div.addEventListener('mousemove', positionFleetTip);
     div.addEventListener('mouseleave', () => { fTip.style.display = 'none'; });
     g.appendChild(div);
   });
 
-  const total = flockNodes.length;
-  document.querySelector('.flock-title').textContent =
-    `Flock Monitor — ${total} Device${total !== 1 ? 's' : ''}`;
+  const total = fleetNodes.length;
+  document.querySelector('.fleet-title').textContent =
+    `Fleet Monitor — ${total} Device${total !== 1 ? 's' : ''}`;
   document.getElementById('fs-online').textContent  = online;
   document.getElementById('fs-stale').textContent   = stale;
   document.getElementById('fs-offline').textContent = offline;
 }
 
-function positionFlockTip(e) {
+function positionFleetTip(e) {
   const tw=fTip.offsetWidth||200, th=fTip.offsetHeight||120;
   const margin=10;
   let x=e.clientX+14, y=e.clientY-th-10;
@@ -1130,19 +1135,19 @@ function positionFlockTip(e) {
   fTip.style.left=x+'px'; fTip.style.top=y+'px';
 }
 
-async function fetchFlockNodes() {
+async function fetchFleetNodes() {
   try {
     const resp = await fetch('/nodes');
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    flockNodes = await resp.json();
-    buildFlockGrid();
+    fleetNodes = await resp.json();
+    buildFleetGrid();
   } catch(e) {
-    console.warn('Flock node fetch failed:', e);
+    console.warn('Fleet node fetch failed:', e);
   }
 }
 
-fetchFlockNodes();
-setInterval(fetchFlockNodes, 15000);
+fetchFleetNodes();
+setInterval(fetchFleetNodes, 15000);
 
 
 loadConfig();
@@ -1176,7 +1181,7 @@ if __name__ == "__main__":
     log.info("  GET  /firmware/<file>   OTA binary + version")
     log.info("  POST /startup           node boot reports")
     log.info("  GET  /config            60-second device poll")
-    log.info("  GET  /nodes             flock registry JSON")
-    log.info("  GET  /                  config + flock web UI")
+    log.info("  GET  /nodes             fleet registry JSON")
+    log.info("  GET  /                  config + fleet web UI")
     log.info("=" * 60)
     app.run(host="0.0.0.0", port=8002, debug=False, threaded=True)

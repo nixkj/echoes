@@ -106,6 +106,10 @@
 #define FLOCK_MSG_COUNT         12      // default messages-in-window to trigger flock mode
 #define FLOCK_WINDOW_MS         6000    // sliding window in ms
 #define FLOCK_HOLD_MS           10000   // how long flock mode persists after trigger
+#define FLOCK_GRACE_MS          12000   // suppress flock mode for 12 s after espnow_mesh_init()
+                                        // prevents all nodes entering flock simultaneously on
+                                        // a mass restart (they flood each other with boot
+                                        // broadcasts before any audio task is stable)
 #define FLOCK_CALL_GAP_MS       200     // inter-call silence during flock mode
 #define FLOCK_QUELEA_PERCENT    60      // % of flock calls that play Quelea (rest = random)
 

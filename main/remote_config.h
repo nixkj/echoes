@@ -109,6 +109,9 @@ typedef struct {
     uint32_t espnow_sound_throttle_ms;  /**< Min gap between sound broadcasts */
 
     /* ── Flock mode (unified activity threshold) ─────────────────── */
+    uint32_t flock_grace_ms;    /**< Boot grace period (ms) — flock mode suppressed for this
+                                 *   long after espnow_mesh_init().  Prevents all nodes from
+                                 *   triggering flock simultaneously on a mass restart. */
     uint32_t flock_msg_count;   /**< Messages in window to trigger flock mode;
                                      runtime override of FLOCK_MSG_COUNT.
                                      Must be <= FLOCK_RING_MAX (50).         */

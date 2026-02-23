@@ -52,6 +52,7 @@ static uint32_t            s_rx_times[FLOCK_RING_MAX] = {0};
 static uint8_t             s_rx_head     = 0;       /* next slot to write   */
 static bool                s_flock_active = false;
 static uint32_t            s_flock_last_ms = 0;     /* last trigger time    */
+static uint32_t            s_boot_ms = 0;           /* millis() at init — used for grace period */
 
 /* Timestamp (ms) of the last remote event that influenced our bird set */
 static uint32_t            s_last_remote_event_ms = 0;
@@ -289,6 +290,7 @@ bool espnow_mesh_init(bird_call_mapper_t *mapper, markov_chain_t *mc)
     ESP_LOGI(TAG, "ESP-NOW mesh initialised (broadcast-only)");
 
     s_initialized = true;
+    s_boot_ms     = millis();   /* start of grace period — flock suppressed for FLOCK_GRACE_MS */
 
     /* Seed local lux now so blend_lux() has a valid reference immediately,
      * even if the lux broadcast task hasn't fired yet.  A negative result
@@ -369,6 +371,7 @@ bool espnow_mesh_is_flock_mode(void)
     remote_config_t cfg;
     if (!remote_config_snapshot(&cfg)) {
         /* Fallback to compile-time defaults if mutex is contended */
+        cfg.flock_grace_ms  = FLOCK_GRACE_MS;
         cfg.flock_msg_count = FLOCK_MSG_COUNT;
         cfg.flock_window_ms = FLOCK_WINDOW_MS;
         cfg.flock_hold_ms   = FLOCK_HOLD_MS;
@@ -381,6 +384,20 @@ bool espnow_mesh_is_flock_mode(void)
 
     uint32_t flock_window = cfg.flock_window_ms;
     uint32_t now          = millis();
+
+    /* Boot grace period — suppress flock mode for cfg.flock_grace_ms after init.
+     *
+     * On a simultaneous restart all nodes flood each other with ESP-NOW
+     * broadcasts during the OTA check / remote-config fetch window, trivially
+     * crossing the flock threshold before any audio task is stable.  The
+     * first node to attempt a bird call hits i2s_channel_write while the
+     * speaker DMA is still settling, potentially blocking forever with the
+     * LED stuck on.  Suppressing flock for the grace period gives every node
+     * time to complete its boot sequence before the first flock event fires.
+     * Remotely configurable — set to 0 to disable (not recommended). */
+    if (s_boot_ms != 0 && (now - s_boot_ms) < cfg.flock_grace_ms) {
+        return false;
+    }
 
     uint8_t oldest_slot = (uint8_t)
         ((s_rx_head + FLOCK_RING_MAX - (uint8_t)flock_count) % FLOCK_RING_MAX);

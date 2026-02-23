@@ -83,6 +83,7 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .espnow_sound_throttle_ms    = 3000,
 
     /* Flock mode */
+    .flock_grace_ms              = 12000,
     .flock_msg_count             = 12,
     .flock_window_ms             = 6000,
     .flock_hold_ms               = 10000,
@@ -264,6 +265,7 @@ static void apply_json_to(cJSON *root, remote_config_t *dst)
     CFG_UINT32 (root, dst->espnow_sound_throttle_ms,    "ESPNOW_SOUND_THROTTLE_MS");
 
     /* Flock mode */
+    CFG_UINT32 (root, dst->flock_grace_ms,     "FLOCK_GRACE_MS");
     CFG_UINT32 (root, dst->flock_msg_count,    "FLOCK_MSG_COUNT");
     CFG_UINT32 (root, dst->flock_window_ms,    "FLOCK_WINDOW_MS");
     CFG_UINT32 (root, dst->flock_hold_ms,      "FLOCK_HOLD_MS");

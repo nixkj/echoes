@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/timers.h"
 
 #include "esp_system.h"
 #include "esp_wifi.h"
@@ -46,6 +47,21 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_FAIL_BIT      BIT1
 
 static int s_retry_num = 0;
+
+/* After WIFI_MAXIMUM_RETRY rapid attempts all fail (e.g. AP is down), we
+ * back off and retry every WIFI_RECONNECT_DELAY_MS.  This keeps the node
+ * reconnecting automatically when the AP recovers without hammering it. */
+#define WIFI_RECONNECT_DELAY_MS  30000
+static TimerHandle_t s_reconnect_timer = NULL;
+
+static void wifi_reconnect_timer_cb(TimerHandle_t xTimer)
+{
+    (void)xTimer;
+    ESP_LOGI("WIFI", "Attempting reconnect after backoff...");
+    s_retry_num = 0;        /* reset so the disconnect handler gets fresh retries */
+    esp_wifi_connect();
+}
+
 static ota_state_t s_ota_state = {
     .wifi_connected = false,
     .ota_status = OTA_STATUS_IDLE,
@@ -64,19 +80,34 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        s_ota_state.wifi_connected = false;
         if (s_retry_num < WIFI_MAXIMUM_RETRY) {
             esp_wifi_connect();
             s_retry_num++;
             ESP_LOGI(TAG, "Retry connecting to WiFi (%d/%d)", s_retry_num, WIFI_MAXIMUM_RETRY);
         } else {
+            /* Rapid retries exhausted — start a backoff timer so we keep
+             * trying every WIFI_RECONNECT_DELAY_MS until the AP recovers.
+             * The timer resets s_retry_num so each backoff attempt gets a
+             * fresh burst of WIFI_MAXIMUM_RETRY quick retries.             */
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            if (s_reconnect_timer != NULL &&
+                xTimerIsTimerActive(s_reconnect_timer) == pdFALSE) {
+                ESP_LOGW(TAG, "WiFi retries exhausted — backing off %d s before next attempt",
+                         WIFI_RECONNECT_DELAY_MS / 1000);
+                xTimerStart(s_reconnect_timer, 0);
+            }
         }
-        s_ota_state.wifi_connected = false;
-        ESP_LOGI(TAG, "WiFi connection failed");
+        ESP_LOGI(TAG, "WiFi disconnected");
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
+        /* Stop the backoff timer if it was running — connection is up */
+        if (s_reconnect_timer != NULL &&
+            xTimerIsTimerActive(s_reconnect_timer) == pdTRUE) {
+            xTimerStop(s_reconnect_timer, 0);
+        }
         s_ota_state.wifi_connected = true;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
@@ -130,6 +161,20 @@ bool wifi_init_and_connect(void)
     };
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+
+    /* Create the backoff reconnect timer (one-shot; restarted by the
+     * disconnect handler each time retries are exhausted).               */
+    s_reconnect_timer = xTimerCreate("wifi_reconnect",
+                                     pdMS_TO_TICKS(WIFI_RECONNECT_DELAY_MS),
+                                     pdFALSE,          /* one-shot */
+                                     NULL,
+                                     wifi_reconnect_timer_cb);
+    /* Non-fatal if timer creation fails — node will still connect at boot,
+     * just won't auto-recover if the AP drops mid-session.               */
+    if (s_reconnect_timer == NULL) {
+        ESP_LOGW(TAG, "Failed to create WiFi reconnect timer — mid-session recovery disabled");
+    }
+
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "WiFi initialization finished. Connecting to SSID: %s", CONFIG_WIFI_SSID);
