@@ -81,6 +81,19 @@ echo "Firmware dir: $FIRMWARE_DIR  (writable by group '$RUN_GROUP')"
 cp "$SCRIPT_DIR/echoes-server.py" "$INSTALL_DIR/echoes-server.py"
 chown "$RUN_USER":"$RUN_GROUP" "$INSTALL_DIR/echoes-server.py"
 
+# Install nodes.csv if present one directory above the repo (same convention
+# as ../sdkconfig.local — keeps site-specific data outside version control).
+# SCRIPT_DIR is  <repo>/scripts/server, so ../../../  is the parent of <repo>.
+NODES_CSV="$(cd "$SCRIPT_DIR/../../.." && pwd)/nodes.csv"
+if [ -f "$NODES_CSV" ]; then
+    echo "Installing nodes.csv from $NODES_CSV"
+    cp "$NODES_CSV" "$INSTALL_DIR/nodes.csv"
+    chown "$RUN_USER":"$RUN_GROUP" "$INSTALL_DIR/nodes.csv"
+    echo "✓ nodes.csv installed"
+else
+    echo "ℹ nodes.csv not found at $NODES_CSV — skipping (fleet order will be undefined)"
+fi
+
 # Migrate config.json from old echoes-config install if present
 if [ -f "/opt/echoes-config/config.json" ] && [ ! -f "$INSTALL_DIR/config.json" ]; then
     echo "Migrating config.json from old echoes-config install"
