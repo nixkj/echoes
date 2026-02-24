@@ -968,8 +968,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .fleet-body { padding: 14px 18px; }
   .fleet-poll { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 10px; }
   .fleet-poll-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); animation: pulse 2s infinite; }
-  .fnode-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(28px, 1fr)); gap: 2px; }
-  @media (max-width: 700px) { .fnode-grid { grid-template-columns: repeat(auto-fill, minmax(24px, 1fr)); } }
+  .fnode-grid { display: grid; grid-template-columns: repeat(27, 1fr); gap: 2px; }
+  @media (max-width: 700px) { .fnode-grid { grid-template-columns: repeat(27, 1fr); } }
   .fnode { position: relative; aspect-ratio: 1; border-radius: 2px; cursor: default; border: 1px solid transparent; transition: transform 0.12s ease; display: flex; align-items: center; justify-content: center; }
   .fnode:hover { transform: scale(1.25); z-index: 5; }
   .fnode.fonline  { background: #1a5c2a; border-color: #2a8c42; }
@@ -979,10 +979,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .fonline  .fnode-label { color: #5dfc7e; }
   .fstale   .fnode-label { color: #e0a020; }
   .foffline .fnode-label { color: #8c4040; }
-  /* Group separator — spans full grid width */
-  .fnode-sep { grid-column: 1 / -1; height: 8px; display: flex; align-items: center; gap: 8px; margin: 2px 0; pointer-events: none; }
-  .fnode-sep::before, .fnode-sep::after { content: ''; flex: 1; height: 1px; background: var(--border); }
-  .fnode-sep-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  /* Column separator — single cell, vertical tick mark, sits between two groups on the same row */
+  .fnode-col-sep { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; }
+  .fnode-col-sep::after { content: ''; width: 1px; height: 55%; background: var(--border); }
+  /* Row break — spans all columns, thin horizontal rule between the two pairs of groups */
+  .fnode-row-break { grid-column: 1 / -1; height: 7px; display: flex; align-items: center; gap: 8px; }
+  .fnode-row-break::before, .fnode-row-break::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .fnode-row-break-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
   /* Tooltip — fixed positioning via JS */
   .ftooltip { display: none; position: fixed; background: #090b09; border: 1px solid var(--border); border-radius: 3px; padding: 10px 13px; min-width: 220px; z-index: 9999; pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,0.7); font-size: 12px; }
   .ftooltip-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
@@ -1245,14 +1248,27 @@ function buildFleetGrid() {
   g.innerHTML = '';
   let online=0, stale=0, offline=0;
 
+  // Separators alternate roles based on their index in the catalogue:
+  //   Odd  (1st, 3rd) → column gap: single cell between two groups on the same row
+  //   Even (2nd)      → row break:  full-width rule between the two pairs of rows
+  let sepCount = 0;
+
   // Server returns nodes in catalogue order — preserve it, no re-sort.
   fleetNodes.forEach(n => {
-    // Separator row — render a full-width divider, don't count in stats
     if (n.separator) {
-      const sep = document.createElement('div');
-      sep.className = 'fnode-sep';
-      sep.innerHTML = '<span class="fnode-sep-dot"></span>';
-      g.appendChild(sep);
+      sepCount++;
+      if (sepCount % 2 === 0) {
+        // Row break — forces a new grid row between the two pairs of groups
+        const brk = document.createElement('div');
+        brk.className = 'fnode-row-break';
+        brk.innerHTML = '<span class="fnode-row-break-dot"></span>';
+        g.appendChild(brk);
+      } else {
+        // Column separator — single cell gap between groups on the same row
+        const sep = document.createElement('div');
+        sep.className = 'fnode-col-sep';
+        g.appendChild(sep);
+      }
       return;
     }
 
