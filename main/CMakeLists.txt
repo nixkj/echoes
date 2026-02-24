@@ -18,8 +18,6 @@ idf_component_register(
         nvs_flash 
 	esp_wifi
         esp_http_client 
-        esp_https_ota 
         app_update
-	nvs_flash
 	json
 )

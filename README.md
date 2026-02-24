@@ -147,7 +147,7 @@ After the server is running, copy your firmware binary and set the version:
 
 ```bash
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "6.2.1" > /opt/echoes/firmware/version.txt
+echo "6.2.0" > /opt/echoes/firmware/version.txt
 ```
 
 Or use `./build.sh deploy` after a successful build to do both steps at once.
@@ -200,7 +200,7 @@ All logs are written to `/var/log/echoes/`:
 ### Using build.sh (recommended)
 
 ```bash
-./build.sh version patch     # 6.2.1 → 6.2.2 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh version patch     # 6.2.0 → 6.2.1 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
 ./build.sh deploy            # Copy binary + version.txt to /opt/echoes/firmware/; archive copy saved to firmware/archive/<version>/
 ```
@@ -217,7 +217,7 @@ Or in one step:
 # Edit FIRMWARE_VERSION in main/ota.h, then:
 idf.py build
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "6.2.2" > /opt/echoes/firmware/version.txt
+echo "6.2.0" > /opt/echoes/firmware/version.txt
 ```
 
 Each deploy also saves a copy of the binary to `/opt/echoes/firmware/archive/<version>/` alongside a `manifest.txt` recording the version, timestamp, deploying user, MD5, and file size. If the same version is deployed again the archive entry is suffixed with a datestamp rather than overwritten.
@@ -236,9 +236,9 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 5.5.2 → 5.5.3) |
-| `./build.sh version minor` | Increment minor version (e.g. 5.5.2 → 5.6.0) |
-| `./build.sh version major` | Increment major version (e.g. 5.5.2 → 6.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 6.2.0 → 6.2.1) |
+| `./build.sh version minor` | Increment minor version (e.g. 6.2.0 → 6.3.0) |
+| `./build.sh version major` | Increment major version (e.g. 6.2.0 → 7.0.0) |
 | `./build.sh deploy` | Copy binary and `version.txt` to `/opt/echoes/firmware/`; archive a versioned copy with manifest to `/opt/echoes/firmware/archive/<version>/` |
 | `./build.sh services` | Install the consolidated `echoes-server` as a systemd service (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -413,10 +413,19 @@ I (17034) MAIN: Starting Echoes of the Machine (no-WiFi path)...
 I (17040) ECHOES: Audio detection task started
 ```
 
+## To do
+- KiCad/ Fritzing for completeness
 
 ## Version History
 
-**6.2.1** — Current
+**6.2.0** - Current
+- Minor inconsistencies in code and documentation resolved
+
+**6.1.2**
+- Startup and networking more robust
+- Dashboard includes visual status of all nodes
+
+**6.0.0**
 - Server consolidation: three separate services (OTA :8000, startup :8001, config :8002) replaced by a single `echoes-server` process on port 8002
 - `echoes` system user and group created by installer; server runs under least-privilege account
 - Startup reports now written to a dedicated `startup_reports.log` (was silently dropped after consolidation)

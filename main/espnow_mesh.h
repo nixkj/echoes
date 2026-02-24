@@ -26,9 +26,6 @@
  * CONFIGURATION
  * ======================================================================== */
 
-/** Channel must match the channel used by the WiFi STA interface. */
-#define ESPNOW_CHANNEL          1
-
 /**
  * Minimum time (ms) between consecutive sound broadcasts from this node.
  * Prevents flooding during rapid repeated detections.

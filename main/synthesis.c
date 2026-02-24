@@ -370,8 +370,7 @@ size_t generate_red_billed_quelea(bird_synthesizer_t *synth, audio_buffer_t *out
 
     /*
      * Post-process gain: synth->quelea_gain (default 1.5×, set from remote
-     * config via echoes.c before each call).  Quelea bypasses the global
-     * VOLUME constant so this is its sole loudness control.
+     * config via echoes.c before each call).
      */
     float quelea_gain = synth->quelea_gain;
     for (size_t i = 0; i < pos; i++) {
