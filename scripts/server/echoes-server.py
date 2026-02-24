@@ -965,11 +965,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .fleg-dot.green { background: #3ddc5e; }
   .fleg-dot.amber { background: #e0a020; }
   .fleg-dot.red   { background: #e03a3a; }
-  .fleet-body { padding: 14px 18px; }
+  .fleet-body { padding: 14px 18px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .fleet-poll { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 10px; }
   .fleet-poll-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); animation: pulse 2s infinite; }
-  .fnode-grid { display: grid; grid-template-columns: repeat(27, 1fr); gap: 2px; }
-  @media (max-width: 700px) { .fnode-grid { grid-template-columns: repeat(27, 1fr); } }
+  .fnode-grid { display: grid; grid-template-columns: repeat(27, 1fr); gap: 2px; min-width: 460px; }
   .fnode { position: relative; aspect-ratio: 1; border-radius: 2px; cursor: default; border: 1px solid transparent; transition: transform 0.12s ease; display: flex; align-items: center; justify-content: center; }
   .fnode:hover { transform: scale(1.25); z-index: 5; }
   .fnode.fonline  { background: #1a5c2a; border-color: #2a8c42; }
