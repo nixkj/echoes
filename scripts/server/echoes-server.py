@@ -968,14 +968,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .fleet-body { padding: 14px 18px; }
   .fleet-poll { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 10px; }
   .fleet-poll-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); animation: pulse 2s infinite; }
-  .fnode-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 3px; }
-  @media (max-width: 700px) { .fnode-grid { grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); } }
+  .fnode-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(28px, 1fr)); gap: 2px; }
+  @media (max-width: 700px) { .fnode-grid { grid-template-columns: repeat(auto-fill, minmax(24px, 1fr)); } }
   .fnode { position: relative; aspect-ratio: 1; border-radius: 2px; cursor: default; border: 1px solid transparent; transition: transform 0.12s ease; display: flex; align-items: center; justify-content: center; }
   .fnode:hover { transform: scale(1.25); z-index: 5; }
   .fnode.fonline  { background: #1a5c2a; border-color: #2a8c42; }
   .fnode.fstale   { background: #4a3408; border-color: #7a5010; }
   .fnode.foffline { background: #2a1010; border-color: #5c2424; }
-  .fnode-label { font-family: var(--font-mono); font-size: 9px; font-weight: 700; line-height: 1; letter-spacing: 0; pointer-events: none; user-select: none; }
+  .fnode-label { font-family: var(--font-mono); font-size: 8px; font-weight: 700; line-height: 1; letter-spacing: 0; pointer-events: none; user-select: none; }
   .fonline  .fnode-label { color: #5dfc7e; }
   .fstale   .fnode-label { color: #e0a020; }
   .foffline .fnode-label { color: #8c4040; }
