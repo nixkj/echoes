@@ -566,8 +566,11 @@ static void _play_locked(const char *bird_name, const audio_buffer_t *audio_buff
                             (const uint8_t *)s_scaled_chunk,
                             samples_in_chunk * sizeof(int16_t),
                             &bytes_written,
-                            portMAX_DELAY);
-        if (ret != ESP_OK || bytes_written == 0) {
+		            pdMS_TO_TICKS(2000));   // 2s timeout — not portMAX_DELAY
+	if (ret == ESP_ERR_TIMEOUT) {
+	    ESP_LOGW(TAG, "_play_locked: I2S write timeout — aborting playback");
+	    break;
+	} else if (ret != ESP_OK || bytes_written == 0) {
             ESP_LOGE(TAG, "I2S write error: %s (written=%zu)", esp_err_to_name(ret), bytes_written);
             break;
         }
@@ -1038,11 +1041,23 @@ void flock_task(void *param)
     /* Verify QUELEA_IDX points to the right entry — catches table reordering at runtime. */
     assert(strcmp(k_all_birds[QUELEA_IDX].function_name, "red_billed_quelea") == 0);
 
+    /* Subscribe to the TWDT here, before branching, so BOTH the LED-only
+     * path (minimal hardware) and the full-audio path are covered.
+     * Previously this was inside the full-audio path only, leaving all
+     * minimal nodes unprotected.                                          */
+    esp_err_t wdt_err = esp_task_wdt_add(NULL);
+    if (wdt_err != ESP_OK) {
+        ESP_LOGW(TAG, "flock_task: could not subscribe to watchdog: %s", esp_err_to_name(wdt_err));
+    }
+
     if (!has_audio_output()) {
         /* Minimal hardware: LED-only flock strobe */
         ESP_LOGI(TAG, "🐦 Flock task running (LED-only mode)");
         bool was_flock = false;
         while (1) {
+            /* Feed at the top of every iteration — this loop runs every
+             * 60–100 ms so it will always stay well within WDT_TIMEOUT_S. */
+            esp_task_wdt_reset();
             bool flock = espnow_mesh_is_flock_mode();
             if (flock) {
                 set_led(BRIGHT_FULL, BRIGHT_OFF);
@@ -1063,6 +1078,8 @@ void flock_task(void *param)
 
     while (1) {
         if (!espnow_mesh_is_flock_mode()) {
+            /* Feed while idle so a long quiet period doesn't trip the WDT. */
+            esp_task_wdt_reset();
             vTaskDelay(pdMS_TO_TICKS(250));
             continue;
         }
@@ -1108,6 +1125,12 @@ void flock_task(void *param)
         uint32_t gap = cfg->flock_call_gap_ms;
         if (gap < 50) gap = 50;
         vTaskDelay(pdMS_TO_TICKS(gap));
+
+        /* Feed AFTER the full play+gap cycle completes — proves the task
+         * made it through without stalling.  Feeding before the blocking
+         * call (as before) would confirm liveness before the risky part,
+         * which defeats the purpose.                                      */
+        esp_task_wdt_reset();
     }
 }
 

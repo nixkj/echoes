@@ -21,6 +21,7 @@ build.sh deploy.
 """
 
 from flask import Flask, jsonify, request, render_template_string, send_from_directory
+import csv
 import json
 import logging
 import os
@@ -73,6 +74,7 @@ startup_log = _setup_startup_log(LOG_DIR)
 _HERE         = Path(__file__).parent.resolve()
 CONFIG_FILE   = _HERE / "config.json"
 REGISTRY_FILE = _HERE / "node_registry.json"
+NODES_FILE    = _HERE / "nodes.csv"
 FIRMWARE_DIR  = Path("/opt/echoes/firmware")
 
 # ---------------------------------------------------------------------------
@@ -353,6 +355,75 @@ _restart_timestamp = None
 _restart_token     = 0
 
 # ---------------------------------------------------------------------------
+# Node catalogue  (nodes.csv)
+# ---------------------------------------------------------------------------
+# A static, ordered list of every known node read from nodes.csv at startup.
+# The catalogue defines:
+#   • the canonical display order for the fleet grid and /nodes API
+#   • the expected MAC → ID mapping (so nodes appear immediately, even
+#     before they have ever booted and sent a startup report)
+#
+# CSV columns: id, mac, ip
+# Node type is inferred from the id field: numeric → echoes-full,
+# alphabetic → echoes-minimal.
+
+_catalogue: list = []          # ordered list of catalogue entries
+_mac_to_id: dict = {}          # MAC (upper) → node id string
+
+
+def _infer_node_type(node_id: str) -> str:
+    return "echoes-full" if node_id.isdigit() else "echoes-minimal"
+
+
+def _load_catalogue() -> None:
+    """Read nodes.csv and populate _catalogue / _mac_to_id.
+
+    Rows with id '---' and no MAC are separator markers — they are kept in
+    the catalogue (to preserve display order) but skipped for the registry.
+    """
+    global _catalogue, _mac_to_id
+    if not NODES_FILE.exists():
+        log.warning(f"Node catalogue not found at {NODES_FILE} — fleet order will be undefined")
+        return
+    entries = []
+    mac_map = {}
+    try:
+        with open(NODES_FILE, newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                node_id = row.get("id",  "").strip()
+                mac     = row.get("mac", "").strip().upper()
+                ip      = row.get("ip",  "").strip()
+
+                # Separator row — no MAC, id starts with '---'
+                if node_id.startswith("---") and not mac:
+                    entries.append({"separator": True})
+                    continue
+
+                if not node_id or not mac:
+                    continue
+
+                entries.append({
+                    "id":        node_id,
+                    "mac":       mac,
+                    "ip":        ip,
+                    "node_type": _infer_node_type(node_id),
+                })
+                mac_map[mac] = node_id
+
+        _catalogue = entries
+        _mac_to_id = mac_map
+        node_count = sum(1 for e in _catalogue if not e.get("separator"))
+        sep_count  = len(_catalogue) - node_count
+        log.info(f"Node catalogue loaded: {node_count} node(s), {sep_count} separator(s) from {NODES_FILE}")
+    except Exception as e:
+        log.warning(f"Could not load node catalogue: {e}")
+
+
+_load_catalogue()
+
+
+# ---------------------------------------------------------------------------
 # Node registry
 # ---------------------------------------------------------------------------
 # Keyed by MAC (upper-case string).  Two update paths:
@@ -362,6 +433,9 @@ _restart_token     = 0
 #
 # Both update paths hit the same process, so the dashboard has the
 # complete picture: identity from startup + liveness from config polls.
+#
+# The registry is pre-seeded from the catalogue at startup so that every
+# node appears in the fleet grid immediately, even before its first boot.
 
 _nodes: dict = {}
 _nodes_lock  = threading.Lock()
@@ -379,21 +453,55 @@ _registry_dirty = False         # set True by _node_poll; cleared by background 
 
 
 def _load_nodes() -> None:
-    """Populate _nodes from node_registry.json (called once at module load)."""
+    """Populate _nodes: first seed from catalogue stubs, then overlay persisted data."""
+    # 1. Seed every catalogue entry as an offline stub so the full fleet is
+    #    always visible in the grid, even on a fresh server start.
+    #    Separator entries are skipped — they have no MAC and no registry state.
+    for entry in _catalogue:
+        if entry.get("separator"):
+            continue
+        mac = entry["mac"]
+        _nodes[mac] = {
+            "id":           entry["id"],
+            "mac":          mac,
+            "node_type":    entry["node_type"],
+            "firmware":     "unknown",
+            "ip":           entry["ip"],
+            "first_seen":   None,
+            "last_seen":    None,
+            "last_seen_ts": None,
+            "poll_count":   0,
+            "boot_count":   0,
+        }
+
+    # 2. Overlay any richer data we already persisted from previous runs.
     if not REGISTRY_FILE.exists():
-        log.info("Node registry file not found — starting with empty registry")
+        log.info("Node registry file not found — starting from catalogue stubs only")
         return
     try:
         saved = json.loads(REGISTRY_FILE.read_text())
         if isinstance(saved, list):
+            overlaid = 0
             with _nodes_lock:
                 for entry in saved:
-                    mac = entry.get("mac", "")
-                    if mac:
+                    mac = entry.get("mac", "").strip().upper()
+                    if not mac:
+                        continue
+                    if mac in _nodes:
+                        # Preserve catalogue id; merge everything else.
+                        existing_id = _nodes[mac].get("id")
                         _nodes[mac] = entry
-            log.info(f"Node registry loaded: {len(_nodes)} node(s) from {REGISTRY_FILE}")
+                        _nodes[mac]["mac"] = mac          # normalise case
+                        if existing_id:
+                            _nodes[mac]["id"] = existing_id
+                    else:
+                        # Node in registry but not in catalogue (e.g. old node).
+                        _nodes[mac] = entry
+                        _nodes[mac]["mac"] = mac
+                    overlaid += 1
+            log.info(f"Node registry loaded: {overlaid} saved record(s) merged from {REGISTRY_FILE}")
     except Exception as e:
-        log.warning(f"Could not load node registry: {e} — starting empty")
+        log.warning(f"Could not load node registry: {e} — using catalogue stubs only")
 
 
 def _save_nodes() -> None:
@@ -429,9 +537,12 @@ def _node_startup(mac: str, node_type: str, firmware: str, ip: str) -> None:
     now = datetime.now().isoformat(timespec="seconds")
     with _nodes_lock:
         existing = _nodes.get(mac, {})
+        # Preserve the catalogue id if already set; fall back to mac fragment.
+        node_id = existing.get("id") or _mac_to_id.get(mac, mac[-5:])
         _nodes[mac] = {
+            "id":           node_id,
             "mac":          mac,
-            "node_type":    node_type or "unknown",
+            "node_type":    node_type or existing.get("node_type") or "unknown",
             "firmware":     firmware  or "unknown",
             "ip":           ip,
             "first_seen":   existing.get("first_seen", now),
@@ -442,7 +553,7 @@ def _node_startup(mac: str, node_type: str, firmware: str, ip: str) -> None:
         }
     # Boot events are infrequent and important — save immediately.
     _save_nodes()
-    log.info(f"STARTUP  {mac}  type={node_type}  fw={firmware}  ip={ip}")
+    log.info(f"STARTUP  {mac}  id={node_id}  type={node_type}  fw={firmware}  ip={ip}")
 
 
 def _node_poll(mac: str, ip: str) -> None:
@@ -461,9 +572,11 @@ def _node_poll(mac: str, ip: str) -> None:
         else:
             # Node polling before its first startup report (e.g. server restarted).
             # Skeleton entry: node_type/firmware enriched on next node reboot.
+            node_id = _mac_to_id.get(mac, mac[-5:])
             _nodes[mac] = {
+                "id":           node_id,
                 "mac":          mac,
-                "node_type":    "unknown",
+                "node_type":    _infer_node_type(node_id) if node_id in _mac_to_id.values() else "unknown",
                 "firmware":     "unknown",
                 "ip":           ip or "unknown",
                 "first_seen":   now,
@@ -555,9 +668,43 @@ def startup_report():
 
 @app.route("/nodes")
 def get_nodes():
-    """Return fleet registry — one entry per known node."""
+    """Return fleet registry in catalogue order, with any unknown nodes appended.
+
+    Separator entries from nodes.csv are passed through as
+    {"separator": true} objects so the dashboard can render dividers
+    between physical groups.
+    """
     with _nodes_lock:
-        return jsonify(list(_nodes.values()))
+        snapshot = dict(_nodes)   # shallow copy under lock
+
+    # Build output in catalogue order first.
+    seen_macs = set()
+    result = []
+    for entry in _catalogue:
+        if entry.get("separator"):
+            result.append({"separator": True})
+            continue
+        mac = entry["mac"]
+        seen_macs.add(mac)
+        result.append(snapshot.get(mac, {
+            "id":           entry["id"],
+            "mac":          mac,
+            "node_type":    entry["node_type"],
+            "firmware":     "unknown",
+            "ip":           entry["ip"],
+            "first_seen":   None,
+            "last_seen":    None,
+            "last_seen_ts": None,
+            "poll_count":   0,
+            "boot_count":   0,
+        }))
+
+    # Append any nodes that reported in but aren't in the catalogue.
+    for mac, node in snapshot.items():
+        if mac not in seen_macs:
+            result.append(node)
+
+    return jsonify(result)
 
 # ---------------------------------------------------------------------------
 # Config API  (unchanged from original server.py)
@@ -821,17 +968,29 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .fleet-body { padding: 14px 18px; }
   .fleet-poll { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 10px; }
   .fleet-poll-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); animation: pulse 2s infinite; }
-  .fnode-grid { display: grid; grid-template-columns: repeat(50, 1fr); gap: 2px; }
-  @media (max-width: 700px) { .fnode-grid { grid-template-columns: repeat(25, 1fr); } }
-  .fnode { position: relative; aspect-ratio: 1; border-radius: 1px; cursor: default; border: none; transition: transform 0.12s ease; }
-  .fnode:hover { transform: scale(1.5); z-index: 5; }
-  .fnode.fonline  { background: #2a8c42; }
-  .fnode.fstale   { background: #7a5010; }
-  .fnode.foffline { background: #8c2a2a; }
+  .fnode-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 3px; }
+  @media (max-width: 700px) { .fnode-grid { grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); } }
+  .fnode { position: relative; aspect-ratio: 1; border-radius: 2px; cursor: default; border: 1px solid transparent; transition: transform 0.12s ease; display: flex; align-items: center; justify-content: center; }
+  .fnode:hover { transform: scale(1.25); z-index: 5; }
+  .fnode.fonline  { background: #1a5c2a; border-color: #2a8c42; }
+  .fnode.fstale   { background: #4a3408; border-color: #7a5010; }
+  .fnode.foffline { background: #2a1010; border-color: #5c2424; }
+  .fnode-label { font-family: var(--font-mono); font-size: 9px; font-weight: 700; line-height: 1; letter-spacing: 0; pointer-events: none; user-select: none; }
+  .fonline  .fnode-label { color: #5dfc7e; }
+  .fstale   .fnode-label { color: #e0a020; }
+  .foffline .fnode-label { color: #8c4040; }
+  /* Group separator — spans full grid width */
+  .fnode-sep { grid-column: 1 / -1; height: 8px; display: flex; align-items: center; gap: 8px; margin: 2px 0; pointer-events: none; }
+  .fnode-sep::before, .fnode-sep::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .fnode-sep-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
   /* Tooltip — fixed positioning via JS */
   .ftooltip { display: none; position: fixed; background: #090b09; border: 1px solid var(--border); border-radius: 3px; padding: 10px 13px; min-width: 220px; z-index: 9999; pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,0.7); font-size: 12px; }
   .ftooltip-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
   .ftooltip-id { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
+  .ftooltip-id .ftt-node-id { font-size: 16px; font-weight: 700; margin-right: 6px; }
+  .fonline  .ftooltip-id .ftt-node-id { color: #5dfc7e; }
+  .fstale   .ftooltip-id .ftt-node-id { color: #e0a020; }
+  .foffline .ftooltip-id .ftt-node-id { color: #e03a3a; }
   .ftooltip-status { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; padding: 1px 5px; border-radius: 2px; }
   .fonline  .ftooltip-status { color: #3ddc5e; background: #1a5c2a; }
   .fstale   .ftooltip-status { color: #e0a020; background: #4a3408; }
@@ -1086,21 +1245,41 @@ function buildFleetGrid() {
   g.innerHTML = '';
   let online=0, stale=0, offline=0;
 
-  // Sort by MAC so grid positions are stable between refreshes
-  const sorted = [...fleetNodes].sort((a,b) => a.mac.localeCompare(b.mac));
+  // Server returns nodes in catalogue order — preserve it, no re-sort.
+  fleetNodes.forEach(n => {
+    // Separator row — render a full-width divider, don't count in stats
+    if (n.separator) {
+      const sep = document.createElement('div');
+      sep.className = 'fnode-sep';
+      sep.innerHTML = '<span class="fnode-sep-dot"></span>';
+      g.appendChild(sep);
+      return;
+    }
 
-  sorted.forEach(n => {
     const cls = fleetClassify(n);
     if      (cls === 'fonline')  online++;
     else if (cls === 'fstale')   stale++;
     else                         offline++;
 
+    const nodeId = n.id || n.mac.slice(-5);
+
     const div = document.createElement('div');
     div.className = `fnode ${cls}`;
+    div.title = nodeId;
+
+    // ID label inside the cell
+    const lbl = document.createElement('span');
+    lbl.className = 'fnode-label';
+    lbl.textContent = nodeId;
+    div.appendChild(lbl);
+
     div.addEventListener('mouseenter', e => {
       fTip.className = `ftooltip ${cls}`;
       fTip.innerHTML =
-        `<div class="ftooltip-hdr"><span class="ftooltip-id">${n.mac}</span><span class="ftooltip-status">${fleetStatusLabel(cls)}</span></div>
+        `<div class="ftooltip-hdr">
+          <span class="ftooltip-id"><span class="ftt-node-id">${nodeId}</span>${n.mac}</span>
+          <span class="ftooltip-status">${fleetStatusLabel(cls)}</span>
+        </div>
         <div class="ftooltip-row"><span class="ftooltip-key">Type</span><span class="ftooltip-val">${n.node_type}</span></div>
         <div class="ftooltip-row"><span class="ftooltip-key">FW</span><span class="ftooltip-val">${n.firmware}</span></div>
         <div class="ftooltip-row"><span class="ftooltip-key">IP</span><span class="ftooltip-val">${n.ip}</span></div>
@@ -1116,7 +1295,7 @@ function buildFleetGrid() {
     g.appendChild(div);
   });
 
-  const total = fleetNodes.length;
+  const total = fleetNodes.filter(n => !n.separator).length;
   document.querySelector('.fleet-title').textContent =
     `Fleet Monitor — ${total} Device${total !== 1 ? 's' : ''}`;
   document.getElementById('fs-online').textContent  = online;
@@ -1173,6 +1352,7 @@ if __name__ == "__main__":
     log.info("=" * 60)
     log.info("Echoes of the Machine — Consolidated Server")
     log.info(f"Port         : 8002")
+    log.info(f"Nodes file   : {NODES_FILE}  ({len(_catalogue)} node(s))")
     log.info(f"Config file  : {CONFIG_FILE}")
     log.info(f"Firmware dir : {FIRMWARE_DIR}")
     log.info(f"Log dir      : {LOG_DIR}")

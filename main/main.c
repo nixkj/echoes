@@ -20,6 +20,7 @@
 #include "espnow_mesh.h"
 #include "markov.h"
 #include "remote_config.h"
+#include "esp_task_wdt.h"
 
 // ESP32-specific includes
 #include "driver/i2s_std.h"
@@ -29,6 +30,7 @@
 #include "driver/ledc.h"
 #include "esp_check.h"
 #include "nvs_flash.h"
+#include "esp_mac.h"
 
 static const char *TAG = "MAIN";
 
@@ -58,9 +60,20 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing system...");
     system_init();
 
+    /* Stagger boot across the fleet using the last MAC byte as a seed.
+     * Spreads 49 nodes over ~10 s, preventing the AP and server from being
+     * hit by all nodes simultaneously on a mass power-on.                  */
+    {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        uint32_t jitter_ms = ((uint32_t)mac[5] * 200) % 10000;
+        ESP_LOGI(TAG, "Startup jitter: %lu ms (MAC tail: %02X)", jitter_ms, mac[5]);
+        vTaskDelay(pdMS_TO_TICKS(jitter_ms));
+    }
+
     /* Capture any errors on startup */
     startup_report_t startup_report;
-    
+
     /* Initialize WiFi and connect */
     ESP_LOGI(TAG, "Connecting to WiFi...");
     bool wifi_connected = wifi_init_and_connect();
@@ -108,6 +121,29 @@ void app_main(void)
         ESP_LOGI(TAG, "Minimal hardware detected - speaker disabled, LED VU mode");
     }
 
+    /* Initialise the Task Watchdog Timer.
+     * audio_detection_task subscribes itself and calls esp_task_wdt_reset()
+     * each time i2s_channel_read() returns.  If the microphone peripheral
+     * stalls for WDT_TIMEOUT_S seconds the TWDT fires a panic → reboot.
+     * esp_task_wdt_reconfigure() is used first in case ESP-IDF auto-started
+     * the TWDT at boot (CONFIG_ESP_TASK_WDT_INIT=y); on failure we call
+     * esp_task_wdt_init() instead.                                         */
+    {
+        const esp_task_wdt_config_t wdt_cfg = {
+            .timeout_ms     = WDT_TIMEOUT_S * 1000,
+            .idle_core_mask = 0,     /* don't watch idle tasks */
+            .trigger_panic  = true,  /* panic → reboot on timeout */
+        };
+        esp_err_t wdt_err = esp_task_wdt_reconfigure(&wdt_cfg);
+        if (wdt_err == ESP_ERR_INVALID_STATE) {
+            wdt_err = esp_task_wdt_init(&wdt_cfg);
+        }
+        if (wdt_err == ESP_OK) {
+            ESP_LOGI(TAG, "Task watchdog: %ds timeout, panic on trigger", WDT_TIMEOUT_S);
+        } else {
+            ESP_LOGW(TAG, "Could not configure task watchdog: %s", esp_err_to_name(wdt_err));
+        }
+    }
 
     if (wifi_connected) {
         ESP_LOGI(TAG, "WiFi connected successfully");
@@ -243,7 +279,10 @@ void app_main(void)
 
         /* Enable modem sleep NOW — after OTA — so the download is never
          * disrupted by the radio sleeping between DTIM beacons.           */
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        //esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+	
+	/* Keep Wi-Fi on */
+        esp_wifi_set_ps(WIFI_PS_NONE);
 
         /* Start remote config polling task (60-second interval) */
         xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);
