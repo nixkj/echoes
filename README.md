@@ -413,8 +413,11 @@ I (17034) MAIN: Starting Echoes of the Machine (no-WiFi path)...
 I (17040) ECHOES: Audio detection task started
 ```
 
-## To do
+## To Do
 - KiCad/ Fritzing for completeness
+- Include explanation of Tasmota running on Sonoff BASIC R-4 controlling each set of nodes, and control via dashboard
+ - Remove the hard-coded ip addresses for these units and place in a configuration file similar to the nodes.csv
+- Still experiencing occasional lockup on node start, as well as a node disappearing (suggests the watchdog timer is not working
 
 ## Version History
 
