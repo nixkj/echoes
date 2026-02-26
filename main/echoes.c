@@ -226,7 +226,7 @@ void light_sensor_init(void)
                 ret = i2c_master_transmit(bh1750_handle,
                                           &cmd,
                                           1,
-                                          -1);
+                                          100);   /* 100 ms max — never block forever */
 
                 if (ret == ESP_OK) {
                     ESP_LOGI(TAG,
@@ -682,8 +682,14 @@ void audio_detection_task(void *param) {
         esp_task_wdt_reset();  /* fed: i2s_channel_read returned, task is alive */
 
         if (ret != ESP_OK || bytes_read == 0) {
-            ESP_LOGE(TAG, "I2S read error: %s", esp_err_to_name(ret));
-            vTaskDelay(pdMS_TO_TICKS(10));
+            ESP_LOGE(TAG, "I2S read error: %s — reinitialising mic channel",
+                     esp_err_to_name(ret));
+            /* Cycle the channel to flush a stale DMA ring (e.g. overflow
+             * from the driver being enabled long before the first read).   */
+            i2s_channel_disable(mic_chan);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            i2s_channel_enable(mic_chan);
+            vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
 
@@ -912,10 +918,22 @@ void lux_based_birds_task(void *param) {
 
     ESP_LOGI(TAG, "Lux-based bird selection enabled");
 
+    /* Subscribe to the task watchdog.  generate_and_play_bird_call() can block
+     * for up to 3 s (longest bird call) + 4 s mutex wait = ~7 s per call.
+     * WDT_TIMEOUT_S is 120 s so a single call never trips it, but a deadlock
+     * (e.g. mutex permanently held by a crashed task) would be caught.     */
+    esp_err_t wdt_err = esp_task_wdt_add(NULL);
+    if (wdt_err != ESP_OK) {
+        ESP_LOGW(TAG, "lux_task: could not subscribe to watchdog: %s",
+                 esp_err_to_name(wdt_err));
+    }
+
     float last_acted_lux = -1000.0f;  /* lux at the last mapper update */
     float prev_lux       = -1.0f;     /* reading from the previous tick */
 
     while (1) {
+        esp_task_wdt_reset();  /* fed each poll cycle — proves task is alive */
+
         remote_config_t cfg_snap;
         if (!remote_config_snapshot(&cfg_snap)) {
             vTaskDelay(pdMS_TO_TICKS(500));
@@ -1041,23 +1059,11 @@ void flock_task(void *param)
     /* Verify QUELEA_IDX points to the right entry — catches table reordering at runtime. */
     assert(strcmp(k_all_birds[QUELEA_IDX].function_name, "red_billed_quelea") == 0);
 
-    /* Subscribe to the TWDT here, before branching, so BOTH the LED-only
-     * path (minimal hardware) and the full-audio path are covered.
-     * Previously this was inside the full-audio path only, leaving all
-     * minimal nodes unprotected.                                          */
-    esp_err_t wdt_err = esp_task_wdt_add(NULL);
-    if (wdt_err != ESP_OK) {
-        ESP_LOGW(TAG, "flock_task: could not subscribe to watchdog: %s", esp_err_to_name(wdt_err));
-    }
-
     if (!has_audio_output()) {
         /* Minimal hardware: LED-only flock strobe */
         ESP_LOGI(TAG, "🐦 Flock task running (LED-only mode)");
         bool was_flock = false;
         while (1) {
-            /* Feed at the top of every iteration — this loop runs every
-             * 60–100 ms so it will always stay well within WDT_TIMEOUT_S. */
-            esp_task_wdt_reset();
             bool flock = espnow_mesh_is_flock_mode();
             if (flock) {
                 set_led(BRIGHT_FULL, BRIGHT_OFF);
@@ -1076,10 +1082,13 @@ void flock_task(void *param)
 
     uint32_t last_random_idx = 0xFFFFFFFF;  /* avoid immediate repetition in 40 % path */
 
+    esp_err_t wdt_err = esp_task_wdt_add(NULL);
+    if (wdt_err != ESP_OK) {
+        ESP_LOGW(TAG, "flock_task: could not subscribe to watchdog: %s", esp_err_to_name(wdt_err));
+    }
+
     while (1) {
         if (!espnow_mesh_is_flock_mode()) {
-            /* Feed while idle so a long quiet period doesn't trip the WDT. */
-            esp_task_wdt_reset();
             vTaskDelay(pdMS_TO_TICKS(250));
             continue;
         }
@@ -1117,6 +1126,7 @@ void flock_task(void *param)
         set_led(BRIGHT_OFF, BRIGHT_OFF);
 
         /* ---- Play (blocking) ------------------------------------------ */
+	esp_task_wdt_reset();
         generate_and_play_bird_call(&g_bird_mapper,
                                     bird->function_name,
                                     bird->display_name);
@@ -1125,12 +1135,6 @@ void flock_task(void *param)
         uint32_t gap = cfg->flock_call_gap_ms;
         if (gap < 50) gap = 50;
         vTaskDelay(pdMS_TO_TICKS(gap));
-
-        /* Feed AFTER the full play+gap cycle completes — proves the task
-         * made it through without stalling.  Feeding before the blocking
-         * call (as before) would confirm liveness before the risky part,
-         * which defeats the purpose.                                      */
-        esp_task_wdt_reset();
     }
 }
 

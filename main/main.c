@@ -110,17 +110,6 @@ void app_main(void)
         ESP_LOGI(TAG, "WiFi not connected — skipping startup report");
     }
 
-    // Initialize audio hardware
-    ESP_LOGI(TAG, "Initializing audio hardware...");
-    ESP_ERROR_CHECK(i2s_microphone_init());
-    
-    if (hw_config == HW_CONFIG_FULL) {
-        ESP_LOGI(TAG, "Full hardware detected - initializing speaker");
-        ESP_ERROR_CHECK(i2s_speaker_init());
-    } else {
-        ESP_LOGI(TAG, "Minimal hardware detected - speaker disabled, LED VU mode");
-    }
-
     /* Initialise the Task Watchdog Timer.
      * audio_detection_task subscribes itself and calls esp_task_wdt_reset()
      * each time i2s_channel_read() returns.  If the microphone peripheral
@@ -264,6 +253,22 @@ void app_main(void)
          * before any task can call it.                                    */
         espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
 
+        /* Initialise audio hardware HERE — as late as possible, immediately
+         * before the tasks that consume it are resumed.  Enabling the I2S DMA
+         * early (e.g. before OTA/remote-config) causes the RX ring buffer to
+         * overflow for 60–120 s, leaving the driver in a state where the first
+         * i2s_channel_read(portMAX_DELAY) never unblocks → white LED stuck. */
+        ESP_LOGI(TAG, "Initializing audio hardware...");
+        ESP_ERROR_CHECK(i2s_microphone_init());
+        if (hw_config == HW_CONFIG_FULL) {
+            ESP_LOGI(TAG, "Full hardware — initializing speaker");
+            ESP_ERROR_CHECK(i2s_speaker_init());
+        } else {
+            ESP_LOGI(TAG, "Minimal hardware — LED VU mode");
+        }
+        /* 100 ms: ICS-43434 startup time after channel enable before first read. */
+        vTaskDelay(pdMS_TO_TICKS(100));
+
         /* Indicate system ready with white LED pulse — fired before vTaskResume
          * so app_main has sole LED ownership; resumed tasks (priority 4–5)
          * would otherwise preempt before set_led(0,0) runs.               */
@@ -330,6 +335,20 @@ void app_main(void)
          * the WiFi path above — flock_task will attempt a broadcast
          * immediately on first run.                                        */
         espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
+
+        /* Initialise audio hardware HERE — same reasoning as WiFi path above.
+         * No OTA delay on this path, but keeping init here ensures both paths
+         * are consistent and the DMA never sits idle before its consumer. */
+        ESP_LOGI(TAG, "Initializing audio hardware...");
+        ESP_ERROR_CHECK(i2s_microphone_init());
+        if (hw_config == HW_CONFIG_FULL) {
+            ESP_LOGI(TAG, "Full hardware — initializing speaker");
+            ESP_ERROR_CHECK(i2s_speaker_init());
+        } else {
+            ESP_LOGI(TAG, "Minimal hardware — LED VU mode");
+        }
+        /* 100 ms: ICS-43434 startup time after channel enable before first read. */
+        vTaskDelay(pdMS_TO_TICKS(100));
 
         /* Indicate system ready with white LED pulse — fired before xTaskCreate
          * so app_main has sole LED ownership; created tasks (priority 4–5)
