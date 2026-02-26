@@ -27,6 +27,10 @@ import logging
 import os
 import threading
 import time
+import urllib.request
+import urllib.error
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
@@ -850,6 +854,89 @@ def quiet_hours_status():
     })
 
 # ---------------------------------------------------------------------------
+# Sonoff / Tasmota power control
+# ---------------------------------------------------------------------------
+# Four Sonoff Basic R4 devices running Tasmota, one per node group.
+# Group numbering matches the separator blocks in nodes.csv (top to bottom,
+# left to right): group 1 = String 1 = .11, group 4 = String 4 = .14.
+#
+# The server proxies all requests to Tasmota so the browser avoids CORS
+# issues when talking to devices on the same LAN.
+#
+# Tasmota HTTP API:
+#   GET /cm?cmnd=Power         → {"POWER":"ON"} or {"POWER":"OFF"}
+#   GET /cm?cmnd=Power%20ON    → turn on
+#   GET /cm?cmnd=Power%20OFF   → turn off
+#   GET /cm?cmnd=Power%20TOGGLE → flip state
+
+SONOFF_DEVICES = [
+    {"id": 1, "label": "String 1", "ip": "192.168.101.11"},
+    {"id": 2, "label": "String 2", "ip": "192.168.101.12"},
+    {"id": 3, "label": "String 3", "ip": "192.168.101.13"},
+    {"id": 4, "label": "String 4", "ip": "192.168.101.14"},
+]
+SONOFF_TIMEOUT = 3   # seconds
+
+
+def _tasmota_get(ip: str, cmnd: str) -> dict | None:
+    """Send a Tasmota command and return the parsed JSON, or None on failure."""
+    url = f"http://{ip}/cm?cmnd={urllib.parse.quote(cmnd)}"
+    try:
+        with urllib.request.urlopen(url, timeout=SONOFF_TIMEOUT) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        # DEBUG not WARNING — timeouts are routine when devices are unreachable
+        # and would otherwise flood the log during normal offline operation.
+        log.debug(f"Tasmota {ip} [{cmnd}] failed: {e}")
+        return None
+
+
+def _poll_device(dev: dict) -> dict:
+    """Poll one Sonoff device; always returns a result dict."""
+    data  = _tasmota_get(dev["ip"], "Power")
+    state = data.get("POWER", "unknown").upper() if data else "unknown"
+    return {"id": dev["id"], "label": dev["label"], "ip": dev["ip"], "state": state}
+
+
+@app.route("/sonoff/status")
+def sonoff_status():
+    """Return current ON/OFF state of all four Sonoff devices (parallel, non-blocking)."""
+    with ThreadPoolExecutor(max_workers=len(SONOFF_DEVICES)) as pool:
+        results = list(pool.map(_poll_device, SONOFF_DEVICES))
+    return jsonify(results)
+
+
+@app.route("/sonoff/<int:device_id>/toggle", methods=["POST"])
+def sonoff_toggle(device_id):
+    """Toggle one Sonoff device and return its new state."""
+    dev = next((d for d in SONOFF_DEVICES if d["id"] == device_id), None)
+    if not dev:
+        return jsonify({"error": f"Unknown device id {device_id}"}), 404
+    data = _tasmota_get(dev["ip"], "Power TOGGLE")
+    state = "unknown"
+    if data:
+        state = data.get("POWER", "unknown").upper()
+    log.info(f"Sonoff {device_id} ({dev['ip']}) toggled → {state}")
+    return jsonify({"id": device_id, "label": dev["label"], "state": state})
+
+
+@app.route("/sonoff/<int:device_id>/set", methods=["POST"])
+def sonoff_set(device_id):
+    """Explicitly turn a device ON or OFF. Body: {"state": "ON"} or {"state": "OFF"}."""
+    dev = next((d for d in SONOFF_DEVICES if d["id"] == device_id), None)
+    if not dev:
+        return jsonify({"error": f"Unknown device id {device_id}"}), 404
+    body = request.get_json(force=True, silent=True) or {}
+    target = body.get("state", "").upper()
+    if target not in ("ON", "OFF"):
+        return jsonify({"error": "state must be ON or OFF"}), 400
+    data = _tasmota_get(dev["ip"], f"Power {target}")
+    state = data.get("POWER", "unknown").upper() if data else "unknown"
+    log.info(f"Sonoff {device_id} ({dev['ip']}) set {target} → {state}")
+    return jsonify({"id": device_id, "label": dev["label"], "state": state})
+
+
+# ---------------------------------------------------------------------------
 # Web UI — Config page
 # ---------------------------------------------------------------------------
 
@@ -947,6 +1034,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .toggle-on .toggle-label { color: var(--danger); font-weight: 700; }
   .toggle-on { border-color: var(--danger); background: rgba(240,74,106,0.08); }
 
+  /* ── Power cell — lives inside the node grid ── */
+  .fnode-pwr { position: relative; aspect-ratio: 1; border-radius: 2px; cursor: pointer; border: 1px solid; transition: all 0.15s ease; display: flex; align-items: center; justify-content: center; padding: 0; background: none; }
+  .fnode-pwr:hover:not(:disabled) { transform: scale(1.25); z-index: 5; filter: brightness(1.2); }
+  .fnode-pwr:active:not(:disabled) { transform: scale(0.95); }
+  .fnode-pwr:disabled { cursor: wait; opacity: 0.5; }
+  .fnode-pwr.pon     { background: #0d2a1a; border-color: #1e6e38; }
+  .fnode-pwr.poff    { background: #1a0d0d; border-color: #5c2424; }
+  .fnode-pwr.punknown { background: #111318; border-color: var(--muted); }
+  .fnode-pwr-icon { font-size: 9px; line-height: 1; pointer-events: none; user-select: none; }
+  .fnode-pwr.pon     .fnode-pwr-icon { color: #3ddc5e; text-shadow: 0 0 5px #3ddc5e88; }
+  .fnode-pwr.poff    .fnode-pwr-icon { color: #5c2424; }
+  .fnode-pwr.punknown .fnode-pwr-icon { color: var(--muted); }
+
   /* ── Fleet Grid ── */
   .fleet-section { margin-bottom: 36px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
   .fleet-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 8px; }
@@ -968,7 +1068,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .fleet-body { padding: 14px 18px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .fleet-poll { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 10px; }
   .fleet-poll-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); animation: pulse 2s infinite; }
-  .fnode-grid { display: grid; grid-template-columns: repeat(27, 1fr); gap: 2px; min-width: 460px; }
+  .fnode-grid { display: grid; grid-template-columns: repeat(29, 1fr); gap: 2px; min-width: 460px; }
   .fnode { position: relative; aspect-ratio: 1; border-radius: 2px; cursor: default; border: 1px solid transparent; transition: transform 0.12s ease; display: flex; align-items: center; justify-content: center; }
   .fnode:hover { transform: scale(1.25); z-index: 5; }
   .fnode.fonline  { background: #1a5c2a; border-color: #2a8c42; }
@@ -1214,7 +1314,7 @@ const FLOCK_OFFLINE = 180_000;
 
 function fleetClassify(n) {
   if (!n.last_seen_ts) return 'foffline';
-  const age = Date.now() - n.last_seen_ts * 1000;   // last_seen_ts is Unix seconds
+  const age = Date.now() - n.last_seen_ts * 1000;
   if (age < FLOCK_STALE)   return 'fonline';
   if (age < FLOCK_OFFLINE) return 'fstale';
   return 'foffline';
@@ -1235,56 +1335,114 @@ function fleetStatusLabel(cls) {
   return {fonline:'ONLINE',fstale:'STALE',foffline:'OFFLINE'}[cls];
 }
 
-// Shared tooltip element
 const fTip = document.createElement('div');
 fTip.className = 'ftooltip';
 document.body.appendChild(fTip);
 
 let fleetNodes = [];
 
+// ── Power state ───────────────────────────────────────────────────────────
+const powerStates = {1:'unknown', 2:'unknown', 3:'unknown', 4:'unknown'};
+
+function _applyPowerCell(cell, id, state) {
+  powerStates[id] = state;
+  const pwrCls = state === 'ON' ? 'pon' : state === 'OFF' ? 'poff' : 'punknown';
+  cell.className = `fnode-pwr ${pwrCls}`;
+  cell.querySelector('.fnode-pwr-icon').textContent = '⏻';
+  cell.title = `Group ${id} · ${
+    state==='ON'  ? 'ON — click to power off'  :
+    state==='OFF' ? 'OFF — click to power on'  : 'power state unknown'}`;
+}
+
+function applyPowerState(id, state) {
+  const cell = document.getElementById(`fnode-pwr-${id}`);
+  if (cell) _applyPowerCell(cell, id, state);
+  else powerStates[id] = state;   // store for when grid is next built
+}
+
+async function fetchPowerStatus() {
+  try {
+    const data = await (await fetch('/sonoff/status')).json();
+    data.forEach(d => applyPowerState(d.id, d.state));
+  } catch(e) { /* devices unreachable — leave cells as-is */ }
+}
+
+async function togglePower(id) {
+  const cell = document.getElementById(`fnode-pwr-${id}`);
+  if (!cell || cell.disabled) return;
+  cell.disabled = true;
+  cell.querySelector('.fnode-pwr-icon').textContent = '…';
+  try {
+    const d = await (await fetch(`/sonoff/${id}/toggle`, {method:'POST'})).json();
+    _applyPowerCell(cell, id, d.state);
+    showToast(`Group ${id} → ${d.state}`, d.state==='ON' ? 'success' : 'info');
+  } catch(e) {
+    showToast(`Group ${id}: no response`, 'error');
+    _applyPowerCell(cell, id, 'unknown');
+  } finally {
+    cell.disabled = false;
+  }
+}
+
+function makePowerCell(groupId) {
+  const btn = document.createElement('button');
+  btn.id        = `fnode-pwr-${groupId}`;
+  btn.className = 'fnode-pwr punknown';
+  btn.onclick   = () => togglePower(groupId);
+  const icon = document.createElement('span');
+  icon.className   = 'fnode-pwr-icon';
+  icon.textContent = '⏻';
+  btn.appendChild(icon);
+  _applyPowerCell(btn, groupId, powerStates[groupId] || 'unknown');
+  return btn;
+}
+
+fetchPowerStatus();
+setInterval(fetchPowerStatus, 5000);
+
+// ── Grid builder ──────────────────────────────────────────────────────────
 function buildFleetGrid() {
   const g = document.getElementById('fleetGrid');
   g.innerHTML = '';
   let online=0, stale=0, offline=0;
+  let sepCount  = 0;
+  let groupId   = 1;   // first power cell goes at position 0 (group 1)
 
-  // Separators alternate roles based on their index in the catalogue:
-  //   Odd  (1st, 3rd) → column gap: single cell between two groups on the same row
-  //   Even (2nd)      → row break:  full-width rule between the two pairs of rows
-  let sepCount = 0;
+  // Power cell at the very start of group 1
+  g.appendChild(makePowerCell(groupId++));
 
-  // Server returns nodes in catalogue order — preserve it, no re-sort.
   fleetNodes.forEach(n => {
     if (n.separator) {
       sepCount++;
       if (sepCount % 2 === 0) {
-        // Row break — forces a new grid row between the two pairs of groups
+        // Row break between the two row-pairs
         const brk = document.createElement('div');
         brk.className = 'fnode-row-break';
         brk.innerHTML = '<span class="fnode-row-break-dot"></span>';
         g.appendChild(brk);
       } else {
-        // Column separator — single cell gap between groups on the same row
+        // Column separator between groups on the same row
         const sep = document.createElement('div');
         sep.className = 'fnode-col-sep';
         g.appendChild(sep);
       }
+      // Power cell at the start of each new group
+      g.appendChild(makePowerCell(groupId++));
       return;
     }
 
-    const cls = fleetClassify(n);
+    const cls    = fleetClassify(n);
     if      (cls === 'fonline')  online++;
     else if (cls === 'fstale')   stale++;
     else                         offline++;
 
     const nodeId = n.id || n.mac.slice(-5);
-
-    const div = document.createElement('div');
+    const div    = document.createElement('div');
     div.className = `fnode ${cls}`;
-    div.title = nodeId;
+    div.title     = nodeId;
 
-    // ID label inside the cell
     const lbl = document.createElement('span');
-    lbl.className = 'fnode-label';
+    lbl.className   = 'fnode-label';
     lbl.textContent = nodeId;
     div.appendChild(lbl);
 
