@@ -352,11 +352,12 @@ _config       = load_config()
 _last_modified = datetime.now().isoformat()
 
 # Restart flag
-RESTART_WINDOW_S   = 90
-_restart_pending   = False
-_restart_expires   = 0.0
-_restart_timestamp = None
-_restart_token     = 0
+RESTART_WINDOW_S      = 90
+_restart_pending      = False
+_restart_expires      = 0.0
+_restart_timestamp    = None
+_restart_token        = 0
+_restart_delivered    : set = set()   # MACs already logged for current token
 
 # ---------------------------------------------------------------------------
 # Node catalogue  (nodes.csv)
@@ -627,25 +628,37 @@ def startup_report():
     """Receive boot report from a node.  Populates node_type, firmware, IP."""
     log.info("POST /startup received")
     try:
-        data       = request.get_json(force=True, silent=True) or {}
-        mac        = data.get("mac",           "").strip().upper()
-        node_type  = data.get("node_type",     "unknown")
-        firmware   = data.get("firmware",      "unknown")
-        has_errors = data.get("has_errors",    False)
-        error_msg  = data.get("error_message", "")
-        ip         = request.remote_addr or "unknown"
+        data         = request.get_json(force=True, silent=True) or {}
+        mac          = data.get("mac",           "").strip().upper()
+        node_type    = data.get("node_type",     "unknown")
+        firmware     = data.get("firmware",      "unknown")
+        reset_reason = data.get("reset_reason",  "unknown")
+        has_errors   = data.get("has_errors",    False)
+        error_msg    = data.get("error_message", "")
+        ip           = request.remote_addr or "unknown"
 
-        if has_errors and error_msg:
-            log.warning(f"STARTUP  {mac}  type={node_type}  fw={firmware}  ip={ip}  ERROR: {error_msg}")
+        # Warn in the main server log for abnormal resets and hard errors
+        if reset_reason in ("TASK_WDT", "INT_WDT", "WDT", "PANIC", "BROWNOUT"):
+            log.warning(f"STARTUP  {mac}  type={node_type}  fw={firmware}  ip={ip}"
+                        f"  RESET={reset_reason}")
+        elif has_errors and error_msg:
+            log.warning(f"STARTUP  {mac}  type={node_type}  fw={firmware}  ip={ip}"
+                        f"  ERROR: {error_msg}")
 
         if mac:
             _node_startup(mac, node_type, firmware, ip)
 
         # Write a line to the dedicated startup report log.
         timestamp  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        errors_str = error_msg if (has_errors and error_msg) else ("unknown error" if has_errors else "no errors")
+        errors_str = error_msg if (has_errors and error_msg) else ("unknown error" if has_errors else "NO")
         startup_log.info(
-            f"[{timestamp}] echoes startup: {mac} {node_type} {firmware} {ip} {errors_str}"
+            f"[{timestamp}] Startup Report"
+            f" | MAC: {mac}"
+            f" | Type: {node_type}"
+            f" | Firmware: {firmware}"
+            f" | IP: {ip}"
+            f" | Reset: {reset_reason}"
+            f" | Errors: {errors_str}"
         )
 
     except Exception as e:
@@ -717,11 +730,12 @@ def get_nodes():
 @app.route("/config")
 def get_config():
     """Return flat key→value map for device consumption (60-second poll)."""
-    global _restart_pending, _restart_expires, _restart_timestamp
+    global _restart_pending, _restart_expires, _restart_timestamp, _restart_delivered
 
     if _restart_pending and time.time() > _restart_expires:
         _restart_pending = False
         _restart_timestamp = None
+        _restart_delivered = set()
         log.info("Restart window expired — flag cleared")
 
     # Track liveness — MAC sent in X-Device-MAC header (set in remote_config.c)
@@ -739,7 +753,9 @@ def get_config():
     flat["QUIET_HOUR_END"]      = _config["QUIET_HOUR_END"]["value"]
 
     if _restart_pending:
-        log.info(f"RESTART token={_restart_token} delivered to {mac or 'unknown'}")
+        if mac and mac not in _restart_delivered:
+            _restart_delivered.add(mac)
+            log.info(f"RESTART token={_restart_token} delivered to {mac}")
     return jsonify(flat)
 
 
@@ -800,11 +816,12 @@ def reset_config():
 
 @app.route("/restart", methods=["POST"])
 def request_restart():
-    global _restart_pending, _restart_expires, _restart_timestamp, _restart_token
+    global _restart_pending, _restart_expires, _restart_timestamp, _restart_token, _restart_delivered
     _restart_pending   = True
     _restart_expires   = time.time() + RESTART_WINDOW_S
     _restart_timestamp = datetime.now().isoformat()
     _restart_token     = int(time.time()) & 0xFFFFFFFF
+    _restart_delivered = set()   # clear for new token
     log.info(f"Restart queued token={_restart_token} expires_in={RESTART_WINDOW_S}s")
     return jsonify({"status": "restart_pending", "timestamp": _restart_timestamp,
                     "token": _restart_token, "window_s": RESTART_WINDOW_S})
@@ -812,10 +829,11 @@ def request_restart():
 
 @app.route("/restart/cancel", methods=["POST"])
 def cancel_restart():
-    global _restart_pending, _restart_expires, _restart_timestamp, _restart_token
+    global _restart_pending, _restart_expires, _restart_timestamp, _restart_token, _restart_delivered
     was = _restart_pending
     _restart_pending = False; _restart_expires = 0.0
     _restart_timestamp = None; _restart_token = 0
+    _restart_delivered = set()
     return jsonify({"status": "cancelled", "was_pending": was})
 
 
@@ -1286,6 +1304,9 @@ function showToast(msg,type="info") {
 document.getElementById("filter-input").addEventListener("input",renderAll);
 document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="s"){e.preventDefault();saveAll();}});
 
+const RESTART_COOLDOWN_MS = 3 * 60 * 1000;   // 3 minutes
+let _restartCooldownTimer = null;
+
 async function requestRestart() {
   const btn=document.getElementById("restart-btn"), st=document.getElementById("restart-status");
   if (!confirm("Queue a restart for ALL nodes?\n\nEach node reboots at its next config poll (within 60 s).\nYou can cancel until the first node polls.")) return;
@@ -1303,9 +1324,27 @@ async function cancelRestart() {
   try { const d=await(await fetch("/restart/cancel",{method:"POST"})).json(); showToast(d.was_pending?"Restart cancelled":"No restart was pending","info"); } catch(e) { showToast("Cancel failed","error"); }
   resetRestartBtn();
 }
-function resetRestartBtn() {
+function resetRestartBtn(startCooldown=false) {
   const btn=document.getElementById("restart-btn"), st=document.getElementById("restart-status");
-  btn.innerHTML="⟳ Restart all nodes"; btn.onclick=requestRestart; btn.disabled=false; st.textContent="";
+  if (_restartCooldownTimer) { clearInterval(_restartCooldownTimer); _restartCooldownTimer=null; }
+  if (startCooldown) {
+    const until = Date.now() + RESTART_COOLDOWN_MS;
+    btn.disabled=true; btn.onclick=null;
+    function tick() {
+      const remaining = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+      const m = Math.floor(remaining/60), s = remaining%60;
+      btn.innerHTML=`⟳ Restart all nodes (${m}:${String(s).padStart(2,'0')})`;
+      st.textContent="";
+      if (remaining <= 0) {
+        clearInterval(_restartCooldownTimer); _restartCooldownTimer=null;
+        btn.innerHTML="⟳ Restart all nodes"; btn.onclick=requestRestart; btn.disabled=false;
+      }
+    }
+    tick();
+    _restartCooldownTimer = setInterval(tick, 1000);
+  } else {
+    btn.innerHTML="⟳ Restart all nodes"; btn.onclick=requestRestart; btn.disabled=false; st.textContent="";
+  }
 }
 
 // ── Fleet Grid ────────────────────────────────────────────────────────────
@@ -1485,6 +1524,25 @@ function positionFleetTip(e) {
   if (y+th+margin>window.innerHeight) y=window.innerHeight-th-margin;
   fTip.style.left=x+'px'; fTip.style.top=y+'px';
 }
+
+// ── Restart status polling ────────────────────────────────────────────────
+// Polls /restart/status every 10 s while a restart is pending.
+// When the server clears the window (pending → false) the button enters
+// the 3-minute cooldown so it cannot be accidentally re-fired immediately.
+let _restartWasPending = false;
+async function pollRestartStatus() {
+  try {
+    const d = await (await fetch('/restart/status')).json();
+    const btn = document.getElementById('restart-btn');
+    const isCancelMode = btn && btn.textContent.startsWith('✕');
+    if (!d.pending && _restartWasPending && !isCancelMode) {
+      // Window just expired naturally — start cooldown
+      resetRestartBtn(true);
+    }
+    _restartWasPending = d.pending;
+  } catch(e) { /* ignore network errors */ }
+}
+setInterval(pollRestartStatus, 10000);
 
 async function fetchFleetNodes() {
   try {

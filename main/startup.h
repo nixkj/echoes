@@ -44,6 +44,7 @@
 typedef struct {
     char mac_address[18];           // MAC address as string (XX:XX:XX:XX:XX:XX)
     char node_type[32];             // Node type identifier
+    char reset_reason[20];          // Reset reason string (e.g. "TASK_WDT", "POWERON")
     bool has_errors;                // Whether any startup errors occurred
     char error_message[128];        // Error message if any
 } startup_report_t;
@@ -79,5 +80,13 @@ esp_err_t startup_send_report(const startup_report_t *report);
  * @return ESP_OK on success, error code otherwise
  */
 esp_err_t startup_get_mac_address(char *mac_str);
+
+/**
+ * @brief Return a short human-readable label for an esp_reset_reason_t value.
+ *
+ * @param reason  Value returned by esp_reset_reason()
+ * @return        Static string, e.g. "TASK_WDT", "POWERON", "PANIC"
+ */
+const char *startup_reset_reason_str(int reason);
 
 #endif /* STARTUP_REPORT_H */

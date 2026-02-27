@@ -38,14 +38,48 @@ esp_err_t startup_get_mac_address(char *mac_str)
 }
 
 /* ========================================================================
- * MAIN FUNCTIONS
+ * RESET REASON
  * ======================================================================== */
+
+/**
+ * @brief Convert esp_reset_reason_t to a short log-friendly label.
+ *
+ * Labels are kept short (<12 chars) so they fit neatly in fixed-width log
+ * lines.  "TASK_WDT" and "PANIC" are the two most actionable values —
+ * they indicate firmware bugs rather than deliberate or power-related resets.
+ */
+const char *startup_reset_reason_str(int reason)
+{
+    switch ((esp_reset_reason_t)reason) {
+    case ESP_RST_POWERON:    return "POWERON";
+    case ESP_RST_EXT:        return "EXT_PIN";
+    case ESP_RST_SW:         return "SW_RESET";
+    case ESP_RST_PANIC:      return "PANIC";
+    case ESP_RST_INT_WDT:    return "INT_WDT";
+    case ESP_RST_TASK_WDT:   return "TASK_WDT";
+    case ESP_RST_WDT:        return "WDT";
+    case ESP_RST_DEEPSLEEP:  return "DEEP_SLEEP";
+    case ESP_RST_BROWNOUT:   return "BROWNOUT";
+    case ESP_RST_SDIO:       return "SDIO";
+    default:                 return "UNKNOWN";
+    }
+}
 
 esp_err_t startup_capture_identity(startup_report_t *report, hardware_config_t hw_config)
 {
     if (!report) return ESP_ERR_INVALID_ARG;
 
     memset(report, 0, sizeof(startup_report_t));
+
+    /* Reset reason — read before any other initialisation touches the RTC
+     * registers.  Called here (in startup_capture_identity) so the value is
+     * available to the server before the application tasks start.           */
+    esp_reset_reason_t reason = esp_reset_reason();
+    strncpy(report->reset_reason,
+            startup_reset_reason_str((int)reason),
+            sizeof(report->reset_reason) - 1);
+    report->reset_reason[sizeof(report->reset_reason) - 1] = '\0';
+    ESP_LOGI(TAG, "Reset reason: %s (%d)", report->reset_reason, (int)reason);
 
     /* Node type from detected hardware */
     switch (hw_config) {
@@ -121,12 +155,14 @@ esp_err_t startup_send_report(const startup_report_t *report)
         "\"mac\":\"%s\","
         "\"firmware\":\"%s\","
         "\"node_type\":\"%s\","
+        "\"reset_reason\":\"%s\","
         "\"has_errors\":%s,"
         "\"error_message\":\"%s\""
         "}",
         report->mac_address,
         FIRMWARE_VERSION,
         report->node_type,
+        report->reset_reason,
         report->has_errors ? "true" : "false",
         report->error_message
     );

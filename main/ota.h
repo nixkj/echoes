@@ -28,7 +28,7 @@
  * under "Server Configuration".  You should not need to edit this
  * file directly — set the IP and port in menuconfig instead.
  */
-#define FIRMWARE_VERSION    "6.2.2"
+#define FIRMWARE_VERSION    "6.3.0"
 
 /* STRINGIFY is needed to turn an integer Kconfig value into a string
  * literal so it can be concatenated with other string literals.       */
