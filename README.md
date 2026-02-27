@@ -382,35 +382,115 @@ Indicative - expect variations based on hardware configuration and network
 availability.
 
 ```
-I (567) ECHOES: LEDs initialized
-I (569) MAIN: ========================================
-I (574) MAIN: Echoes of the Machine
-I (577) MAIN: Firmware Version: 5.5.2
-I (580) MAIN: ========================================
-I (602) RCFG: Remote config initialised with defaults
-I (603) MAIN: Initializing system...
-I (606) ECHOES: BH1750 light sensor detected at 0x23
-I (606) ECHOES: Hardware detected: FULL (BH1750 + Audio)
-I (612) MARKOV: Loaded transition counts from NVS (578 bytes)
-I (615) MARKOV: Markov chain ready — 17 states, current: STARTUP
-I (621) MARKOV: Top transitions from STARTUP:
-I (625) MARKOV:   #1  VOICE+NIGHT           32.5%
-I (630) MARKOV:   #2  IDLE+DAWN             13.0%
-I (634) MARKOV:   #3  VOICE+DAWN            13.0%
-I (638) ECHOES: System initialized
-I (642) MAIN: Connecting to WiFi...
-I (645) OTA: Initializing WiFi...
-I (15798) MAIN: Capturing device identity...
-I (15798) STARTUP: Device MAC: xx:xx:xx:xx:xx:xx  Node type: echoes-full
-I (15802) MAIN: Initializing audio hardware...
-I (15808) ECHOES: Microphone (I2S RX) initialized @ 16000 Hz
-I (15812) MAIN: Full hardware detected - initializing speaker
-I (15818) ECHOES: Speaker (I2S TX) initialized @ 16000 Hz
-I (17031) ESPNOW: espnow [version: 2.0] init
-I (17032) ESPNOW: ESP-NOW mesh initialised (broadcast-only)
-I (17033) ESPNOW: Initial local lux seeded: 0.8
-I (17034) MAIN: Starting Echoes of the Machine (no-WiFi path)...
-I (17040) ECHOES: Audio detection task started
+I (517) cpu_start: Multicore app
+I (526) cpu_start: GPIO 3 and 1 are used as console UART I/O pins
+I (526) cpu_start: Pro cpu start user code
+I (526) cpu_start: cpu freq: 240000000 Hz
+I (528) app_init: Application information:
+I (532) app_init: Project name:     echoes
+I (535) app_init: App version:      v6.2.0
+I (539) app_init: Compile time:     Feb 26 2026 16:19:04
+I (544) app_init: ELF file SHA256:  8384b6a81...
+--- Warning: Checksum mismatch between flashed and built applications. Checksum of built application is 48910a4548a02a2365ddb8706b9ea39c9752ef6f7cf6cebb0c6816cfab2b788b
+I (549) app_init: ESP-IDF:          v5.5.2-dirty
+I (553) efuse_init: Min chip rev:     v0.0
+I (557) efuse_init: Max chip rev:     v3.99 
+I (561) efuse_init: Chip rev:         v3.1
+I (565) heap_init: Initializing. RAM available for dynamic allocation:
+I (571) heap_init: At 3FFAE6E0 len 00001920 (6 KiB): DRAM
+I (576) heap_init: At 3FFD20D0 len 0000DF30 (55 KiB): DRAM
+I (581) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM
+I (587) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM
+I (592) heap_init: At 40099318 len 00006CE8 (27 KiB): IRAM
+I (599) spi_flash: detected chip: generic
+I (601) spi_flash: flash io: dio
+I (605) main_task: Started on CPU0
+I (608) main_task: Calling app_main()
+I (611) ECHOES: LEDs initialized
+I (613) MAIN: ========================================
+I (618) MAIN: Echoes of the Machine
+I (621) MAIN: Firmware Version: 6.2.0
+I (625) MAIN: ========================================
+I (646) RCFG: Remote config initialised with defaults
+I (646) MAIN: Initializing system...
+I (649) ECHOES: BH1750 light sensor detected at 0x23
+I (649) ECHOES: Hardware detected: FULL (BH1750 + Audio)
+I (653) MARKOV: No saved chain found (ESP_ERR_NVS_NOT_FOUND) — using priors
+I (660) MARKOV: Markov chain ready — 17 states, current: STARTUP
+I (666) MARKOV: Top transitions from STARTUP:
+I (670) MARKOV:   #1  IDLE+DAWN             21.7%
+I (674) MARKOV:   #2  IDLE+OVERCAST         13.0%
+I (679) MARKOV:   #3  IDLE+NIGHT            4.3%
+I (683) ECHOES: System initialized
+I (686) MAIN: Startup jitter: 2000 ms (MAC tail: A0)
+I (2691) MAIN: Connecting to WiFi...
+I (2691) OTA: Initializing WiFi...
+I (2695) wifi:wifi driver task: 3ffdb0d8, prio:23, stack:6656, core=0
+I (2704) wifi:wifi firmware version: ee91c8c
+I (2705) wifi:wifi certification version: v7.0
+I (2705) wifi:config NVS flash: enabled
+I (2706) wifi:config nano formatting: disabled
+I (2710) wifi:Init data frame dynamic rx buffer num: 32
+I (2715) wifi:Init static rx mgmt buffer num: 5
+I (2719) wifi:Init management short buffer num: 32
+I (2724) wifi:Init dynamic tx buffer num: 32
+I (2728) wifi:Init static rx buffer size: 1600
+I (2732) wifi:Init static rx buffer num: 10
+I (2736) wifi:Init dynamic rx buffer num: 32
+I (2741) wifi_init: rx ba win: 6
+I (2743) wifi_init: accept mbox: 6
+I (2746) wifi_init: tcpip mbox: 32
+I (2749) wifi_init: udp mbox: 6
+I (2752) wifi_init: tcp mbox: 6
+I (2755) wifi_init: tcp tx win: 5760
+I (2758) wifi_init: tcp rx win: 5760
+I (2761) wifi_init: tcp mss: 1440
+I (2764) wifi_init: WiFi IRAM OP enabled
+I (2768) wifi_init: WiFi RX IRAM OP enabled
+I (2774) phy_init: phy_version 4863,a3a4459,Oct 28 2025,14:30:06
+I (2853) wifi:mode : sta (28:05:a5:6f:30:a0)
+I (2854) wifi:enable tsf
+I (2856) OTA: WiFi initialization finished. Connecting to SSID: Echoes
+I (2871) wifi:new:<11,2>, old:<1,0>, ap:<255,255>, sta:<11,2>, prof:1, snd_ch_cfg:0x0
+I (2872) wifi:state: init -> auth (0xb0)
+I (3907) wifi:state: auth -> assoc (0x0)
+I (3918) wifi:Association refused temporarily time 1001, comeback time 1101 (TUs)
+I (5046) wifi:state: assoc -> auth (0xb0)
+I (6078) wifi:state: auth -> assoc (0x0)
+I (6087) wifi:state: assoc -> run (0x10)
+I (6217) wifi:connected with Echoes, aid = 56, channel 11, 40D, bssid = 78:9a:18:71:d7:30
+I (6218) wifi:security: WPA3-SAE, phy: bgn, rssi: -54
+I (6222) wifi:pm start, type: 1
+
+I (6223) wifi:dp: 1, bi: 102400, li: 3, scale listen interval from 307200 us to 307200 us
+I (6237) wifi:AP's beacon interval = 102400 us, DTIM period = 1
+I (6243) wifi:<ba-add>idx:0 (ifx:0, 78:9a:18:71:d7:30), tid:0, ssn:0, winSize:64
+I (7259) esp_netif_handlers: sta ip: 192.168.101.125, mask: 255.255.255.0, gw: 192.168.101.1
+I (7260) OTA: Got IP: 192.168.101.125
+I (7260) OTA: Connected to WiFi SSID: Echoes
+I (7764) MAIN: Capturing device identity...
+I (7764) STARTUP: Device MAC: 28:05:A5:6F:30:A0  Node type: echoes-full
+I (7765) MAIN: Sending startup report...
+I (7767) STARTUP: Sending startup report to http://192.168.101.2:8002/startup
+I (7774) STARTUP: POST data: {"mac":"28:05:A5:6F:30:A0","firmware":"6.2.0","node_type":"echoes-full","has_errors":false,"error_message":""}
+I (7796) wifi:<ba-add>idx:1 (ifx:0, 78:9a:18:71:d7:30), tid:6, ssn:2, winSize:64
+I (7836) STARTUP: Server response: {"status": "ok", "message": "Startup report received", "timestamp": "2026-02-27 16:51:39"}
+I (7839) STARTUP: HTTP POST status=200 content_length=90
+I (7841) STARTUP: Startup report sent successfully (attempt 1)
+I (7847) MAIN: Startup report sent successfully
+I (8051) MAIN: Initializing audio hardware...
+I (8053) ECHOES: Microphone (I2S RX) initialized @ 16000 Hz
+I (8053) MAIN: Full hardware detected - initializing speaker
+I (8056) ECHOES: Speaker (I2S TX) initialized @ 16000 Hz
+I (8060) MAIN: Task watchdog: 120s timeout, panic on trigger
+I (8065) MAIN: WiFi connected successfully
+I (8069) MAIN: Fetching remote configuration...
+I (8117) RCFG: Config applied — vol=0.40 whistle=2000Hz voice=200Hz poll=500ms
+I (8119) MAIN: Remote config applied successfully
+I (8119) ECHOES: Audio detection task started
+I (8123) ECHOES: 🎤 Listening for whistles, voice, claps, and birdsong...
+I (8130) ECHOES: Lux-based bird selection enabled
+I (8135) ECHOES: 🐦 Flock task running (full audio mode)
 ```
 
 ## To Do
