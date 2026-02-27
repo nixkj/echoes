@@ -173,6 +173,18 @@ void app_main(void)
          * 4096 bytes is sufficient on Xtensa with the hardware FPU, but if
          * intermittent watchdog resets appear in the field this task's stack
          * should be the first thing to increase (try 8192).               */
+
+        /* Suspend the scheduler while creating tasks so that a newly created
+         * higher-priority task (audio=5, lux/flock=4 vs app_main=1) cannot
+         * preempt between xTaskCreate and vTaskSuspend.  Without this guard
+         * the audio task runs immediately on creation, hits mic_chan==NULL,
+         * and spams I2S errors until OTA suspends it.
+         * vTaskSuspend() is safe to call with the scheduler suspended —
+         * it marks the TCB as suspended without triggering a context switch.
+         * When xTaskResumeAll() returns all three tasks are already in the
+         * suspended state so the scheduler will not switch to any of them.  */
+        vTaskSuspendAll();
+
         xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, &h_audio);
         if (h_audio)  vTaskSuspend(h_audio);
 
@@ -183,6 +195,8 @@ void app_main(void)
 
         xTaskCreate(flock_task, "flock", 4096, NULL, 4, &h_flock);
         if (h_flock)  vTaskSuspend(h_flock);
+
+        xTaskResumeAll();
 
         /* Register handles so OTA can suspend/resume them around the download */
         ota_register_tasks(h_flock, h_lux, h_audio);

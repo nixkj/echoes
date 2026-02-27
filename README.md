@@ -236,9 +236,9 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 6.2.0 → 6.2.1) |
-| `./build.sh version minor` | Increment minor version (e.g. 6.2.0 → 6.3.0) |
-| `./build.sh version major` | Increment major version (e.g. 6.2.0 → 7.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 6.3.1 → 6.3.2) |
+| `./build.sh version minor` | Increment minor version (e.g. 6.3.1 → 6.4.0) |
+| `./build.sh version major` | Increment major version (e.g. 6.3.1 → 7.0.0) |
 | `./build.sh deploy` | Copy binary and `version.txt` to `/opt/echoes/firmware/`; archive a versioned copy with manifest to `/opt/echoes/firmware/archive/<version>/` |
 | `./build.sh services` | Install the consolidated `echoes-server` as a systemd service (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -403,47 +403,7 @@ I (642) ECHOES: System initialized
 I (645) MAIN: Startup jitter: 2000 ms (MAC tail: A0)
 I (2650) MAIN: Connecting to WiFi...
 I (2650) OTA: Initializing WiFi...
-I (2654) wifi:wifi driver task: 3ffdb100, prio:23, stack:6656, core=0
-I (2663) wifi:wifi firmware version: ee91c8c
-I (2664) wifi:wifi certification version: v7.0
-I (2664) wifi:config NVS flash: enabled
-I (2665) wifi:config nano formatting: disabled
-I (2669) wifi:Init data frame dynamic rx buffer num: 32
-I (2674) wifi:Init static rx mgmt buffer num: 5
-I (2678) wifi:Init management short buffer num: 32
-I (2683) wifi:Init dynamic tx buffer num: 32
-I (2687) wifi:Init static rx buffer size: 1600
-I (2691) wifi:Init static rx buffer num: 10
-I (2695) wifi:Init dynamic rx buffer num: 32
-I (2700) wifi_init: rx ba win: 6
-I (2702) wifi_init: accept mbox: 6
-I (2705) wifi_init: tcpip mbox: 32
-I (2708) wifi_init: udp mbox: 6
-I (2711) wifi_init: tcp mbox: 6
-I (2714) wifi_init: tcp tx win: 5760
-I (2717) wifi_init: tcp rx win: 5760
-I (2720) wifi_init: tcp mss: 1440
-I (2723) wifi_init: WiFi IRAM OP enabled
-I (2727) wifi_init: WiFi RX IRAM OP enabled
-I (2733) phy_init: phy_version 4863,a3a4459,Oct 28 2025,14:30:06
-I (2811) wifi:mode : sta (x:xx:xx:xx:xx:xx)
-I (2812) wifi:enable tsf
 I (2815) OTA: WiFi initialization finished. Connecting to SSID: Echoes
-I (2829) wifi:new:<11,2>, old:<1,0>, ap:<255,255>, sta:<11,2>, prof:1, snd_ch_cfg:0x0
-I (2831) wifi:state: init -> auth (0xb0)
-I (3681) wifi:state: auth -> assoc (0x0)
-I (3696) wifi:Association refused temporarily time 1001, comeback time 1101 (TUs)
-I (4825) wifi:state: assoc -> auth (0xb0)
-I (5670) wifi:state: auth -> assoc (0x0)
-I (5683) wifi:state: assoc -> run (0x10)
-I (5799) wifi:connected with xxxxxx, aid = 56, channel 11, 40D, bssid = xx:xx:xx:xx:xx:xx
-I (5800) wifi:security: WPA3-SAE, phy: bgn, rssi: -59
-I (5804) wifi:pm start, type: 1
-
-I (5804) wifi:dp: 1, bi: 102400, li: 3, scale listen interval from 307200 us to 307200 us
-I (5825) wifi:<ba-add>idx:0 (ifx:0, xx:xx:xx:xx:xx:xx), tid:0, ssn:0, winSize:64
-I (5837) wifi:AP's beacon interval = 102400 us, DTIM period = 1
-I (6846) esp_netif_handlers: sta ip: x.x.x.x, mask: 255.255.255.0, gw: 192.168.101.1
 I (6847) OTA: Got IP: x.x.x.x
 I (6847) OTA: Connected to WiFi SSID: xxxxxx
 I (7351) MAIN: Capturing device identity...
@@ -451,7 +411,7 @@ I (7351) STARTUP: Reset reason: POWERON (1)
 I (7352) STARTUP: Device MAC: xx:xx:xx:xx:xx:xx  Node type: echoes-full
 I (7354) MAIN: Sending startup report...
 I (7358) STARTUP: Sending startup report to http://x.x.x.x:8002/startup
-I (7365) STARTUP: POST data: {"mac":"xx:xx:xx:xx:xx:xx","firmware":"6.3.0","node_type":"echoes-full","reset_reason":"POWERON","has_errors":false,"error_message":""}
+I (7365) STARTUP: POST data: {"mac":"xx:xx:xx:xx:xx:xx","firmware":"6.3.1","node_type":"echoes-full","reset_reason":"POWERON","has_errors":false,"error_message":""}
 I (7391) wifi:<ba-add>idx:1 (ifx:0, xx:xx:xx:xx:xx:xx), tid:6, ssn:2, winSize:64
 I (7455) STARTUP: Server response: {"status": "ok", "message": "Startup report received", "timestamp": "2026-02-27 16:58:57"}
 I (7458) STARTUP: HTTP POST status=200 content_length=90
@@ -470,11 +430,17 @@ I (7733) ECHOES: 🎤 Listening for whistles, voice, claps, and birdsong...
 - KiCad/ Fritzing for completeness
 - Include explanation of Tasmota running on Sonoff BASIC R-4 controlling each set of nodes, and control via dashboard
  - Remove the hard-coded ip addresses for these units and place in a configuration file similar to the nodes.csv
-- Still experiencing occasional lockup on node start, as well as a node disappearing (suggests the watchdog timer is not working
+- Still experiencing occasional disappearing or getting stuck with LED on full when running (possibly linked to flock mode?)
 
 ## Version History
 
-**6.2.0** - Current
+**6.3.1**
+- More stable boot up
+- Implemented watchdog timer
+- Reset reason captured in startup log
+- Sonoff BASIC R-4 now used to control each group of nodes (controllable via dashboard)
+
+**6.2.0**
 - Minor inconsistencies in code and documentation resolved
 
 **6.1.2**

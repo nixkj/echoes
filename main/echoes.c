@@ -653,13 +653,23 @@ void audio_detection_task(void *param) {
     float vu_level = 0.0f;  // Current VU meter level
     
     ESP_LOGI(TAG, "Audio detection task started");
-    
+
+    /* Wait for mic_chan to be set by i2s_microphone_init() in app_main.
+     * Normally the scheduler guard in app_main (vTaskSuspendAll around
+     * xTaskCreate+vTaskSuspend) prevents this task from running before the
+     * hardware is ready, but this poll is a defensive backstop against any
+     * future ordering change.  mic_chan is a static global initialised to
+     * NULL; i2s_microphone_init() sets it before enabling the channel.    */
+    while (mic_chan == NULL) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
     if (g_hw_config == HW_CONFIG_FULL) {
         ESP_LOGI(TAG, "🎤 Listening for whistles, voice, claps, and birdsong...");
     } else {
         ESP_LOGI(TAG, "🎤 LED VU meter mode active (digital stepped output)");
     }
-    
+
     /* Subscribe this task to the task watchdog.
      *
      * Previously i2s_channel_read used portMAX_DELAY, which meant a stalled
@@ -1078,24 +1088,11 @@ void flock_task(void *param)
     /* Verify QUELEA_IDX points to the right entry — catches table reordering at runtime. */
     assert(strcmp(k_all_birds[QUELEA_IDX].function_name, "red_billed_quelea") == 0);
 
-    /* Subscribe to the task watchdog here, before the hardware branch, so
-     * both the LED-only and full-audio paths are covered.  Each loop below
-     * resets the WDT at the top of every iteration so the 120-second timeout
-     * is never reached during normal idle operation.                        */
-    {
-        esp_err_t wdt_err = esp_task_wdt_add(NULL);
-        if (wdt_err != ESP_OK) {
-            ESP_LOGW(TAG, "flock_task: could not subscribe to watchdog: %s",
-                     esp_err_to_name(wdt_err));
-        }
-    }
-
     if (!has_audio_output()) {
         /* Minimal hardware: LED-only flock strobe */
         ESP_LOGI(TAG, "🐦 Flock task running (LED-only mode)");
         bool was_flock = false;
         while (1) {
-            esp_task_wdt_reset();   /* keep WDT fed on every cycle */
             bool flock = espnow_mesh_is_flock_mode();
             if (flock) {
                 set_led(BRIGHT_FULL, BRIGHT_OFF);
@@ -1114,9 +1111,12 @@ void flock_task(void *param)
 
     uint32_t last_random_idx = 0xFFFFFFFF;  /* avoid immediate repetition in 40 % path */
 
-    while (1) {
-        esp_task_wdt_reset();   /* reset at top so idle path never starves the WDT */
+    esp_err_t wdt_err = esp_task_wdt_add(NULL);
+    if (wdt_err != ESP_OK) {
+        ESP_LOGW(TAG, "flock_task: could not subscribe to watchdog: %s", esp_err_to_name(wdt_err));
+    }
 
+    while (1) {
         if (!espnow_mesh_is_flock_mode()) {
             vTaskDelay(pdMS_TO_TICKS(250));
             continue;
@@ -1155,6 +1155,7 @@ void flock_task(void *param)
         set_led(BRIGHT_OFF, BRIGHT_OFF);
 
         /* ---- Play (blocking) ------------------------------------------ */
+	esp_task_wdt_reset();
         generate_and_play_bird_call(&g_bird_mapper,
                                     bird->function_name,
                                     bird->display_name);
