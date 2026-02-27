@@ -114,10 +114,12 @@
 #define FLOCK_QUELEA_PERCENT    60      // % of flock calls that play Quelea (rest = random)
 
 /* Task Watchdog Timer
- * If audio_detection_task fails to return from i2s_channel_read() within this
- * window (e.g. microphone peripheral stalled) the TWDT triggers a panic and
- * the device reboots.  2 minutes is long enough to survive any legitimate
- * burst of activity but short enough to recover from a hard peripheral hang. */
+ * audio_detection_task uses a 5-second timeout on i2s_channel_read() rather
+ * than portMAX_DELAY.  On timeout the channel is cycled (disable/re-enable)
+ * to recover from a stalled peripheral without a full reboot.  The TWDT is
+ * now a last-resort backstop: if the channel cycle itself somehow hangs, the
+ * TWDT fires after WDT_TIMEOUT_S and forces a clean reboot.
+ * 120 seconds is a generous ceiling — far beyond any legitimate block. */
 #define WDT_TIMEOUT_S           120     // 2-minute task watchdog timeout
 
 /* Light sensor polling

@@ -660,15 +660,26 @@ void audio_detection_task(void *param) {
         ESP_LOGI(TAG, "🎤 LED VU meter mode active (digital stepped output)");
     }
     
-    /* Subscribe this task to the 2-minute task watchdog.  The watchdog is
-     * fed each time i2s_channel_read() returns (see loop below).  If the
-     * microphone peripheral stalls and the read never returns, the TWDT
-     * fires after WDT_TIMEOUT_S seconds and reboots the device.          */
+    /* Subscribe this task to the task watchdog.
+     *
+     * Previously i2s_channel_read used portMAX_DELAY, which meant a stalled
+     * I2S peripheral would cause the task to block forever — the WDT would
+     * eventually fire and reboot the node, but the reboot loop repeated
+     * indefinitely because the stall recurred on every boot.
+     *
+     * The fix: use a 5-second timeout instead of portMAX_DELAY.  A healthy
+     * ICS-43434 delivers a 512-sample buffer every ~32 ms, so 5 s is many
+     * orders of magnitude more than any legitimate delay.  On timeout the
+     * channel is cycled (disable → re-enable) to flush the DMA ring and
+     * recover without a full reboot.  The WDT is now a last-resort backstop
+     * for failure modes the timeout recovery cannot handle.               */
     esp_err_t wdt_err = esp_task_wdt_add(NULL);
     if (wdt_err != ESP_OK) {
         ESP_LOGW(TAG, "Could not subscribe audio task to watchdog: %s",
                  esp_err_to_name(wdt_err));
     }
+
+#define I2S_READ_TIMEOUT_MS  5000   /* 5 s — vastly more than the ~32 ms per buffer */
 
     while (1) {
         size_t bytes_read = 0;
@@ -677,15 +688,23 @@ void audio_detection_task(void *param) {
             buffer,
             BUFFER_SIZE * sizeof(int16_t),
             &bytes_read,
-            portMAX_DELAY
+            pdMS_TO_TICKS(I2S_READ_TIMEOUT_MS)
         );
-        esp_task_wdt_reset();  /* fed: i2s_channel_read returned, task is alive */
+        esp_task_wdt_reset();  /* fed every iteration whether read succeeded or timed out */
+
+        if (ret == ESP_ERR_TIMEOUT) {
+            /* Peripheral stalled — cycle the channel to recover without rebooting. */
+            ESP_LOGW(TAG, "I2S read timeout — cycling mic channel");
+            i2s_channel_disable(mic_chan);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            i2s_channel_enable(mic_chan);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
 
         if (ret != ESP_OK || bytes_read == 0) {
             ESP_LOGE(TAG, "I2S read error: %s — reinitialising mic channel",
                      esp_err_to_name(ret));
-            /* Cycle the channel to flush a stale DMA ring (e.g. overflow
-             * from the driver being enabled long before the first read).   */
             i2s_channel_disable(mic_chan);
             vTaskDelay(pdMS_TO_TICKS(50));
             i2s_channel_enable(mic_chan);
