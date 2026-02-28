@@ -1485,7 +1485,7 @@ function buildFleetGrid() {
     lbl.textContent = nodeId;
     div.appendChild(lbl);
 
-    div.addEventListener('mouseenter', e => {
+    const showFleetTip = e => {
       fTip.className = `ftooltip ${cls}`;
       fTip.innerHTML =
         `<div class="ftooltip-hdr">
@@ -1501,9 +1501,13 @@ function buildFleetGrid() {
         <div class="ftooltip-ts">⏱ ${fleetFmtDate(n.last_seen_ts)}</div>`;
       fTip.style.display = 'block';
       positionFleetTip(e);
-    });
+    };
+    div.addEventListener('mouseenter', showFleetTip);
     div.addEventListener('mousemove', positionFleetTip);
     div.addEventListener('mouseleave', () => { fTip.style.display = 'none'; });
+    div.addEventListener('touchstart', e => { e.preventDefault(); showFleetTip(e); }, { passive: false });
+    div.addEventListener('touchmove',  e => { e.preventDefault(); positionFleetTip(e); }, { passive: false });
+    div.addEventListener('touchend',   () => { fTip.style.display = 'none'; });
     g.appendChild(div);
   });
 
@@ -1516,13 +1520,23 @@ function buildFleetGrid() {
 }
 
 function positionFleetTip(e) {
-  const tw=fTip.offsetWidth||200, th=fTip.offsetHeight||120;
-  const margin=10;
-  let x=e.clientX+14, y=e.clientY-th-10;
-  if (x+tw+margin>window.innerWidth)  x=e.clientX-tw-14;
-  if (y<margin) y=e.clientY+14;
-  if (y+th+margin>window.innerHeight) y=window.innerHeight-th-margin;
-  fTip.style.left=x+'px'; fTip.style.top=y+'px';
+  // Support both mouse events and touch events
+  const src = (e.touches && e.touches.length) ? e.touches[0] : e;
+  const cx = src.clientX, cy = src.clientY;
+  const tw = fTip.offsetWidth || 220, th = fTip.offsetHeight || 160;
+  const margin = 10, vw = window.innerWidth, vh = window.innerHeight;
+  // Prefer placing the tooltip above-right of the touch/cursor
+  let x = cx + 14, y = cy - th - 10;
+  // Clamp right edge, then left edge
+  if (x + tw + margin > vw) x = cx - tw - 14;
+  if (x < margin) x = margin;
+  // Clamp top edge, then bottom edge
+  if (y < margin) y = cy + 14;
+  if (y + th + margin > vh) y = vh - th - margin;
+  // Final safety so tooltip never clips on very small viewports
+  x = Math.max(margin, Math.min(x, vw - tw - margin));
+  y = Math.max(margin, Math.min(y, vh - th - margin));
+  fTip.style.left = x + 'px'; fTip.style.top = y + 'px';
 }
 
 // ── Restart status polling ────────────────────────────────────────────────
