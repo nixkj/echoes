@@ -355,10 +355,15 @@ bool ota_perform_update(const char *url)
      * Keeping the radio quiet during download reduces TCP retransmissions
      * on congested channels.  Tasks are resumed on failure or after restart
      * is called (success path calls esp_restart() so resume is not needed). */
+    /* Tasks are already suspended by app_main before ota_check_and_update()
+     * is called.  This re-suspend is a safe no-op for tasks that are already
+     * in the suspended state; it is kept here so ota_perform_update() remains
+     * callable standalone (e.g. from ota_task) without requiring the caller to
+     * pre-suspend.  When called from app_main's boot path the calls are no-ops. */
     if (s_flock_task_handle)   vTaskSuspend(s_flock_task_handle);
     if (s_lux_task_handle)     vTaskSuspend(s_lux_task_handle);
     if (s_audio_task_handle)   vTaskSuspend(s_audio_task_handle);
-    ESP_LOGI(TAG, "Background tasks suspended for OTA download");
+    ESP_LOGI(TAG, "Background tasks confirmed suspended for OTA download");
 
     /* Disable WiFi power saving for the duration of the download.
      * WIFI_PS_MIN_MODEM lets the radio sleep between DTIM beacons; during
@@ -489,12 +494,9 @@ bool ota_perform_update(const char *url)
         ESP_LOGE(TAG, "Download failed");
         esp_ota_abort(ota_handle);
 
-        /* Restore power save and background tasks on failure */
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-        if (s_flock_task_handle)   vTaskResume(s_flock_task_handle);
-        if (s_lux_task_handle)     vTaskResume(s_lux_task_handle);
-        if (s_audio_task_handle)   vTaskResume(s_audio_task_handle);
-        ESP_LOGI(TAG, "Background tasks resumed after failed download");
+        /* Do NOT resume tasks here — app_main calls ota_resume_tasks()
+         * after espnow_mesh_init() and i2s_microphone_init() complete,
+         * ensuring tasks never run before their hardware is ready.      */
 
         /* Indicate failure with rapid blue blink */
         for (int i = 0; i < 5; i++) {
@@ -516,11 +518,7 @@ bool ota_perform_update(const char *url)
             ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
         }
 
-        /* Restore power save and background tasks on failure */
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-        if (s_flock_task_handle)   vTaskResume(s_flock_task_handle);
-        if (s_lux_task_handle)     vTaskResume(s_lux_task_handle);
-        if (s_audio_task_handle)   vTaskResume(s_audio_task_handle);
+        /* Do NOT resume tasks here — see ota_resume_tasks() comment above. */
 
         /* Indicate failure with rapid blue blink */
         for (int i = 0; i < 5; i++) {
@@ -538,13 +536,7 @@ bool ota_perform_update(const char *url)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
 
-        /* Restore power save and resume background tasks — same cleanup as
-         * the esp_ota_end() failure path above.                            */
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-        if (s_flock_task_handle)   vTaskResume(s_flock_task_handle);
-        if (s_lux_task_handle)     vTaskResume(s_lux_task_handle);
-        if (s_audio_task_handle)   vTaskResume(s_audio_task_handle);
-        ESP_LOGI(TAG, "Background tasks resumed after failed boot partition set");
+        /* Do NOT resume tasks here — see ota_resume_tasks() comment above. */
 
         /* Indicate failure with rapid blue blink */
         for (int i = 0; i < 5; i++) {
@@ -577,6 +569,28 @@ void ota_register_tasks(TaskHandle_t flock, TaskHandle_t lux, TaskHandle_t audio
     s_audio_task_handle = audio;
     ESP_LOGI(TAG, "OTA registered %d task handle(s) for suspension during download",
              (flock ? 1 : 0) + (lux ? 1 : 0) + (audio ? 1 : 0));
+}
+
+void ota_resume_tasks(void)
+{
+    /* Resume order: audio first (highest priority — starts feeding the WDT
+     * immediately), then lux and flock.  All three must only be called after
+     * espnow_mesh_init() and i2s_microphone_init() have completed in app_main,
+     * which is guaranteed because app_main calls this function explicitly after
+     * those initialisations rather than letting ota_perform_update() call it
+     * from inside an OTA failure path.                                        */
+    if (s_audio_task_handle) {
+        vTaskResume(s_audio_task_handle);
+        ESP_LOGI(TAG, "audio_detection task resumed");
+    }
+    if (s_lux_task_handle) {
+        vTaskResume(s_lux_task_handle);
+        ESP_LOGI(TAG, "lux_birds task resumed");
+    }
+    if (s_flock_task_handle) {
+        vTaskResume(s_flock_task_handle);
+        ESP_LOGI(TAG, "flock task resumed");
+    }
 }
 
 bool ota_check_and_update(void)

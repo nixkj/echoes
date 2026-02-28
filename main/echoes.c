@@ -33,6 +33,7 @@ static bird_call_mapper_t g_bird_mapper = {0};
 static markov_chain_t g_markov = {0};
 static audio_buffer_t g_audio_buffer = {0};  // Static buffer for bird calls
 static SemaphoreHandle_t s_playback_mutex = NULL;  // Prevents concurrent I2S writes
+static SemaphoreHandle_t s_led_mutex      = NULL;  // Serialises LEDC duty updates across tasks
 
 /* Global hardware configuration */
 static hardware_config_t g_hw_config = HW_CONFIG_FULL;
@@ -239,6 +240,20 @@ void light_sensor_init(void)
                 i2c_master_bus_rm_device(bh1750_handle);
                 bh1750_handle = NULL;
             }
+
+            /* Device add or transmit failed — delete the bus so the handle
+             * does not leak.  Fall through to the ADC path below.          */
+            i2c_del_master_bus(bus_handle);
+            bus_handle = NULL;
+        } else {
+            /* BH1750 not present — this is a minimal node.  Free the bus
+             * immediately so the handle does not leak.  On minimal nodes this
+             * branch is taken on every boot; without this free the heap loses
+             * ~100 bytes per reset cycle until adc_oneshot_new_unit() eventually
+             * panics and triggers an infinite reboot loop.                   */
+            ESP_LOGI(TAG, "BH1750 not found — releasing I2C bus (minimal node)");
+            i2c_del_master_bus(bus_handle);
+            bus_handle = NULL;
         }
     }
 
@@ -296,6 +311,12 @@ void system_init(void) {
     // Create playback mutex (guards the I2S speaker channel)
     s_playback_mutex = xSemaphoreCreateMutex();
     configASSERT(s_playback_mutex != NULL);
+
+    // Create LED mutex (serialises ledc_set_duty/update_duty pairs across tasks).
+    // Needed on minimal nodes where audio_detection_task (VU meter) and
+    // flock_task (strobe) both call set_led() concurrently from different cores.
+    s_led_mutex = xSemaphoreCreateMutex();
+    configASSERT(s_led_mutex != NULL);
     
     ESP_LOGI(TAG, "System initialized");
 }
@@ -320,6 +341,30 @@ void set_led(float white_level, float blue_level) {
         white_level = 0.0f;
         blue_level  = 0.0f;
     }
+
+    /* Protect the ledc_set_duty + ledc_update_duty pair.  Without this mutex
+     * two tasks running on different cores can interleave their writes: task A
+     * calls set_duty(white) then task B calls set_duty(white) before either
+     * calls update_duty(), leaving the hardware latched at B's value for both
+     * channels — the wrong brightness.
+     *
+     * Timeout: 10 ms.  A healthy caller holds the mutex for only ~5 µs
+     * (two set_duty + two update_duty calls).  If another task holds it for
+     * longer than 10 ms something is badly wrong; we skip the update rather
+     * than blocking the VU meter or flock strobe indefinitely.             */
+    if (s_led_mutex == NULL ||
+        xSemaphoreTake(s_led_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        /* Mutex not yet created (pre-system_init path) or contended for too
+         * long — best-effort write without the lock.                        */
+        uint32_t duty_white = (uint32_t)(65535.0f * white_level);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty_white);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+        uint32_t duty_blue = (uint32_t)(65535.0f * blue_level);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty_blue);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+        return;
+    }
+
     uint32_t duty_white = (uint32_t)(65535.0f * white_level);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty_white);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
@@ -327,6 +372,8 @@ void set_led(float white_level, float blue_level) {
     uint32_t duty_blue = (uint32_t)(65535.0f * blue_level);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty_blue);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+
+    xSemaphoreGive(s_led_mutex);
 }
 
 /* ========================================================================

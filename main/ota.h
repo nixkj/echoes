@@ -28,7 +28,7 @@
  * under "Server Configuration".  You should not need to edit this
  * file directly — set the IP and port in menuconfig instead.
  */
-#define FIRMWARE_VERSION    "6.3.2"
+#define FIRMWARE_VERSION    "6.3.3"
 
 /* STRINGIFY is needed to turn an integer Kconfig value into a string
  * literal so it can be concatenated with other string literals.       */
@@ -135,5 +135,18 @@ void ota_task(void *param);
  * @return true if update successful, false otherwise
  */
 bool ota_perform_update(const char *url);
+
+/**
+ * @brief Resume the registered application tasks after OTA completes or fails.
+ *
+ * Called exclusively from app_main, AFTER espnow_mesh_init() and
+ * i2s_microphone_init() have been called.  Keeping resume here (instead of
+ * inside ota_perform_update) guarantees tasks never run before the hardware
+ * they depend on is ready.
+ *
+ * Safe to call even if ota_register_tasks() was never called (handles are
+ * NULL in that case and the function is a no-op).
+ */
+void ota_resume_tasks(void);
 
 #endif /* OTA_H */

@@ -236,9 +236,9 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 6.3.1 → 6.3.2) |
-| `./build.sh version minor` | Increment minor version (e.g. 6.3.1 → 6.4.0) |
-| `./build.sh version major` | Increment major version (e.g. 6.3.1 → 7.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 6.3.3 → 6.3.4) |
+| `./build.sh version minor` | Increment minor version (e.g. 6.3.3 → 6.4.0) |
+| `./build.sh version major` | Increment major version (e.g. 6.3.3 → 7.0.0) |
 | `./build.sh deploy` | Copy binary and `version.txt` to `/opt/echoes/firmware/`; archive a versioned copy with manifest to `/opt/echoes/firmware/archive/<version>/` |
 | `./build.sh services` | Install the consolidated `echoes-server` as a systemd service (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -434,7 +434,7 @@ I (7733) ECHOES: 🎤 Listening for whistles, voice, claps, and birdsong...
 
 ## Version History
 
-**6.3.1**
+**6.3.3**
 - More stable boot up
 - Implemented watchdog timer
 - Reset reason captured in startup log

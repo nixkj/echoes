@@ -31,6 +31,7 @@
 #include "esp_check.h"
 #include "nvs_flash.h"
 #include "esp_mac.h"
+#include "esp_random.h"
 
 static const char *TAG = "MAIN";
 
@@ -60,14 +61,18 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing system...");
     system_init();
 
-    /* Stagger boot across the fleet using the last MAC byte as a seed.
-     * Spreads 49 nodes over ~10 s, preventing the AP and server from being
-     * hit by all nodes simultaneously on a mass power-on.                  */
+    /* Stagger boot across the fleet using a hardware RNG value.
+     *
+     * The previous approach used mac[5] as a seed, which caused collision
+     * when nodes from the same manufacturing batch share sequential MACs
+     * (identical mac[5] bytes → same jitter → simultaneous AP association).
+     * esp_random() draws from the hardware RNG, giving a genuinely uniform
+     * distribution across all 50 nodes regardless of MAC assignment.
+     *
+     * Range: 0 – 9 999 ms  (~10 s window for 50 nodes).                   */
     {
-        uint8_t mac[6];
-        esp_read_mac(mac, ESP_MAC_WIFI_STA);
-        uint32_t jitter_ms = ((uint32_t)mac[5] * 200) % 10000;
-        ESP_LOGI(TAG, "Startup jitter: %lu ms (MAC tail: %02X)", jitter_ms, mac[5]);
+        uint32_t jitter_ms = esp_random() % 10000;
+        ESP_LOGI(TAG, "Startup jitter: %lu ms (hardware RNG)", jitter_ms);
         vTaskDelay(pdMS_TO_TICKS(jitter_ms));
     }
 
@@ -290,10 +295,11 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(500));
         set_led(0, 0);
 
-        /* Resume application tasks now that OTA is resolved */
-        if (h_audio)  vTaskResume(h_audio);
-        if (h_lux)    vTaskResume(h_lux);
-        if (h_flock)  vTaskResume(h_flock);
+        /* Resume application tasks now that OTA is resolved and all hardware
+         * is ready.  ota_resume_tasks() is always called here, not inside
+         * ota_perform_update(), so tasks never start before espnow_mesh_init()
+         * and i2s_microphone_init() have completed above.                  */
+        ota_resume_tasks();
         ESP_LOGI(TAG, "Application tasks resumed");
 
         /* Enable modem sleep NOW — after OTA — so the download is never
