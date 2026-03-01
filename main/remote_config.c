@@ -93,6 +93,10 @@ static const remote_config_t CONFIG_DEFAULTS = {
     .markov_idle_trigger_ms          = 45000,
     .markov_autonomous_cooldown_ms   = 15000,
 
+    /* Documentary / demo mode */
+    .demo_mode                   = false,
+    .demo_interval_ms            = 15000,
+
     /* Remote restart */
     .restart_requested           = false,
     .restart_token               = 0,
@@ -278,6 +282,10 @@ static void apply_json_to(cJSON *root, remote_config_t *dst)
     /* Output switches */
     CFG_BOOL   (root, dst->silent_mode,  "SILENT_MODE");
     CFG_BOOL   (root, dst->sound_off,    "SOUND_OFF");
+
+    /* Documentary / demo mode */
+    CFG_BOOL   (root, dst->demo_mode,       "DEMO_MODE");
+    CFG_UINT32 (root, dst->demo_interval_ms, "DEMO_INTERVAL_MS");
 
     /* Remote restart */
     CFG_BOOL   (root, dst->restart_requested, "RESTART_REQUESTED");

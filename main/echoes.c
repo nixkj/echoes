@@ -1224,6 +1224,172 @@ void flock_task(void *param)
 }
 
 /**
+ * @brief Documentary / demo mode task.
+ *
+ * Enabled via DEMO_MODE remote config flag.  Fires bird calls autonomously
+ * on full nodes at DEMO_INTERVAL_MS intervals with no human interaction.
+ * Each call is broadcast over ESP-NOW so the entire mesh responds and flock
+ * mode can trigger naturally — producing the rich, distributed audio of a
+ * live audience session, suitable for unattended documentary recording.
+ *
+ * Minimal nodes (no speaker) exit immediately; they respond to the ESP-NOW
+ * broadcasts via their LED VU meter and the normal flock strobe path.
+ *
+ * Design notes
+ * ─────────────
+ * • Bird selection rotates through all 11 species, never repeating the
+ *   previous pick, to mimic natural variety.
+ * • The detection type broadcast over ESP-NOW cycles WHISTLE → VOICE →
+ *   BIRDSONG → CLAP so every mood is represented across a recording session.
+ * • Markov chain is updated so NVS statistics reflect demo activity.
+ * • The WDT is fed every 500 ms inside the sleep loop so a long interval
+ *   (e.g. 60 s) never trips the 120 s timeout.
+ * • Respects SILENT_MODE, SOUND_OFF, and quiet hours via the existing
+ *   _play_locked() guard inside generate_and_play_bird_call().
+ */
+void demo_task(void *param)
+{
+    (void)param;
+
+    /* Minimal nodes have no speaker — exit; they participate via ESP-NOW. */
+    if (!has_audio_output()) {
+        ESP_LOGI(TAG, "🎬 Demo task: minimal node — no speaker, exiting");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    esp_err_t wdt_err = esp_task_wdt_add(NULL);
+    if (wdt_err != ESP_OK) {
+        ESP_LOGW(TAG, "demo_task: could not subscribe to watchdog: %s",
+                 esp_err_to_name(wdt_err));
+    }
+
+    ESP_LOGI(TAG, "🎬 Demo task running (full node — waiting for DEMO_MODE)");
+
+    uint32_t last_bird_idx  = 0xFFFFFFFF;  /* avoid immediate repetition */
+    uint8_t  det_cycle      = 0;           /* cycles through 4 detection types */
+    uint8_t  event_counter  = 0;           /* counts calls; every 4th is a flash */
+    bool     flash_polarity = true;        /* alternates rise/fall for variety  */
+
+    while (1) {
+        esp_task_wdt_reset();
+
+        /* Poll cheaply while demo mode is off — check every second. */
+        if (!remote_config_get()->demo_mode) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        /* Take a consistent snapshot for this call cycle. */
+        remote_config_t cfg;
+        if (!remote_config_snapshot(&cfg)) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
+        if (!cfg.demo_mode) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        /* ── Bird selection: random, no immediate repeat ─────────── */
+        uint32_t idx;
+        do {
+            idx = esp_random() % NUM_ALL_BIRDS;
+        } while (idx == last_bird_idx && NUM_ALL_BIRDS > 1);
+        last_bird_idx = idx;
+        const bird_info_t *bird = &k_all_birds[idx];
+
+        float lux = get_lux_level();
+
+        /* ── Event type: every 4th call is a flash, others are sound.
+         *
+         * SOUND events (3 out of 4 calls):
+         *   • Teach the Markov chain a detection.
+         *   • Broadcast a sound message → receiving nodes update mood
+         *     AND increment the flock-mode counter.
+         *
+         * FLASH events (1 in 4 calls), mirroring lux_based_birds_task:
+         *   • Simulate a rapid lux change (spike up or dip down, alternating).
+         *   • Derive flash_det from direction (rise → WHISTLE, fall → VOICE),
+         *     exactly as the real flash handler does.
+         *   • Teach the Markov chain that detection.
+         *   • Broadcast the simulated lux value → receiving nodes update
+         *     bird-mapper mood (but do NOT increment the flock counter —
+         *     light broadcasts are excluded from that path by design).
+         *   • Play using the simulated lux + Markov bias so bird selection
+         *     reflects the "bright flash" or "sudden darkness" mood.
+         *
+         * The 3:1 ratio keeps flock-mode triggering primarily driven by the
+         * sound broadcasts (which increment the counter), while flash events
+         * add the light-change texture that varies the bird palette.       */
+        bool is_flash = ((event_counter++ & 3u) == 3u);
+
+        if (is_flash) {
+            /* Simulate a lux spike (rise) or dip (fall), alternating each time. */
+            float base_lux    = (lux >= 0.0f) ? lux : 200.0f;
+            float sim_lux     = flash_polarity
+                                ? (base_lux + cfg.lux_flash_threshold * 2.0f)  /* bright flash  */
+                                : fmaxf(0.0f, base_lux - cfg.lux_flash_threshold * 2.0f); /* sudden dip */
+            flash_polarity = !flash_polarity;
+
+            detection_type_t flash_det = flash_polarity   /* polarity already flipped above */
+                                         ? DETECTION_VOICE    /* falling → mellow */
+                                         : DETECTION_WHISTLE; /* rising  → active */
+
+            markov_on_event(&g_markov, flash_det, sim_lux);
+
+            float bias = markov_get_lux_bias(&g_markov);
+            bird_mapper_update_for_lux(&g_bird_mapper, sim_lux + bias);
+
+            espnow_mesh_broadcast_light(sim_lux);
+
+            ESP_LOGI(TAG, "🎬 Demo ⚡ Flash: %s  [%s lux %.0f→%.0f]",
+                     bird->display_name,
+                     flash_det == DETECTION_WHISTLE ? "RISE" : "FALL",
+                     base_lux, sim_lux);
+        } else {
+            /* ── Sound event: cycle detection type for variety ────── */
+            detection_type_t det;
+            switch (det_cycle++ & 3u) {
+                case 0:  det = DETECTION_WHISTLE;  break;
+                case 1:  det = DETECTION_VOICE;    break;
+                case 2:  det = DETECTION_BIRDSONG; break;
+                default: det = DETECTION_CLAP;     break;
+            }
+
+            markov_on_event(&g_markov, det, lux);
+            espnow_mesh_broadcast_sound(det);
+
+            ESP_LOGI(TAG, "🎬 Demo 🔊 Sound: %s  [%s]", bird->display_name,
+                     det == DETECTION_WHISTLE  ? "WHISTLE"  :
+                     det == DETECTION_VOICE    ? "VOICE"    :
+                     det == DETECTION_BIRDSONG ? "BIRDSONG" : "CLAP");
+        }
+
+        /* ── Play (respects SILENT_MODE, SOUND_OFF, quiet hours) ── */
+        generate_and_play_bird_call(&g_bird_mapper,
+                                    bird->function_name,
+                                    bird->display_name);
+
+        /* ── Inter-call gap — WDT fed every 500 ms ──────────────── */
+        uint32_t interval = cfg.demo_interval_ms;
+        if (interval < 1000u) interval = 1000u;
+
+        uint32_t slept = 0;
+        while (slept < interval) {
+            esp_task_wdt_reset();
+            uint32_t chunk = (interval - slept > 500u) ? 500u : (interval - slept);
+            vTaskDelay(pdMS_TO_TICKS(chunk));
+            slept += chunk;
+            /* Exit sleep early if demo mode is disabled mid-interval. */
+            if (!remote_config_get()->demo_mode) break;
+        }
+    }
+}
+
+
+/**
  * @brief Return pointer to the global bird mapper (used by main to pass to ESP-NOW)
  */
 bird_call_mapper_t *get_bird_mapper(void)

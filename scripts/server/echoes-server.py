@@ -296,6 +296,16 @@ DEFAULT_CONFIG = {
         "description": "Peak LED brightness during bird-call playback VU meter animation. Lower values make the visual response more subtle.",
         "unit": "brightness (0–1)"
     },
+    "DEMO_MODE": {
+        "value": False, "type": "bool",
+        "description": "Documentary / performance mode. When ON, full nodes fire bird calls autonomously at DEMO_INTERVAL_MS intervals with no human input. Each call is broadcast over ESP-NOW so the entire mesh responds and flock mode triggers naturally — producing the rich, multi-node audio of a live audience session. Ideal for unattended recording. Minimal nodes participate via LED and flock strobe; they never play audio regardless of this setting.",
+        "unit": "on / off"
+    },
+    "DEMO_INTERVAL_MS": {
+        "value": 15000, "min": 2000, "max": 120000, "step": 1000, "type": "int",
+        "description": "Interval between autonomous bird calls on each full node when DEMO_MODE is active. With 25 full nodes at 15 s each, the installation produces roughly 1–2 calls per second across the space. Reduce for denser activity; increase for a calmer, more spaced soundscape. Does not affect minimal nodes.",
+        "unit": "ms"
+    },
     "SILENT_MODE": {
         "value": False, "type": "bool",
         "description": "When ON, all output is suppressed — no sound and no LED activity. The device continues to listen and learn but produces no response. Use for maintenance or overnight quiet hours.",
@@ -1184,6 +1194,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <script>
 const SECTIONS = {
+  "Documentary Mode": ["DEMO_MODE","DEMO_INTERVAL_MS"],
   "Output Switches":  ["SILENT_MODE","SOUND_OFF"],
   "Quiet Hours":      ["QUIET_HOURS_ENABLED","QUIET_HOUR_START","QUIET_HOUR_END"],
   "Audio Detection":  ["GAIN","WHISTLE_FREQ","VOICE_FREQ","WHISTLE_MULTIPLIER","VOICE_MULTIPLIER","CLAP_MULTIPLIER","WHISTLE_CONFIRM","VOICE_CONFIRM","CLAP_CONFIRM","DEBOUNCE_BUFFERS","BIRDSONG_FREQ","BIRDSONG_MULTIPLIER","BIRDSONG_HF_RATIO","BIRDSONG_MF_MIN","BIRDSONG_CONFIRM","NOISE_FLOOR_WHISTLE","NOISE_FLOOR_VOICE","NOISE_FLOOR_BIRDSONG"],
@@ -1520,12 +1531,12 @@ function buildFleetGrid() {
 }
 
 function positionFleetTip(e) {
-  // Support both mouse events and touch events
+  // Support both mouse and touch events
   const src = (e.touches && e.touches.length) ? e.touches[0] : e;
   const cx = src.clientX, cy = src.clientY;
   const tw = fTip.offsetWidth || 220, th = fTip.offsetHeight || 160;
   const margin = 10, vw = window.innerWidth, vh = window.innerHeight;
-  // Prefer placing the tooltip above-right of the touch/cursor
+  // Prefer placing tooltip above-right of the touch/cursor
   let x = cx + 14, y = cy - th - 10;
   // Clamp right edge, then left edge
   if (x + tw + margin > vw) x = cx - tw - 14;
@@ -1533,7 +1544,7 @@ function positionFleetTip(e) {
   // Clamp top edge, then bottom edge
   if (y < margin) y = cy + 14;
   if (y + th + margin > vh) y = vh - th - margin;
-  // Final safety so tooltip never clips on very small viewports
+  // Final safety clamp for very small viewports
   x = Math.max(margin, Math.min(x, vw - tw - margin));
   y = Math.max(margin, Math.min(y, vh - th - margin));
   fTip.style.left = x + 'px'; fTip.style.top = y + 'px';

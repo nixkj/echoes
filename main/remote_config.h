@@ -127,6 +127,15 @@ typedef struct {
     bool     silent_mode;       /**< true → disable ALL output (LEDs + sound) */
     bool     sound_off;         /**< true → disable sound only; LEDs still run*/
 
+    /* ── Documentary / demo mode ─────────────────────────────────
+     * When demo_mode is true, full nodes fire bird calls autonomously
+     * at demo_interval_ms intervals without requiring any human input.
+     * Each call is also broadcast via ESP-NOW so the whole mesh responds
+     * and flock mode can trigger naturally — producing rich, distributed
+     * audio suitable for recording a documentary of the installation.   */
+    bool     demo_mode;         /**< true → autonomous playback for recording */
+    uint32_t demo_interval_ms;  /**< Gap between demo calls (ms, per node)    */
+
     /* ── Meta ────────────────────────────────────────────────────── */
     /* ── Remote restart ─────────────────────────────────────────── */
     bool     restart_requested; /**< true → reboot at next config poll        */

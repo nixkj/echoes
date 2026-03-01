@@ -284,6 +284,17 @@ float get_volume_for_lux(float lux);
 /* Detection */
 void audio_detection_task(void *param);
 
+/**
+ * @brief Documentary / demo mode task.
+ *
+ * When DEMO_MODE is enabled via remote config, this task fires bird calls
+ * on full nodes at DEMO_INTERVAL_MS intervals without any human interaction.
+ * Each call is also broadcast over ESP-NOW so the whole mesh responds and
+ * flock mode can trigger naturally — ideal for unattended recording sessions.
+ * Minimal nodes (no speaker) exit immediately; they participate via ESP-NOW.
+ */
+void demo_task(void *param);
+
 /* Playback */
 void play_bird_call(const char *bird_name, const audio_buffer_t *audio_buffer);
 void generate_and_play_bird_call(bird_call_mapper_t *mapper, const char *function_name, const char *display_name);

@@ -201,6 +201,13 @@ void app_main(void)
         xTaskCreate(flock_task, "flock", 4096, NULL, 4, &h_flock);
         if (h_flock)  vTaskSuspend(h_flock);
 
+        /* Demo task: idles (polls remote config) until DEMO_MODE is enabled.
+         * Priority 3 — below audio (5) and lux/flock (4) so it never starves
+         * detection.  Not registered with OTA: it sleeps in 500 ms chunks,
+         * holds no I2S or DMA resources, and will self-suspend on the next
+         * remote_config_get() call which returns demo_mode=false during OTA. */
+        xTaskCreate(demo_task, "demo", 4096, NULL, 3, NULL);
+
         xTaskResumeAll();
 
         /* Register handles so OTA can suspend/resume them around the download */
@@ -386,6 +393,9 @@ void app_main(void)
 
         xTaskCreate(flock_task, "flock", 4096, NULL, 4, NULL);
         ESP_LOGI(TAG, "Flock task started");
+
+        xTaskCreate(demo_task, "demo", 4096, NULL, 3, NULL);
+        ESP_LOGI(TAG, "Demo task started");
     } else {
         ESP_LOGI(TAG, "Echoes of the Machine running (tasks already started)");
     }
