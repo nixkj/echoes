@@ -32,8 +32,110 @@
 #include "nvs_flash.h"
 #include "esp_mac.h"
 #include "esp_random.h"
+#include "esp_netif.h"
+#include "lwip/sockets.h"
 
 static const char *TAG = "MAIN";
+
+/* ========================================================================
+ * WIFI KEEPALIVE (minimal nodes only)
+ * ========================================================================
+ *
+ * Minimal nodes have no lux task and therefore generate no regular outbound
+ * 802.11 DATA frames between 60-second HTTP config polls.  MikroTik
+ * (RouterOS 7 / WifiWave2) — and many other enterprise APs — maintain a
+ * per-client inactivity timer that tracks frames *received from* the client,
+ * not just ACKs.  When the timer expires the AP silently removes the client
+ * from its wireless registration table without sending a deauthentication
+ * frame.  Because no deauth is sent, WIFI_EVENT_STA_DISCONNECTED never
+ * fires, the reconnect logic never runs, and the node vanishes from the
+ * network while still running normally.
+ *
+ * Full nodes are immune: lux_based_birds_task broadcasts a light-level
+ * event every ~500 ms, keeping the AP's inactivity timer continuously
+ * reset.  If a full node is ever silently dropped, its next lux broadcast
+ * gets a deauth response (reason 7: class-3 frame from non-associated
+ * station) within 500 ms, which fires the disconnect event and triggers
+ * reconnect.
+ *
+ * This task fixes the problem for minimal nodes by sending a 1-byte UDP
+ * datagram to the default gateway every WIFI_KEEPALIVE_INTERVAL_MS.  That
+ * single frame is enough to:
+ *
+ *   1. Reset the AP's per-client inactivity timer, preventing silent removal.
+ *   2. Trigger an ARP request if the gateway ARP entry has aged out,
+ *      refreshing both the AP's ARP table and the ESP32's LwIP ARP cache.
+ *   3. If the AP has already silently dropped the client, the DATA frame
+ *      elicits a deauth response, causing WIFI_EVENT_STA_DISCONNECTED to
+ *      fire and the normal reconnect logic to run — recovery within
+ *      WIFI_KEEPALIVE_INTERVAL_MS rather than waiting up to 60 s for the
+ *      next HTTP poll to fail.
+ *
+ * 20 seconds is well under the MikroTik default inactivity threshold and
+ * leaves substantial margin for other AP vendors.  The task consumes
+ * negligible CPU and generates ~60 bytes of air time per interval.
+ */
+#define WIFI_KEEPALIVE_INTERVAL_MS  20000   /* 20 s — well under typical AP idle timeouts */
+
+static void wifi_keepalive_task(void *param)
+{
+    (void)param;
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(WIFI_KEEPALIVE_INTERVAL_MS));
+
+        if (!wifi_is_connected()) {
+            ESP_LOGD(TAG, "Keepalive: WiFi not connected, skipping");
+            continue;
+        }
+
+        /* Resolve the default gateway IP from the active STA netif */
+        esp_netif_t *netif = esp_netif_get_default_netif();
+        if (netif == NULL) continue;
+
+        esp_netif_ip_info_t ip_info;
+        if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK ||
+            ip_info.gw.addr == 0) {
+            ESP_LOGD(TAG, "Keepalive: no gateway IP, skipping");
+            continue;
+        }
+
+        /* Open a UDP socket and send a 1-byte datagram to the gateway's
+         * discard port (9, RFC 863).  The gateway will silently drop it;
+         * we only care about the outbound 802.11 DATA frame it generates. */
+        int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock < 0) {
+            ESP_LOGW(TAG, "Keepalive: socket() failed (%d)", errno);
+            continue;
+        }
+
+        /* 1-second send timeout — we never expect a reply */
+        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        struct sockaddr_in dest = {
+            .sin_family      = AF_INET,
+            .sin_port        = htons(9),    /* discard port */
+            .sin_addr.s_addr = ip_info.gw.addr,
+        };
+
+        uint8_t buf = 0;
+        int ret = sendto(sock, &buf, sizeof(buf), 0,
+                         (struct sockaddr *)&dest, sizeof(dest));
+        if (ret < 0) {
+            /* ENETUNREACH / EHOSTUNREACH here often means the AP has already
+             * silently removed us.  The failed send still generates an ARP
+             * request or triggers the WiFi stack's error path, which will
+             * surface as WIFI_EVENT_STA_DISCONNECTED and start reconnect.  */
+            ESP_LOGW(TAG, "Keepalive: sendto failed (errno %d) — "
+                          "may indicate lost AP association", errno);
+        } else {
+            ESP_LOGD(TAG, "Keepalive: sent to gw " IPSTR, IP2STR(&ip_info.gw));
+        }
+        close(sock);
+    }
+}
+
 
 void app_main(void)
 {
@@ -325,6 +427,21 @@ void app_main(void)
         /* Start remote config polling task (60-second interval) */
         xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);
         ESP_LOGI(TAG, "Remote config polling task started");
+
+        /* Keepalive task: minimal nodes only.
+         *
+         * Full nodes generate outbound 802.11 frames every ~500 ms via the
+         * lux broadcast, so their AP inactivity timer never expires.
+         * Minimal nodes have no such traffic; without this task they will
+         * silently disappear from the AP's wireless registration table
+         * after the AP's inactivity timeout (10–30 min on MikroTik) with
+         * no disconnect event and no reconnect.  See wifi_keepalive_task()
+         * above for the full explanation.                                  */
+        if (hw_config == HW_CONFIG_MINIMAL) {
+            xTaskCreate(wifi_keepalive_task, "wifi_ka", 2048, NULL, 2, NULL);
+            ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
+                     WIFI_KEEPALIVE_INTERVAL_MS / 1000);
+        }
 
         /* OPTIONAL: periodic OTA polling task (disabled by default).
          *
