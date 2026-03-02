@@ -78,6 +78,26 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        /* Disable modem sleep immediately on L2 association — before DHCP
+         * completes and before IP_EVENT_STA_GOT_IP fires.
+         *
+         * Previously PS_NONE was only applied in the IP_EVENT_STA_GOT_IP
+         * handler.  If DHCP fails after a mid-session reconnect (e.g. a
+         * REQUEST packet is lost in RF congestion), GOT_IP never fires and
+         * the node stays in WIFI_PS_MIN_MODEM indefinitely.  Many APs
+         * deauthenticate clients that sleep continuously for 10–30 minutes
+         * without sending any frames, causing minimal nodes — which have no
+         * lux task and therefore no regular outbound traffic — to silently
+         * vanish from the network.  Full nodes are immune because the 500 ms
+         * lux broadcast keeps the radio active and prevents the AP's idle
+         * timer from expiring.
+         *
+         * Applying PS_NONE here guarantees the radio stays awake through the
+         * DHCP exchange and beyond, on every connection attempt, regardless
+         * of whether the IP layer subsequently succeeds.                    */
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        ESP_LOGI(TAG, "WiFi associated — modem sleep disabled");
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_ota_state.wifi_connected = false;
         if (s_retry_num < WIFI_MAXIMUM_RETRY) {
@@ -107,16 +127,12 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
             xTimerIsTimerActive(s_reconnect_timer) == pdTRUE) {
             xTimerStop(s_reconnect_timer, 0);
         }
-        /* Disable modem sleep immediately on every (re)connect — including
-         * reconnects that happen mid-session or during the OTA validation
-         * window.  Previously WIFI_PS_NONE was set only in app_main after
-         * ota_check_and_update() returned, which left the default modem sleep
-         * active during the 60-second firmware-validation wait and the OTA
-         * download itself.  Some APs deauthenticate sleeping clients after
-         * ~30–60 s of inactivity, causing minimal nodes to silently drop off
-         * the network with no WDT restart (ESP-NOW kept working via the STA
-         * interface but HTTP polls failed, so no startup report was sent on
-         * the next boot).  Setting it here covers every connection path.   */
+        /* Re-apply PS_NONE now that the IP layer is confirmed up.
+         * The primary application is in WIFI_EVENT_STA_CONNECTED above,
+         * which covers the window between L2 association and DHCP completion.
+         * Calling it again here is a cheap belt-and-suspenders guard in case
+         * any future code path inadvertently re-enables power saving between
+         * association and GOT_IP.                                           */
         esp_wifi_set_ps(WIFI_PS_NONE);
         s_ota_state.wifi_connected = true;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
