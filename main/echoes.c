@@ -1372,9 +1372,28 @@ void demo_task(void *param)
                                     bird->function_name,
                                     bird->display_name);
 
-        /* ── Inter-call gap — WDT fed every 500 ms ──────────────── */
+        /* ── Inter-call gap — WDT fed every 500 ms with ±10 % jitter ──
+         * esp_random() gives a uniform 32-bit value.  We map it to
+         * [0, interval/5) — one fifth of the base interval — then
+         * subtract half of that to centre the jitter around zero:
+         *
+         *   jitter ∈ [ -(interval×0.1), +(interval×0.1) ]
+         *
+         * The signed arithmetic is done in int64 to avoid wrap-around
+         * on the subtraction before the result is clamped to 1 000 ms. */
         uint32_t interval = cfg.demo_interval_ms;
         if (interval < 1000u) interval = 1000u;
+        {
+            uint32_t jitter_range = interval / 5u;          /* 20 % window  */
+            uint32_t jitter_raw   = (jitter_range > 0u)
+                                    ? (esp_random() % jitter_range)
+                                    : 0u;
+            int64_t jittered = (int64_t)interval
+                               - (int64_t)(jitter_range / 2u)
+                               + (int64_t)jitter_raw;
+            if (jittered < 1000) jittered = 1000;
+            interval = (uint32_t)jittered;
+        }
 
         uint32_t slept = 0;
         while (slept < interval) {

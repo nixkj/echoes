@@ -303,7 +303,7 @@ DEFAULT_CONFIG = {
     },
     "DEMO_INTERVAL_MS": {
         "value": 15000, "min": 2000, "max": 120000, "step": 1000, "type": "int",
-        "description": "Interval between autonomous bird calls on each full node when DEMO_MODE is active. With 25 full nodes at 15 s each, the installation produces roughly 1–2 calls per second across the space. Reduce for denser activity; increase for a calmer, more spaced soundscape. Does not affect minimal nodes.",
+        "description": "Interval between autonomous bird calls on each full node when DEMO_MODE is active. With 25 full nodes at 15 s each, the installation produces roughly 1–2 calls per second across the space. Reduce for denser activity; increase for a calmer, more spaced soundscape. Includes 20% random jitter. Does not affect minimal nodes.",
         "unit": "ms"
     },
     "SILENT_MODE": {
