@@ -28,7 +28,7 @@
  * under "Server Configuration".  You should not need to edit this
  * file directly — set the IP and port in menuconfig instead.
  */
-#define FIRMWARE_VERSION    "6.4.1"
+#define FIRMWARE_VERSION    "6.4.2"
 
 /* STRINGIFY is needed to turn an integer Kconfig value into a string
  * literal so it can be concatenated with other string literals.       */
@@ -88,6 +88,13 @@ typedef struct {
  * @return true if connection successful, false otherwise
  */
 bool wifi_init_and_connect(void);
+
+/**
+ * @brief Returns true if the WiFi reconnect backoff timer was created
+ *        successfully.  False means the node cannot auto-recover from
+ *        mid-session WiFi drops — include this in startup diagnostics.
+ */
+bool wifi_reconnect_timer_ok(void);
 
 /**
  * @brief Check WiFi connection status

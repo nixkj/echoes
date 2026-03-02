@@ -97,6 +97,15 @@ void app_main(void)
         ESP_LOGW(TAG, "Identity capture failed: %s", esp_err_to_name(startup_err));
     }
 
+    /* Flag reconnect-timer failure in the startup report so the server can
+     * alert on nodes that will not auto-recover from mid-session WiFi drops. */
+    if (!wifi_reconnect_timer_ok()) {
+        startup_report.has_errors = true;
+        snprintf(startup_report.error_message,
+                 sizeof(startup_report.error_message),
+                 "WiFi reconnect timer alloc failed — no mid-session recovery");
+    }
+
     if (wifi_connected) {
         ESP_LOGI(TAG, "Sending startup report...");
         esp_err_t report_err = startup_send_report(&startup_report);
@@ -309,12 +318,9 @@ void app_main(void)
         ota_resume_tasks();
         ESP_LOGI(TAG, "Application tasks resumed");
 
-        /* Enable modem sleep NOW — after OTA — so the download is never
-         * disrupted by the radio sleeping between DTIM beacons.           */
-        //esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-	
-	/* Keep Wi-Fi on */
-        esp_wifi_set_ps(WIFI_PS_NONE);
+        /* esp_wifi_set_ps(WIFI_PS_NONE) is now called in the IP_EVENT_STA_GOT_IP
+         * event handler (ota.c) so it applies on every (re)connect, including
+         * during the OTA validation window.  No call needed here.           */
 
         /* Start remote config polling task (60-second interval) */
         xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);

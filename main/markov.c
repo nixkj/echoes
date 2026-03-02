@@ -265,6 +265,18 @@ static void fire_autonomous_call(markov_chain_t *mc, uint8_t predicted_state)
 {
     if (!mc->mapper) return;
 
+    /* Minimal nodes have no speaker — skip synthesis entirely.
+     *
+     * Without this guard, fire_autonomous_call() was running full audio
+     * synthesis (sinf() across up to 48 000 samples) inside espnow_rx_task
+     * on every autonomous trigger, even though play_bird_call() returns
+     * immediately because spk_chan == NULL.  This blocked the ESP-NOW
+     * receive queue for 100–400 ms and could also trigger an inline
+     * nvs_save_counts() flash write — both of which starved incoming
+     * ESP-NOW messages and were the root cause of minimal nodes
+     * disappearing from the network.                                       */
+    if (!has_audio_output()) return;
+
     uint8_t     det_idx;
     light_band_t band;
     markov_decode_state(predicted_state, &det_idx, &band);
@@ -381,9 +393,11 @@ void markov_on_event(markov_chain_t *mc, detection_type_t detection, float lux)
              markov_state_name(from), markov_state_name(to),
              mc->counts[from][to]);
 
-    /* Periodic NVS save */
+    /* Periodic NVS save — deferred via flag so the write happens in
+     * markov_tick() when the espnow_rx_task queue is idle, not inline
+     * while actively draining incoming ESP-NOW messages.               */
     if (mc->events_since_save >= MARKOV_NVS_SAVE_INTERVAL) {
-        nvs_save_counts(mc);
+        mc->nvs_save_pending = true;
         mc->events_since_save = 0;
     }
 }
@@ -455,6 +469,16 @@ float markov_get_lux_bias(const markov_chain_t *mc)
 
 void markov_tick(markov_chain_t *mc)
 {
+    /* Flush any pending NVS save.  markov_tick() is called from
+     * espnow_rx_task after its 1-second queue-receive timeout, which means
+     * the receive queue is idle at this point.  Doing the flash write here
+     * (rather than inline in markov_on_event) ensures the write never
+     * delays processing of incoming ESP-NOW messages.                     */
+    if (mc->nvs_save_pending) {
+        nvs_save_counts(mc);
+        mc->nvs_save_pending = false;
+    }
+
     uint32_t now     = markov_millis();
     uint32_t silence = now - mc->last_event_ms;
 
@@ -507,8 +531,9 @@ void markov_reset(markov_chain_t *mc)
 {
     ESP_LOGW(TAG, "Resetting Markov chain to priors");
     seed_priors(mc);
-    mc->probs_dirty   = true;
-    mc->current_state = MARKOV_STATE_STARTUP;
+    mc->probs_dirty      = true;
+    mc->nvs_save_pending = false;   /* discard any pending write — we just erased NVS */
+    mc->current_state    = MARKOV_STATE_STARTUP;
 
     /* Erase NVS entry */
     nvs_handle_t handle;

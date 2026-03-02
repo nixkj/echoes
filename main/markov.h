@@ -126,6 +126,11 @@ typedef struct markov_chain_t {
     /** Whether probability rows need recomputing. */
     bool probs_dirty;
 
+    /** Set when a NVS save is pending; flushed by markov_tick() when the
+     *  ESP-NOW receive queue is idle, so flash writes never block the
+     *  message-processing path in espnow_rx_task.                         */
+    bool nvs_save_pending;
+
     /** Pointer to the application bird mapper. */
     bird_call_mapper_t *mapper;
 

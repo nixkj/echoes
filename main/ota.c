@@ -107,6 +107,17 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
             xTimerIsTimerActive(s_reconnect_timer) == pdTRUE) {
             xTimerStop(s_reconnect_timer, 0);
         }
+        /* Disable modem sleep immediately on every (re)connect — including
+         * reconnects that happen mid-session or during the OTA validation
+         * window.  Previously WIFI_PS_NONE was set only in app_main after
+         * ota_check_and_update() returned, which left the default modem sleep
+         * active during the 60-second firmware-validation wait and the OTA
+         * download itself.  Some APs deauthenticate sleeping clients after
+         * ~30–60 s of inactivity, causing minimal nodes to silently drop off
+         * the network with no WDT restart (ESP-NOW kept working via the STA
+         * interface but HTTP polls failed, so no startup report was sent on
+         * the next boot).  Setting it here covers every connection path.   */
+        esp_wifi_set_ps(WIFI_PS_NONE);
         s_ota_state.wifi_connected = true;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
@@ -168,10 +179,14 @@ bool wifi_init_and_connect(void)
                                      pdFALSE,          /* one-shot */
                                      NULL,
                                      wifi_reconnect_timer_cb);
-    /* Non-fatal if timer creation fails — node will still connect at boot,
-     * just won't auto-recover if the AP drops mid-session.               */
+    /* This timer is the sole mid-session WiFi recovery mechanism.  If it
+     * cannot be created (heap exhaustion at boot) the node will connect
+     * once at startup but will NOT reconnect after any AP drop — it will
+     * silently disappear from the network until power-cycled.  Treat this
+     * as a hard error so it shows up in logs and the startup report.      */
     if (s_reconnect_timer == NULL) {
-        ESP_LOGW(TAG, "Failed to create WiFi reconnect timer — mid-session recovery disabled");
+        ESP_LOGE(TAG, "FATAL: Failed to create WiFi reconnect timer — "
+                      "node will not recover from mid-session WiFi drops");
     }
 
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -201,6 +216,11 @@ bool wifi_init_and_connect(void)
 bool wifi_is_connected(void)
 {
     return s_ota_state.wifi_connected;
+}
+
+bool wifi_reconnect_timer_ok(void)
+{
+    return (s_reconnect_timer != NULL);
 }
 
 /* ========================================================================
