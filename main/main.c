@@ -75,7 +75,13 @@ static const char *TAG = "MAIN";
  * leaves substantial margin for other AP vendors.  The task consumes
  * negligible CPU and generates ~60 bytes of air time per interval.
  */
-#define WIFI_KEEPALIVE_INTERVAL_MS  20000   /* 20 s — well under typical AP idle timeouts */
+#define WIFI_KEEPALIVE_INTERVAL_MS  5000    /* 5 s — keeps radio active to reliably ACK AP
+                                             * null-frame keepalive probes.  MikroTik wifi
+                                             * (RouterOS 7.x) sends these probes and silently
+                                             * drops clients that fail to ACK them; the ESP32
+                                             * radio can enter brief idle transitions between
+                                             * transmissions even with WIFI_PS_NONE, causing
+                                             * probe ACKs to be missed at longer intervals.  */
 
 static void wifi_keepalive_task(void *param)
 {
@@ -88,6 +94,13 @@ static void wifi_keepalive_task(void *param)
             ESP_LOGD(TAG, "Keepalive: WiFi not connected, skipping");
             continue;
         }
+
+        /* Re-assert PS_NONE on every cycle.  ESP-IDF can silently re-enable
+         * modem sleep after certain internal driver state changes (e.g. a
+         * brief reassociation or internal reset).  This is cheap and ensures
+         * the radio stays fully awake between keepalive transmissions so it
+         * reliably ACKs the AP's null-frame probes.                         */
+        esp_wifi_set_ps(WIFI_PS_NONE);
 
         /* Resolve the default gateway IP from the active STA netif */
         esp_netif_t *netif = esp_netif_get_default_netif();
