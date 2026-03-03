@@ -91,17 +91,17 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info,
     if (msg->magic != ESPNOW_MAGIC) return;
 
     /* Record arrival timestamp for flock mode detection.
-     * on_data_recv is called from the WiFi task context, not a true ISR,
-     * so the standard xTaskGetTickCount() is correct here.               */
-    {
+     * HEARTBEAT frames are excluded — they are radio keepalives with no
+     * application meaning and must not contribute to flock detection.
+     * With 25 minimal nodes heartbeating every 2 s, including them would
+     * produce 75 events per 6 s window and permanently lock flock mode on. */
+    if (msg->msg_type != (uint8_t)ESPNOW_MSG_HEARTBEAT) {
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         s_rx_times[s_rx_head] = now;
         s_rx_head = (s_rx_head + 1) % FLOCK_RING_MAX;
     }
 
-    /* Post a copy to the processing queue (non-blocking).
-     * on_data_recv runs in WiFi task context, not a true ISR, so the
-     * standard xQueueSend (with zero timeout) is correct here.         */
+    /* Post a copy to the processing queue (non-blocking). */
     espnow_msg_t copy = *msg;
     if (s_rx_queue) {
         xQueueSend(s_rx_queue, &copy, 0);
