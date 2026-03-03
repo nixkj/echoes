@@ -41,47 +41,37 @@ static const char *TAG = "MAIN";
  * WIFI KEEPALIVE (minimal nodes only)
  * ========================================================================
  *
- * Minimal nodes have no lux task and therefore generate no regular outbound
- * 802.11 DATA frames between 60-second HTTP config polls.  MikroTik
- * (RouterOS 7 / WifiWave2) — and many other enterprise APs — maintain a
- * per-client inactivity timer that tracks frames *received from* the client,
- * not just ACKs.  When the timer expires the AP silently removes the client
- * from its wireless registration table without sending a deauthentication
- * frame.  Because no deauth is sent, WIFI_EVENT_STA_DISCONNECTED never
- * fires, the reconnect logic never runs, and the node vanishes from the
- * network while still running normally.
+ * ROOT CAUSE: Minimal nodes receive ~50 ESP-NOW frames/s from full nodes
+ * but rarely transmit.  This leaves the radio hardware in a receive-dominant
+ * state where the 802.11 CSMA/CA transmit state machine is not regularly
+ * exercised.  The MikroTik AP periodically sends null-frame probes to each
+ * associated client and requires a hardware MAC ACK in response.  On full
+ * nodes the radio is always in an active transmit state (lux broadcasts every
+ * ~500 ms), so these probes are always ACKed.  On minimal nodes, the radio
+ * can miss a probe during a receive-dominant window, causing the AP to log
+ * "connection lost" and silently remove the client — no deauth is sent, so
+ * WIFI_EVENT_STA_DISCONNECTED never fires and the node vanishes.
  *
- * Full nodes are immune: lux_based_birds_task broadcasts a light-level
- * event every ~500 ms, keeping the AP's inactivity timer continuously
- * reset.  If a full node is ever silently dropped, its next lux broadcast
- * gets a deauth response (reason 7: class-3 frame from non-associated
- * station) within 500 ms, which fires the disconnect event and triggers
- * reconnect.
+ * PRIMARY FIX: broadcast an ESP-NOW HEARTBEAT frame every interval.  This
+ * executes a complete 802.11 CSMA/CA transmit cycle — carrier sense, backoff,
+ * transmit, wait for MAC ACK — which is exactly the activity that keeps the
+ * transmit state machine engaged and the radio responsive to the AP's probes.
+ * The heartbeat carries no data and is silently discarded by all receivers.
  *
- * This task fixes the problem for minimal nodes by sending a 1-byte UDP
- * datagram to the default gateway every WIFI_KEEPALIVE_INTERVAL_MS.  That
- * single frame is enough to:
+ * SECONDARY: also send a 1-byte UDP datagram to the gateway's discard port.
+ * This resets the AP's per-client inactivity timer and, if the AP has already
+ * silently dropped the client, the outbound DATA frame will elicit a deauth
+ * response (reason 7), firing WIFI_EVENT_STA_DISCONNECTED and kicking the
+ * normal reconnect loop — recovery within one keepalive interval.
  *
- *   1. Reset the AP's per-client inactivity timer, preventing silent removal.
- *   2. Trigger an ARP request if the gateway ARP entry has aged out,
- *      refreshing both the AP's ARP table and the ESP32's LwIP ARP cache.
- *   3. If the AP has already silently dropped the client, the DATA frame
- *      elicits a deauth response, causing WIFI_EVENT_STA_DISCONNECTED to
- *      fire and the normal reconnect logic to run — recovery within
- *      WIFI_KEEPALIVE_INTERVAL_MS rather than waiting up to 60 s for the
- *      next HTTP poll to fail.
+ * TERTIARY: re-assert WIFI_PS_NONE on every cycle, guarding against the
+ * ESP-IDF driver silently re-enabling modem sleep after internal state changes.
  *
- * 20 seconds is well under the MikroTik default inactivity threshold and
- * leaves substantial margin for other AP vendors.  The task consumes
- * negligible CPU and generates ~60 bytes of air time per interval.
+ * 2 seconds matches the lux broadcast interval of full nodes and is well
+ * under any AP's inactivity or null-frame timeout.  The heartbeat costs
+ * ~8 bytes of air time per cycle; the UDP datagram costs ~60 bytes.
  */
-#define WIFI_KEEPALIVE_INTERVAL_MS  2000    /* 2 s — keeps radio active to reliably ACK AP
-                                             * null-frame keepalive probes.  MikroTik wifi
-                                             * (RouterOS 7.x) sends these probes and silently
-                                             * drops clients that fail to ACK them; the ESP32
-                                             * radio can enter brief idle transitions between
-                                             * transmissions even with WIFI_PS_NONE, causing
-                                             * probe ACKs to be missed at longer intervals.  */
+#define WIFI_KEEPALIVE_INTERVAL_MS  2000
 
 static void wifi_keepalive_task(void *param)
 {
@@ -90,17 +80,30 @@ static void wifi_keepalive_task(void *param)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(WIFI_KEEPALIVE_INTERVAL_MS));
 
-        if (!wifi_is_connected()) {
-            ESP_LOGD(TAG, "Keepalive: WiFi not connected, skipping");
-            continue;
-        }
-
         /* Re-assert PS_NONE on every cycle.  ESP-IDF can silently re-enable
          * modem sleep after certain internal driver state changes (e.g. a
          * brief reassociation or internal reset).  This is cheap and ensures
          * the radio stays fully awake between keepalive transmissions so it
          * reliably ACKs the AP's null-frame probes.                         */
         esp_wifi_set_ps(WIFI_PS_NONE);
+
+        /* ESP-NOW heartbeat — keeps the radio hardware in an active
+         * transmit state so the AP's null-frame probe is reliably ACKed.
+         * This is the fundamental fix: minimal nodes receive ~50 ESP-NOW
+         * frames/second but rarely transmit, leaving the radio in a
+         * receive-dominant state where hardware MAC ACKs can be missed.
+         * Transmitting an ESP-NOW frame every 2 s mirrors the behaviour
+         * of full nodes (which transmit lux broadcasts every ~500 ms)
+         * and keeps the full 802.11 CSMA/CA state machine active.       */
+        espnow_mesh_broadcast_heartbeat();
+
+        /* SECONDARY: UDP datagram to gateway — resets AP inactivity timer
+         * and provides a detectable failure signal if the AP has already
+         * dropped us (deauth response fires STA_DISCONNECTED → reconnect) */
+        if (!wifi_is_connected()) {
+            ESP_LOGD(TAG, "Keepalive: WiFi not connected, skipping UDP");
+            continue;
+        }
 
         /* Resolve the default gateway IP from the active STA netif */
         esp_netif_t *netif = esp_netif_get_default_netif();
@@ -451,7 +454,7 @@ void app_main(void)
          * no disconnect event and no reconnect.  See wifi_keepalive_task()
          * above for the full explanation.                                  */
         if (hw_config == HW_CONFIG_MINIMAL) {
-            xTaskCreate(wifi_keepalive_task, "wifi_ka", 2048, NULL, 2, NULL);
+            xTaskCreate(wifi_keepalive_task, "wifi_ka", 4096, NULL, 2, NULL);
             ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
                      WIFI_KEEPALIVE_INTERVAL_MS / 1000);
         }

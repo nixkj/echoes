@@ -174,7 +174,9 @@ static void espnow_rx_task(void *param)
                 /* Teach the Markov chain about this remote event */
                 if (s_markov) markov_on_event(s_markov, (detection_type_t)msg.detection, s_local_lux);
 
-                ESP_LOGI(TAG, "Remote sound (%d) → effective lux %.0f",
+                /* Demoted from ESP_LOGI: this fires ~50 times/s on minimal
+                 * nodes and saturated the UART, backing up the rx task.   */
+                ESP_LOGD(TAG, "Remote sound (%d) → effective lux %.0f",
                          msg.detection, effective);
                 break;
             }
@@ -203,10 +205,17 @@ static void espnow_rx_task(void *param)
                     bird_mapper_update_for_lux(s_mapper, effective + bias);
                 }
 
-                ESP_LOGI(TAG, "Remote lux %.1f → effective lux %.0f",
+                /* Demoted from ESP_LOGI: fires ~50 times/s on minimal nodes */
+                ESP_LOGD(TAG, "Remote lux %.1f → effective lux %.0f",
                          msg.lux, effective);
                 break;
             }
+
+            case ESPNOW_MSG_HEARTBEAT:
+                /* Intentionally empty — sent by minimal nodes to keep their
+                 * radio hardware's 802.11 transmit state machine active.
+                 * Carries no application data; all receivers discard it.   */
+                break;
 
             default:
                 break;
@@ -363,6 +372,36 @@ void espnow_mesh_broadcast_light(float lux)
         ESP_LOGW(TAG, "Light broadcast failed: %s", esp_err_to_name(err));
     } else {
         ESP_LOGI(TAG, "Broadcast lux %.1f", lux);
+    }
+}
+
+void espnow_mesh_broadcast_heartbeat(void)
+{
+    /* Send an ESPNOW_MSG_HEARTBEAT frame.  The payload carries no data;
+     * all receivers discard it in the rx task switch.  The purpose is
+     * purely to execute a complete 802.11 CSMA/CA transmit cycle on the
+     * minimal node's radio hardware, keeping the transmit state machine
+     * active so the AP's null-frame keepalive probes are reliably ACKed.
+     *
+     * This is the root-cause fix for minimal nodes silently dropping off
+     * the MikroTik AP: they receive ~50 ESP-NOW frames/s from full nodes
+     * but almost never transmit, leaving the radio in a receive-dominant
+     * state where hardware MAC ACKs can be missed.                       */
+    espnow_msg_t msg = {
+        .magic     = ESPNOW_MAGIC,
+        .msg_type  = (uint8_t)ESPNOW_MSG_HEARTBEAT,
+        .detection = 0,
+        .reserved  = 0,
+        .lux       = 0.0f,
+    };
+
+    esp_err_t err = esp_now_send(BROADCAST_MAC,
+                                 (const uint8_t *)&msg,
+                                 sizeof(msg));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Heartbeat broadcast failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGD(TAG, "Heartbeat broadcast sent");
     }
 }
 

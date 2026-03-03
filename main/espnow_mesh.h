@@ -55,6 +55,9 @@
 typedef enum {
     ESPNOW_MSG_SOUND = 1,   /**< A sound event was detected */
     ESPNOW_MSG_LIGHT = 2,   /**< Light level changed significantly */
+    ESPNOW_MSG_HEARTBEAT = 0x03,   /* minimal nodes only — radio keepalive,
+                                    * no application data, receivers ignore */
+
 } espnow_msg_type_t;
 
 /**
@@ -105,6 +108,15 @@ void espnow_mesh_broadcast_sound(detection_type_t detection);
  * @param lux  Current lux reading.
  */
 void espnow_mesh_broadcast_light(float lux);
+
+
+/**
+ * @brief Mesh broadcast to try keep the minimal nodes alive.
+ *
+ * Make the minimal nodes behave the same as full nodes in terms of network
+ * traffic to keep them alive.
+ */
+void espnow_mesh_broadcast_heartbeat(void);
 
 /**
  * @brief Periodic maintenance — call from a task or main loop.
