@@ -19,9 +19,42 @@
 
 #include "esp_system.h"
 #include "esp_attr.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "lwip/sockets.h"
 #include "startup.h"
+#include "ota.h"
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
+
+/* =========================================================================
+ * CONNECTIVITY WATCHDOG
+ *
+ * After RCFG_MAX_CONSECUTIVE_FAILURES consecutive 60-second HTTP poll
+ * failures, the watchdog checks whether the failure is due to:
+ *
+ *   (a) WiFi already disconnected — the normal reconnect loop in ota.c is
+ *       already running; do nothing.
+ *
+ *   (b) WiFi driver wedged — driver believes it is connected
+ *       (wifi_is_connected() == true) but the gateway is not reachable.
+ *       This happens when the AP silently removes the client without
+ *       sending a deauthentication frame, leaving the driver's state
+ *       machine out of sync with reality.  Force esp_wifi_disconnect()
+ *       to fire WIFI_EVENT_STA_DISCONNECTED and kick the reconnect loop.
+ *
+ *   (c) Server down — driver is connected and gateway is reachable, but
+ *       the application server is not responding.  Leave everything alone;
+ *       nodes continue running on their last known config.
+ *
+ * This ensures that a server outage or WiFi outage never causes nodes to
+ * restart continuously, while still recovering from a wedged driver state
+ * within RCFG_MAX_CONSECUTIVE_FAILURES * REMOTE_CONFIG_POLL_INTERVAL_MS
+ * (~3 minutes with defaults).
+ * ========================================================================= */
+#define RCFG_MAX_CONSECUTIVE_FAILURES   3
+#define RCFG_GATEWAY_PING_TIMEOUT_S     2
 
 /* =========================================================================
  * RTC SLOW MEMORY
@@ -144,6 +177,74 @@ static SemaphoreHandle_t s_cfg_mutex = NULL;
  * protect it with a mutex separate from s_cfg_mutex.                       */
 static char   s_http_body[REMOTE_CONFIG_MAX_BODY_SIZE];
 static size_t s_http_body_len = 0;
+
+/* =========================================================================
+ * CONNECTIVITY WATCHDOG HELPER
+ * ========================================================================= */
+
+/**
+ * @brief Test whether the default gateway is reachable at the WiFi layer.
+ *
+ * Sends a 1-byte UDP datagram to the gateway's discard port (9) and waits
+ * for any response.  On a local LAN the gateway will reply with an ICMP
+ * port-unreachable message, which lwIP surfaces as ECONNREFUSED on the
+ * socket.  Either a data reply or an ICMP error confirms two-way
+ * reachability.  A 2-second timeout with no response means the gateway
+ * cannot be reached at the WiFi/IP layer.
+ *
+ * This is used to distinguish a wedged WiFi driver (gateway unreachable)
+ * from a server outage (gateway reachable, application server down).
+ *
+ * @return true  Gateway replied — WiFi layer is working.
+ * @return false No response within timeout — WiFi layer is broken.
+ */
+static bool gateway_is_reachable(void)
+{
+    esp_netif_t *netif = esp_netif_get_default_netif();
+    if (!netif) return false;
+
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK ||
+            ip_info.gw.addr == 0) {
+        return false;
+    }
+
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) return false;
+
+    /* Bind to any local port so recvfrom can receive the ICMP reply */
+    struct sockaddr_in local = {
+        .sin_family      = AF_INET,
+        .sin_port        = htons(0),
+        .sin_addr.s_addr = INADDR_ANY,
+    };
+    bind(sock, (struct sockaddr *)&local, sizeof(local));
+
+    /* 2-second receive timeout */
+    struct timeval tv = { .tv_sec = RCFG_GATEWAY_PING_TIMEOUT_S, .tv_usec = 0 };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_in dest = {
+        .sin_family      = AF_INET,
+        .sin_port        = htons(9),    /* discard port — gateway rejects with ICMP */
+        .sin_addr.s_addr = ip_info.gw.addr,
+    };
+
+    uint8_t buf[32];
+    sendto(sock, buf, 1, 0, (struct sockaddr *)&dest, sizeof(dest));
+
+    /* Wait for any response:
+     *   ret > 0               → unexpected data reply — gateway is up
+     *   ret < 0, ECONNREFUSED → ICMP port-unreachable — gateway is up
+     *   ret < 0, EAGAIN       → timeout — gateway not reachable           */
+    struct sockaddr_in src;
+    socklen_t src_len = sizeof(src);
+    int ret = recvfrom(sock, buf, sizeof(buf), 0,
+                       (struct sockaddr *)&src, &src_len);
+    close(sock);
+
+    return (ret > 0 || (ret < 0 && errno == ECONNREFUSED));
+}
 
 /* =========================================================================
  * HTTP EVENT HANDLER
@@ -415,14 +516,57 @@ esp_err_t remote_config_fetch(void)
 void remote_config_task(void *param)
 {
     (void)param;
+    int consecutive_failures = 0;
+
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(REMOTE_CONFIG_POLL_INTERVAL_MS));
         ESP_LOGI(TAG, "Polling config server…");
         esp_err_t err = remote_config_fetch();
+
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Config poll failed (%s) — keeping previous values",
-                     esp_err_to_name(err));
-        } else if (s_cfg.restart_requested) {
+            consecutive_failures++;
+            ESP_LOGW(TAG, "Config poll failed (%s) — keeping previous values "
+                          "[consecutive failures: %d/%d]",
+                     esp_err_to_name(err),
+                     consecutive_failures, RCFG_MAX_CONSECUTIVE_FAILURES);
+
+            if (consecutive_failures >= RCFG_MAX_CONSECUTIVE_FAILURES) {
+                consecutive_failures = 0;   /* reset regardless of outcome */
+
+                if (!wifi_is_connected()) {
+                    /* Driver already knows it is disconnected — the normal
+                     * reconnect loop in ota.c is running.  Nothing to do.  */
+                    ESP_LOGI(TAG, "Connectivity watchdog: WiFi disconnected — "
+                                  "reconnect loop already running");
+
+                } else if (!gateway_is_reachable()) {
+                    /* Driver believes it is connected but the gateway does
+                     * not respond — driver state is wedged.  Force a
+                     * disconnect to fire WIFI_EVENT_STA_DISCONNECTED and
+                     * kick the reconnect loop in ota.c.                    */
+                    ESP_LOGW(TAG, "Connectivity watchdog: driver wedged "
+                                  "(connected but gateway unreachable) — "
+                                  "forcing WiFi reconnect");
+                    esp_wifi_disconnect();
+
+                } else {
+                    /* Gateway is reachable — WiFi is fine, application
+                     * server is simply down.  Leave the connection alone;
+                     * nodes continue running on their last known config.   */
+                    ESP_LOGI(TAG, "Connectivity watchdog: gateway reachable — "
+                                  "server down, WiFi fine, not reconnecting");
+                }
+            }
+
+        } else {
+            if (consecutive_failures > 0) {
+                ESP_LOGI(TAG, "Connectivity watchdog: poll recovered after "
+                              "%d failure(s)", consecutive_failures);
+            }
+            consecutive_failures = 0;
+        }
+
+        if (err == ESP_OK && s_cfg.restart_requested) {
             /* Reading s_cfg directly here is safe: remote_config_task is the
              * sole writer (via remote_config_fetch above), so there is no
              * concurrent write to race against when we read restart_requested
