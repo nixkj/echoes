@@ -75,7 +75,7 @@ static const char *TAG = "MAIN";
  * leaves substantial margin for other AP vendors.  The task consumes
  * negligible CPU and generates ~60 bytes of air time per interval.
  */
-#define WIFI_KEEPALIVE_INTERVAL_MS  5000    /* 5 s — keeps radio active to reliably ACK AP
+#define WIFI_KEEPALIVE_INTERVAL_MS  2000    /* 2 s — keeps radio active to reliably ACK AP
                                              * null-frame keepalive probes.  MikroTik wifi
                                              * (RouterOS 7.x) sends these probes and silently
                                              * drops clients that fail to ACK them; the ESP32

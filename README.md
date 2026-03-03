@@ -434,7 +434,7 @@ I (7733) ECHOES: 🎤 Listening for whistles, voice, claps, and birdsong...
 
 ## Version History
 
-**6.4.4** Current version
+**6.4.5** Current version
 - Demo mode that does not need human input for production purposes
 - Further improvements to make minimal nodes more stable (suspect Mikrotik AP issue)
 
