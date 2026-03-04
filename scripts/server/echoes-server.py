@@ -1077,7 +1077,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .toggle-on .toggle-label { color: var(--danger); font-weight: 700; }
   .toggle-on { border-color: var(--danger); background: rgba(240,74,106,0.08); }
 
-  /* ── Power cell — lives inside the node grid ── */
+  /* ── Light mode overrides for fleet grid & tooltips ── */
+  :root.light .fnode.fonline  { background: #c8f0d4; border-color: #2a8c42; }
+  :root.light .fnode.fstale   { background: #fdecc8; border-color: #b07010; }
+  :root.light .fnode.foffline { background: #fad4d4; border-color: #c04040; }
+  :root.light .fonline  .fnode-label { color: #1a6e30; }
+  :root.light .fstale   .fnode-label { color: #7a4800; }
+  :root.light .foffline .fnode-label { color: #8c1010; }
+  :root.light .fnode-pwr.pon     { background: #c8f0d4; border-color: #1e6e38; }
+  :root.light .fnode-pwr.poff    { background: #fad4d4; border-color: #c04040; }
+  :root.light .fnode-pwr.punknown { background: #e8eaf0; border-color: var(--muted); }
+  :root.light .fnode-pwr.pon  .fnode-pwr-icon { color: #1a6e30; text-shadow: none; }
+  :root.light .fnode-pwr.poff .fnode-pwr-icon { color: #8c1010; }
+  :root.light .ftooltip { background: #ffffff; box-shadow: 0 8px 24px rgba(0,0,0,0.15); }
+  :root.light .fonline  .ftooltip-id .ftt-node-id { color: #1a6e30; }
+  :root.light .fstale   .ftooltip-id .ftt-node-id { color: #7a4800; }
+  :root.light .foffline .ftooltip-id .ftt-node-id { color: #c01010; }
+  :root.light .fonline  .ftooltip-status { color: #1a6e30; background: #c8f0d4; }
+  :root.light .fstale   .ftooltip-status { color: #7a4800; background: #fdecc8; }
+  :root.light .foffline .ftooltip-status { color: #8c1010; background: #fad4d4; }
+  :root.light body::before { background-image: linear-gradient(rgba(90,138,0,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(90,138,0,0.04) 1px, transparent 1px); }
   .fnode-pwr { position: relative; aspect-ratio: 1; border-radius: 2px; cursor: pointer; border: 1px solid; transition: all 0.15s ease; display: flex; align-items: center; justify-content: center; padding: 0; background: none; }
   .fnode-pwr:hover:not(:disabled) { transform: scale(1.25); z-index: 5; filter: brightness(1.2); }
   .fnode-pwr:active:not(:disabled) { transform: scale(0.95); }
