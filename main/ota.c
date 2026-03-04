@@ -180,9 +180,23 @@ bool wifi_init_and_connect(void)
     /* Configure WiFi */
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = CONFIG_WIFI_SSID,
-            .password = CONFIG_WIFI_PASSWORD,
+            .ssid               = CONFIG_WIFI_SSID,
+            .password           = CONFIG_WIFI_PASSWORD,
             .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+            /* Explicit values — do not rely on zero-initialisation defaults
+             * which can vary across ESP-IDF versions.
+             *
+             * failure_retry_cnt: number of auth/assoc failures before the
+             * driver reports WIFI_REASON_CONNECTION_FAIL.  3 is a reasonable
+             * balance between giving the AP time to respond and not waiting
+             * too long on a genuinely unreachable AP.
+             *
+             * listen_interval: how many beacon intervals the STA may sleep
+             * between listening for buffered frames.  1 = wake every beacon.
+             * Belt-and-suspenders alongside WIFI_PS_NONE — ensures the radio
+             * is never configured to sleep even if PS_NONE is somehow lost. */
+            .failure_retry_cnt  = 3,
+            .listen_interval    = 1,
         },
     };
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));

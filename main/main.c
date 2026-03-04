@@ -87,48 +87,70 @@ static void wifi_keepalive_task(void *param)
          * reliably ACKs the AP's null-frame probes.                         */
         esp_wifi_set_ps(WIFI_PS_NONE);
 
-        /* ESP-NOW heartbeat — keeps the radio hardware in an active
-         * transmit state so the AP's null-frame probe is reliably ACKed.
-         * This is the fundamental fix: minimal nodes receive ~50 ESP-NOW
-         * frames/second but rarely transmit, leaving the radio in a
-         * receive-dominant state where hardware MAC ACKs can be missed.
-         * Transmitting an ESP-NOW frame regularly mirrors the behaviour
-         * of full nodes (which transmit lux broadcasts every ~500 ms)
-         * and keeps the full 802.11 CSMA/CA state machine active.       */
-	/* === IMPROVED HEARTBEAT === */
-        /* Optional but recommended: if the first send failed (e.g. queue full,
-         * radio temporarily busy, or any other transient error), wait 10 ms
-         * and try once more.  This costs almost nothing and dramatically
-         * increases the chance that a transmit cycle actually happens every
-         * keepalive interval. */
-        espnow_mesh_broadcast_heartbeat();
-        vTaskDelay(pdMS_TO_TICKS(8));           // tiny backoff
-        espnow_mesh_broadcast_heartbeat();      // second attempt
-        vTaskDelay(pdMS_TO_TICKS(8));
+        /* ESP-NOW heartbeat — resets the AP's per-STA inactivity timer.
+         * Minimal nodes receive ~50 ESP-NOW frames/second but rarely
+         * transmit, leaving the radio in a receive-dominant state.
+         * Any outbound frame keeps the AP's idle timer from expiring.
+         *
+         * Note: broadcast frames (FF:FF:FF:FF:FF:FF) are NOT ACKed by the
+         * AP at the 802.11 MAC layer — 802.11 broadcast is unacknowledged.
+         * The prevention value is keeping the AP's inactivity timer reset
+         * before it can expire; phantom-connection detection and recovery
+         * is handled by esp_wifi_sta_get_ap_info() below.                  */
         espnow_mesh_broadcast_heartbeat();
 
-	/* Force reconnect if WiFi dropped */
-        if (!wifi_is_connected()) {
-            ESP_LOGW(TAG, "Keepalive: WiFi lost — forcing reconnect");
-            esp_wifi_disconnect();
-            vTaskDelay(pdMS_TO_TICKS(100));
-            esp_wifi_connect();
+        /* ── Phantom-connection detection ───────────────────────────────
+         *
+         * esp_wifi_sta_get_ap_info() queries the WiFi driver's live
+         * association state directly — it returns ESP_ERR_WIFI_NOT_CONNECT
+         * when the STA is not actually associated, regardless of what the
+         * event-driven wifi_is_connected() flag says.
+         *
+         * This is the fix for the "silent drop" failure mode: when
+         * MikroTik logs "connection lost" without sending a deauth,
+         * WIFI_EVENT_STA_DISCONNECTED never fires, wifi_is_connected()
+         * stays true, and the node is stuck in a phantom-connected state.
+         * esp_wifi_sta_get_ap_info() catches this case.
+         *
+         * Recovery: call esp_wifi_disconnect() ONLY — do NOT call
+         * esp_wifi_connect() here.  The disconnect fires
+         * WIFI_EVENT_STA_DISCONNECTED and the event handler in ota.c
+         * calls esp_wifi_connect() while correctly managing s_retry_num
+         * and the backoff timer.  Calling esp_wifi_connect() directly
+         * would bypass that state machine and can leave s_retry_num in
+         * an inconsistent state, causing the next real disconnect to hit
+         * the 30 s backoff instead of retrying immediately.              */
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+            ESP_LOGW(TAG, "Keepalive: not associated (phantom connection detected) "
+                          "— triggering reconnect via event handler");
+            esp_wifi_disconnect();  /* fires WIFI_EVENT_STA_DISCONNECTED → reconnect */
+            continue;               /* skip UDP probe this cycle */
         }
 
-        /* Resolve the default gateway IP from the active STA netif */
+        /* ── UDP discard keepalive ───────────────────────────────────────
+         *
+         * Send a 1-byte datagram to the gateway's discard port (9, RFC 863).
+         * The gateway silently drops it; we care only about the unicast
+         * 802.11 DATA frame it generates, which:
+         *   (a) resets the AP's per-client inactivity timer, and
+         *   (b) if the AP has already removed our association, will elicit
+         *       a deauth (reason 7), firing WIFI_EVENT_STA_DISCONNECTED
+         *       and starting the reconnect loop.
+         *
+         * On sendto() failure (EHOSTUNREACH, ENETUNREACH, etc.) we call
+         * esp_wifi_disconnect() to hand control to the event handler's
+         * reconnect state machine — logging alone is not sufficient.      */
         esp_netif_t *netif = esp_netif_get_default_netif();
         if (netif == NULL) continue;
 
         esp_netif_ip_info_t ip_info;
         if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK ||
             ip_info.gw.addr == 0) {
-            ESP_LOGD(TAG, "Keepalive: no gateway IP, skipping");
+            ESP_LOGD(TAG, "Keepalive: no gateway IP, skipping UDP probe");
             continue;
         }
 
-        /* Open a UDP socket and send a 1-byte datagram to the gateway's
-         * discard port (9, RFC 863).  The gateway will silently drop it;
-         * we only care about the outbound 802.11 DATA frame it generates. */
         int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (sock < 0) {
             ESP_LOGW(TAG, "Keepalive: socket() failed (%d)", errno);
@@ -148,17 +170,20 @@ static void wifi_keepalive_task(void *param)
         uint8_t buf = 0;
         int ret = sendto(sock, &buf, sizeof(buf), 0,
                          (struct sockaddr *)&dest, sizeof(dest));
-        if (ret < 0) {
-            /* ENETUNREACH / EHOSTUNREACH here often means the AP has already
-             * silently removed us.  The failed send still generates an ARP
-             * request or triggers the WiFi stack's error path, which will
-             * surface as WIFI_EVENT_STA_DISCONNECTED and start reconnect.  */
-            ESP_LOGW(TAG, "Keepalive: sendto failed (errno %d) — "
-                          "may indicate lost AP association", errno);
-        } else {
-            ESP_LOGD(TAG, "Keepalive: sent to gw " IPSTR, IP2STR(&ip_info.gw));
-        }
         close(sock);
+
+        if (ret < 0) {
+            /* sendto() failure means the frame could not be delivered.
+             * Force a clean disconnect so WIFI_EVENT_STA_DISCONNECTED
+             * fires and the event handler's reconnect state machine runs.
+             * Do NOT call esp_wifi_connect() directly here.               */
+            ESP_LOGW(TAG, "Keepalive: sendto failed (errno %d) — "
+                          "forcing reassociation via event handler", errno);
+            esp_wifi_disconnect();
+        } else {
+            ESP_LOGD(TAG, "Keepalive: UDP probe sent to gw " IPSTR,
+                     IP2STR(&ip_info.gw));
+        }
     }
 }
 
