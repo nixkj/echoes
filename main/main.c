@@ -67,7 +67,7 @@ static const char *TAG = "MAIN";
  * TERTIARY: re-assert WIFI_PS_NONE on every cycle, guarding against the
  * ESP-IDF driver silently re-enabling modem sleep after internal state changes.
  *
- * 2 seconds matches the lux broadcast interval of full nodes and is well
+ * 1 seconds matches the lux broadcast interval of full nodes and is well
  * under any AP's inactivity or null-frame timeout.  The heartbeat costs
  * ~8 bytes of air time per cycle; the UDP datagram costs ~60 bytes.
  */
@@ -92,7 +92,7 @@ static void wifi_keepalive_task(void *param)
          * This is the fundamental fix: minimal nodes receive ~50 ESP-NOW
          * frames/second but rarely transmit, leaving the radio in a
          * receive-dominant state where hardware MAC ACKs can be missed.
-         * Transmitting an ESP-NOW frame every 2 s mirrors the behaviour
+         * Transmitting an ESP-NOW frame regularly mirrors the behaviour
          * of full nodes (which transmit lux broadcasts every ~500 ms)
          * and keeps the full 802.11 CSMA/CA state machine active.       */
 	/* === IMPROVED HEARTBEAT === */
@@ -102,15 +102,17 @@ static void wifi_keepalive_task(void *param)
          * increases the chance that a transmit cycle actually happens every
          * keepalive interval. */
         espnow_mesh_broadcast_heartbeat();
-        vTaskDelay(pdMS_TO_TICKS(10));           // tiny backoff
-        espnow_mesh_broadcast_heartbeat();       // second attempt
+        vTaskDelay(pdMS_TO_TICKS(8));           // tiny backoff
+        espnow_mesh_broadcast_heartbeat();      // second attempt
+        vTaskDelay(pdMS_TO_TICKS(8));
+        espnow_mesh_broadcast_heartbeat();
 
-        /* SECONDARY: UDP datagram to gateway — resets AP inactivity timer
-         * and provides a detectable failure signal if the AP has already
-         * dropped us (deauth response fires STA_DISCONNECTED → reconnect) */
+	/* Force reconnect if WiFi dropped */
         if (!wifi_is_connected()) {
-            ESP_LOGD(TAG, "Keepalive: WiFi not connected, skipping UDP");
-            continue;
+            ESP_LOGW(TAG, "Keepalive: WiFi lost — forcing reconnect");
+            esp_wifi_disconnect();
+            vTaskDelay(pdMS_TO_TICKS(100));
+            esp_wifi_connect();
         }
 
         /* Resolve the default gateway IP from the active STA netif */
