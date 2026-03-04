@@ -993,6 +993,21 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     --radius:   4px;
     --glow: 0 0 20px rgba(200,240,74,0.12);
   }
+  :root.light {
+    --bg:       #f2f4f8;
+    --surface:  #ffffff;
+    --border:   #cdd4e8;
+    --accent:   #5a8a00;
+    --accent2:  #008a6a;
+    --muted:    #aab0c8;
+    --text:     #1a1f2e;
+    --text-dim: #5a6480;
+    --danger:   #c01838;
+    --warn:     #a05800;
+    --glow: 0 0 20px rgba(90,138,0,0.10);
+  }
+  .theme-toggle { background: none; border: 1px solid var(--border); border-radius: var(--radius); padding: 5px 11px; cursor: pointer; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); transition: border-color 0.15s, color 0.15s; }
+  .theme-toggle:hover { border-color: var(--accent2); color: var(--accent2); }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: var(--font-mono); font-size: 13px; min-height: 100vh; overflow-x: hidden; }
   body::before { content: ''; position: fixed; inset: 0; z-index: 0; background-image: linear-gradient(rgba(200,240,74,0.015) 1px, transparent 1px), linear-gradient(90deg, rgba(200,240,74,0.015) 1px, transparent 1px); background-size: 40px 40px; pointer-events: none; }
@@ -1061,17 +1076,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .toggle-on .toggle-thumb { transform: translateX(16px); background: #fff; }
   .toggle-on .toggle-label { color: var(--danger); font-weight: 700; }
   .toggle-on { border-color: var(--danger); background: rgba(240,74,106,0.08); }
-  /* ── Collapsible section headers ── */
-  .section-label { cursor: pointer; justify-content: space-between; }
-  .section-label:hover { color: var(--text); border-bottom-color: var(--accent); }
-  .section-chevron { font-size: 10px; color: var(--text-dim); transition: transform 0.2s; line-height: 1; }
-  .section-label.sec-collapsed .section-chevron { transform: rotate(-90deg); }
-  /* ── Advanced sub-section ── */
-  .adv-header { display: flex; align-items: center; gap: 8px; padding: 6px 14px; margin: 4px 0 2px; background: rgba(74,240,200,0.04); border: 1px solid var(--border); border-radius: 2px; cursor: pointer; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--text-dim); transition: border-color 0.15s, color 0.15s; }
-  .adv-header:hover { border-color: var(--accent2); color: var(--accent2); }
-  .adv-header::before { content: ''; display: inline-block; width: 6px; height: 6px; background: var(--accent2); border-radius: 50%; opacity: 0.5; }
-  .adv-chevron { font-size: 10px; transition: transform 0.2s; margin-left: auto; }
-  .adv-header.adv-collapsed .adv-chevron { transform: rotate(-90deg); }
 
   /* ── Power cell — lives inside the node grid ── */
   .fnode-pwr { position: relative; aspect-ratio: 1; border-radius: 2px; cursor: pointer; border: 1px solid; transition: all 0.15s ease; display: flex; align-items: center; justify-content: center; padding: 0; background: none; }
@@ -1152,7 +1156,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="header-meta">
       Configuration Server<br>
       Last saved: <strong id="last-saved">—</strong><br>
-      <span id="param-count">0</span> parameters
+      <span id="param-count">0</span> parameters &nbsp;
+      <button class="theme-toggle" id="theme-btn" onclick="toggleTheme()">☀ Light</button>
     </div>
   </header>
 
@@ -1181,7 +1186,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <div class="controls-bar">
     <input class="filter-input" type="text" id="filter-input" placeholder="Filter parameters…">
-    <button class="btn btn-ghost2" onclick="expandAll()">Expand all</button>
     <button class="btn btn-ghost" onclick="confirmReset()">Reset defaults</button>
     <button class="btn btn-primary" id="save-btn" onclick="saveAll()">Save changes</button>
     <button class="btn btn-danger" id="restart-btn" onclick="requestRestart()"
@@ -1208,7 +1212,7 @@ const SECTIONS = {
   "Documentary Mode": ["DEMO_MODE","DEMO_INTERVAL_MS"],
   "Output Switches":  ["SILENT_MODE","SOUND_OFF"],
   "Quiet Hours":      ["QUIET_HOURS_ENABLED","QUIET_HOUR_START","QUIET_HOUR_END"],
-  "Audio Detection":  ["GAIN","WHISTLE_FREQ","VOICE_FREQ","WHISTLE_MULTIPLIER","VOICE_MULTIPLIER","CLAP_MULTIPLIER","WHISTLE_CONFIRM","VOICE_CONFIRM","CLAP_CONFIRM","DEBOUNCE_BUFFERS","BIRDSONG_FREQ","BIRDSONG_MULTIPLIER","BIRDSONG_HF_RATIO","BIRDSONG_MF_MIN","BIRDSONG_CONFIRM","NOISE_FLOOR_WHISTLE","NOISE_FLOOR_VOICE","NOISE_FLOOR_BIRDSONG"],
+  "Audio Detection":  ["GAIN","WHISTLE_FREQ","VOICE_FREQ","BIRDSONG_FREQ","NOISE_FLOOR_WHISTLE","NOISE_FLOOR_VOICE","NOISE_FLOOR_BIRDSONG"],
   "Playback Volume":  ["VOLUME","VOLUME_LUX_MIN","VOLUME_LUX_MAX","VOLUME_SCALE_MIN","VOLUME_SCALE_MAX","QUELEA_GAIN"],
   "Light Sensor":     ["LUX_POLL_INTERVAL_MS","LUX_CHANGE_THRESHOLD","LUX_FLASH_THRESHOLD","LUX_FLASH_PERCENT","LUX_FLASH_MIN_ABS"],
   "LED Behaviour":    ["VU_MAX_BRIGHTNESS"],
@@ -1216,35 +1220,6 @@ const SECTIONS = {
   "Markov Chain":     ["MARKOV_IDLE_TRIGGER_MS","MARKOV_AUTONOMOUS_COOLDOWN_MS"],
   "Flock Mode":       ["FLOCK_GRACE_MS","FLOCK_MSG_COUNT","FLOCK_WINDOW_MS","FLOCK_HOLD_MS","FLOCK_CALL_GAP_MS"],
 };
-
-// Parameters that belong to the "Advanced" sub-section within each topic.
-// These are collapsed by default and intended for fine-tuning rather than
-// day-to-day operation.
-const ADVANCED_KEYS = new Set([
-  // Detection fine-tuning
-  "WHISTLE_MULTIPLIER","VOICE_MULTIPLIER","CLAP_MULTIPLIER",
-  "WHISTLE_CONFIRM","VOICE_CONFIRM","CLAP_CONFIRM",
-  "DEBOUNCE_BUFFERS",
-  "BIRDSONG_MULTIPLIER","BIRDSONG_HF_RATIO","BIRDSONG_MF_MIN","BIRDSONG_CONFIRM",
-  "NOISE_FLOOR_WHISTLE","NOISE_FLOOR_VOICE","NOISE_FLOOR_BIRDSONG",
-  // Volume lux-scaling
-  "VOLUME_LUX_MIN","VOLUME_LUX_MAX","VOLUME_SCALE_MIN","VOLUME_SCALE_MAX",
-  // Detailed light sensor
-  "LUX_POLL_INTERVAL_MS","LUX_CHANGE_THRESHOLD","LUX_FLASH_PERCENT","LUX_FLASH_MIN_ABS",
-  // LED
-  "VU_MAX_BRIGHTNESS",
-  // ESP-NOW timing
-  "ESPNOW_LUX_THRESHOLD","ESPNOW_EVENT_TTL_MS","ESPNOW_SOUND_THROTTLE_MS",
-  // Markov fine-tuning
-  "MARKOV_AUTONOMOUS_COOLDOWN_MS",
-  // Flock fine-tuning
-  "FLOCK_GRACE_MS","FLOCK_HOLD_MS","FLOCK_CALL_GAP_MS",
-]);
-
-// Tracks collapse state for section headers and advanced sub-sections.
-// collapsedSections["sec-Audio-Detection"] = true/false for the section header.
-// collapsedSections["adv-sec-Audio-Detection"] = true/false (default: true = collapsed).
-const collapsedSections = {};
 
 let fullConfig = {}, dirty = {};
 
@@ -1276,62 +1251,17 @@ function renderAll() {
   const container = document.getElementById("param-sections");
   container.innerHTML = "";
   const filterVal = document.getElementById("filter-input").value.toLowerCase();
-  const isFiltering = filterVal.length > 0;
-
   for (const [section, keys] of Object.entries(SECTIONS)) {
-    const sectionId = "sec-" + section.replace(/\s+/g, "-");
-
-    const matchFn = k => fullConfig[k] && (!filterVal ||
-      k.toLowerCase().includes(filterVal) ||
-      fullConfig[k].description.toLowerCase().includes(filterVal));
-
-    const commonKeys  = keys.filter(k => !ADVANCED_KEYS.has(k) && matchFn(k));
-    const advKeys     = keys.filter(k =>  ADVANCED_KEYS.has(k) && matchFn(k));
-    if (!commonKeys.length && !advKeys.length) continue;
-
-    // ── Section header (collapsible) ────────────────────────────────────
-    const secCollapsed = !isFiltering && collapsedSections[sectionId] === true;
+    const vis = keys.filter(k => fullConfig[k] && (!filterVal || k.toLowerCase().includes(filterVal) || fullConfig[k].description.toLowerCase().includes(filterVal)));
+    if (!vis.length) continue;
     const label = document.createElement("div");
-    label.className = "section-label" + (secCollapsed ? " sec-collapsed" : "");
-    label.innerHTML = `<span>${section}</span><span class="section-chevron">▾</span>`;
-    label.addEventListener("click", () => {
-      collapsedSections[sectionId] = !(collapsedSections[sectionId] === true);
-      renderAll();
-    });
+    label.className = "section-label";
+    label.textContent = section;
     container.appendChild(label);
-    if (secCollapsed) continue;
-
-    // ── Common parameters ────────────────────────────────────────────────
-    if (commonKeys.length) {
-      const grid = document.createElement("div");
-      grid.className = "param-grid";
-      commonKeys.forEach(k => grid.appendChild(makeCard(k, fullConfig[k])));
-      container.appendChild(grid);
-    }
-
-    // ── Advanced sub-section ─────────────────────────────────────────────
-    if (advKeys.length) {
-      const advId = "adv-" + sectionId;
-      // Default: collapsed (unless filter active or explicitly expanded)
-      const advCollapsed = !isFiltering && collapsedSections[advId] !== false;
-
-      const advHeader = document.createElement("div");
-      advHeader.className = "adv-header" + (advCollapsed ? " adv-collapsed" : "");
-      advHeader.innerHTML = `Advanced <span class="adv-chevron">▾</span>`;
-      advHeader.addEventListener("click", () => {
-        // Toggle: undefined/true → false (open), false → true (closed)
-        collapsedSections[advId] = collapsedSections[advId] === false ? true : false;
-        renderAll();
-      });
-      container.appendChild(advHeader);
-
-      if (!advCollapsed) {
-        const advGrid = document.createElement("div");
-        advGrid.className = "param-grid";
-        advKeys.forEach(k => advGrid.appendChild(makeCard(k, fullConfig[k])));
-        container.appendChild(advGrid);
-      }
-    }
+    const grid = document.createElement("div");
+    grid.className = "param-grid";
+    vis.forEach(k => grid.appendChild(makeCard(k, fullConfig[k])));
+    container.appendChild(grid);
   }
 }
 
@@ -1392,16 +1322,23 @@ async function confirmReset() {
   if (!confirm("Reset ALL parameters to factory defaults? This cannot be undone.")) return;
   if ((await fetch("/config/reset",{method:"POST"})).ok) { dirty={}; await loadConfig(); showToast("All parameters reset to defaults","info"); updateDirtyCount(); }
 }
-function expandAll() {
-  document.getElementById("filter-input").value = "";
-  // Expand all section headers and all advanced sub-sections
-  for (const section of Object.keys(SECTIONS)) {
-    const sectionId = "sec-" + section.replace(/\s+/g, "-");
-    collapsedSections[sectionId]         = false;   // expand section
-    collapsedSections["adv-" + sectionId] = false;  // expand advanced sub-section
-  }
-  renderAll();
+function toggleTheme() {
+  const light = document.documentElement.classList.toggle('light');
+  document.getElementById('theme-btn').textContent = light ? '☾ Dark' : '☀ Light';
+  try { localStorage.setItem('echoes-theme', light ? 'light' : 'dark'); } catch(e) {}
 }
+// Restore saved theme before first paint
+(function() {
+  try {
+    if (localStorage.getItem('echoes-theme') === 'light') {
+      document.documentElement.classList.add('light');
+      document.addEventListener('DOMContentLoaded', () => {
+        const b = document.getElementById('theme-btn');
+        if (b) b.textContent = '☾ Dark';
+      });
+    }
+  } catch(e) {}
+})();
 function showToast(msg,type="info") {
   const t=document.getElementById("toast"); t.textContent=msg; t.className="show "+type;
   clearTimeout(t._t); t._t=setTimeout(()=>t.className="",3500);
