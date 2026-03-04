@@ -141,6 +141,13 @@ static void espnow_rx_task(void *param)
 
     while (1) {
         if (xQueueReceive(s_rx_queue, &msg, pdMS_TO_TICKS(1000)) == pdTRUE) {
+	
+            /* Minimal nodes have no Markov chain — skip all processing */
+            if (s_markov == NULL) {
+                /* Still need to run TTL expiry even on minimal nodes */
+                espnow_mesh_tick();
+                continue;
+            }
 
             switch ((espnow_msg_type_t)msg.msg_type) {
 
@@ -244,11 +251,12 @@ bool espnow_mesh_init(bird_call_mapper_t *mapper, markov_chain_t *mc)
         return true;
     }
 
+    /* Guard the Markov pointer */
     s_markov = mc;
     s_mapper = mapper;
 
     /* Create receive queue (holds up to 8 messages) */
-    s_rx_queue = xQueueCreate(8, sizeof(espnow_msg_t));
+    s_rx_queue = xQueueCreate(32, sizeof(espnow_msg_t));  // was 8
     if (!s_rx_queue) {
         ESP_LOGE(TAG, "Failed to create RX queue");
         return false;

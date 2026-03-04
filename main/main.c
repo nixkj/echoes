@@ -71,7 +71,7 @@ static const char *TAG = "MAIN";
  * under any AP's inactivity or null-frame timeout.  The heartbeat costs
  * ~8 bytes of air time per cycle; the UDP datagram costs ~60 bytes.
  */
-#define WIFI_KEEPALIVE_INTERVAL_MS  2000
+#define WIFI_KEEPALIVE_INTERVAL_MS  1000
 
 static void wifi_keepalive_task(void *param)
 {
@@ -95,7 +95,15 @@ static void wifi_keepalive_task(void *param)
          * Transmitting an ESP-NOW frame every 2 s mirrors the behaviour
          * of full nodes (which transmit lux broadcasts every ~500 ms)
          * and keeps the full 802.11 CSMA/CA state machine active.       */
+	/* === IMPROVED HEARTBEAT === */
+        /* Optional but recommended: if the first send failed (e.g. queue full,
+         * radio temporarily busy, or any other transient error), wait 10 ms
+         * and try once more.  This costs almost nothing and dramatically
+         * increases the chance that a transmit cycle actually happens every
+         * keepalive interval. */
         espnow_mesh_broadcast_heartbeat();
+        vTaskDelay(pdMS_TO_TICKS(10));           // tiny backoff
+        espnow_mesh_broadcast_heartbeat();       // second attempt
 
         /* SECONDARY: UDP datagram to gateway — resets AP inactivity timer
          * and provides a detectable failure signal if the AP has already
@@ -403,8 +411,9 @@ void app_main(void)
          * resumed.  If espnow_mesh_init() has not been called yet the
          * send fails with "esp now not init!" and the first light/sound
          * event is lost.  Initialising here guarantees the stack is ready
-         * before any task can call it.                                    */
-        espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
+         * before any task can call it. No Markov for minimal nodes.         */
+	espnow_mesh_init(get_bird_mapper(),
+                 (get_hardware_config() == HW_CONFIG_FULL) ? (markov_chain_t *)get_markov() : NULL);
 
         /* Initialise audio hardware HERE — as late as possible, immediately
          * before the tasks that consume it are resumed.  Enabling the I2S DMA
@@ -454,7 +463,7 @@ void app_main(void)
          * no disconnect event and no reconnect.  See wifi_keepalive_task()
          * above for the full explanation.                                  */
         if (hw_config == HW_CONFIG_MINIMAL) {
-            xTaskCreate(wifi_keepalive_task, "wifi_ka", 4096, NULL, 2, NULL);
+            xTaskCreate(wifi_keepalive_task, "wifi_ka", 4096, NULL, 3, NULL); // was 2
             ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
                      WIFI_KEEPALIVE_INTERVAL_MS / 1000);
         }
@@ -499,8 +508,9 @@ void app_main(void)
 
         /* Initialise ESP-NOW before creating tasks for the same reason as
          * the WiFi path above — flock_task will attempt a broadcast
-         * immediately on first run.                                        */
-        espnow_mesh_init(get_bird_mapper(), (markov_chain_t *)get_markov());
+         * immediately on first run. No Markov on minimal nodes.            */
+	espnow_mesh_init(get_bird_mapper(),
+                 (get_hardware_config() == HW_CONFIG_FULL) ? (markov_chain_t *)get_markov() : NULL);
 
         /* Initialise audio hardware HERE — same reasoning as WiFi path above.
          * No OTA delay on this path, but keeping init here ensures both paths

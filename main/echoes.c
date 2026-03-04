@@ -306,7 +306,12 @@ void system_init(void) {
     bird_mapper_init(&g_bird_mapper, SAMPLE_RATE);
 
     // Initialize Markov chain (NVS must already be initialised by app_main)
-    markov_init(&g_markov, &g_bird_mapper);
+    if (get_hardware_config() == HW_CONFIG_FULL) {
+        markov_init(&g_markov, &g_bird_mapper);
+    } else {
+        // Minimal nodes never use it — zero it out so espnow_mesh_init sees NULL
+        memset(&g_markov, 0, sizeof(g_markov));
+    }
 
     // Create playback mutex (guards the I2S speaker channel)
     s_playback_mutex = xSemaphoreCreateMutex();
@@ -937,6 +942,15 @@ void audio_detection_task(void *param) {
             // Update white LED to show audio level
             // Blue LED stays off in minimal mode
             set_led(vu_level, 0.0f);
+
+	    // ─────────────────────────────────────────────────────────────
+            // FEED THE WATCHDOG EVERY ITERATION
+            // This is the critical line. The loop runs at ~1 ms, so feeding
+            // the WDT here guarantees that even if the node is in the
+            // "stuck with white LED on" state, the watchdog will still
+            // trigger a clean reboot instead of hanging forever.
+            // ─────────────────────────────────────────────────────────────
+            esp_task_wdt_reset();
             
             // Small delay
             vTaskDelay(pdMS_TO_TICKS(1));
