@@ -587,6 +587,11 @@ static void _play_locked(const char *bird_name, const audio_buffer_t *audio_buff
 
     float vol_scale = get_volume_for_lux(get_lux_level());
     const remote_config_t *_pcfg = remote_config_get();
+    /* Apply the remote VOLUME parameter.  synthesis.c bakes the compile-time
+     * VOLUME macro (0.20f) into each buffer; we scale relative to that default
+     * so the dashboard slider takes effect without touching the synthesised
+     * samples directly.  At cfg->volume == 0.20 the ratio is 1.0 (unity). */
+    vol_scale *= (_pcfg->volume / 0.20f);
     set_led(_pcfg->vu_max_brightness * vol_scale, BRIGHT_OFF);
 
     size_t total_bytes = audio_buffer->num_samples * sizeof(int16_t);
