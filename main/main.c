@@ -465,7 +465,7 @@ void app_main(void)
          * no disconnect event and no reconnect.  See wifi_keepalive_task()
          * above for the full explanation.                                  */
         if (hw_config == HW_CONFIG_MINIMAL) {
-            xTaskCreate(wifi_keepalive_task, "wifi_ka", 4096, NULL, 3, NULL); // was 2
+            xTaskCreate(wifi_keepalive_task, "wifi_ka", 4096, NULL, 4, NULL); // was 2
             ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
                      WIFI_KEEPALIVE_INTERVAL_MS / 1000);
         }
