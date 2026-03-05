@@ -19,10 +19,35 @@
 
 #include "esp_system.h"
 #include "esp_attr.h"
+#include "esp_wifi.h"
+#include "esp_random.h"
 #include "startup.h"
 #include "ota.h"
 #include <string.h>
 #include <stdlib.h>
+
+/* =========================================================================
+ * CONNECTIVITY WATCHDOG
+ *
+ * After RCFG_MAX_CONSECUTIVE_FAILURES consecutive poll failures the watchdog
+ * forces a WiFi reconnect.  This recovers a wedged driver state (where the
+ * driver believes it is associated but the AP has silently removed it and
+ * WIFI_EVENT_STA_DISCONNECTED never fires).
+ *
+ * The ESP-NOW heartbeat does not prevent this: esp_now_send() returns ESP_OK
+ * even in the wedged state because the driver queues the frame locally
+ * without requiring AP-side confirmation.
+ *
+ * A random jitter of 0–30 s is applied before the reconnect so that nodes
+ * which boot near-simultaneously (within the 17 s fleet boot window) do not
+ * reassociate at the same instant and cause an RF storm.
+ *
+ * A server outage is indistinguishable from a wedged driver via HTTP alone,
+ * so we reconnect in both cases.  Reconnecting when the server is simply
+ * down is harmless — the node reassociates within seconds and resumes its
+ * last known config.
+ * ========================================================================= */
+#define RCFG_MAX_CONSECUTIVE_FAILURES   3
 
 /* =========================================================================
  * RTC SLOW MEMORY
@@ -418,6 +443,14 @@ void remote_config_task(void *param)
     (void)param;
     int consecutive_failures = 0;
 
+    /* Spread the fleet's poll cycles across a 45-second window.
+     * All 50 nodes boot within ~17 s of each other and would otherwise poll
+     * in tight synchrony.  If the watchdog fires on all of them at once the
+     * resulting simultaneous reassociation storm knocks other nodes off the
+     * AP.  This one-time delay at startup permanently desynchronises the
+     * fleet with zero ongoing overhead.                                    */
+    vTaskDelay(pdMS_TO_TICKS(esp_random() % 45000));
+
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(REMOTE_CONFIG_POLL_INTERVAL_MS));
         ESP_LOGI(TAG, "Polling config server…");
@@ -426,15 +459,31 @@ void remote_config_task(void *param)
         if (err != ESP_OK) {
             consecutive_failures++;
             ESP_LOGW(TAG, "Config poll failed (%s) — keeping previous values "
-                          "[consecutive failures: %d]",
-                     esp_err_to_name(err), consecutive_failures);
-            /* No watchdog action here.  A wedged WiFi driver is detected
-             * within 2 s by the ESP-NOW heartbeat send failure, which fires
-             * WIFI_EVENT_STA_DISCONNECTED and kicks the reconnect loop in
-             * ota.c naturally.  Forcing esp_wifi_disconnect() from here
-             * caused all nodes to reassociate simultaneously whenever the
-             * server was temporarily unreachable, creating RF storms that
-             * knocked other nodes off the AP.                              */
+                          "[consecutive failures: %d/%d]",
+                     esp_err_to_name(err),
+                     consecutive_failures, RCFG_MAX_CONSECUTIVE_FAILURES);
+
+            if (consecutive_failures >= RCFG_MAX_CONSECUTIVE_FAILURES) {
+                consecutive_failures = 0;
+
+                if (!wifi_is_connected()) {
+                    /* Driver already knows it is disconnected — the normal
+                     * reconnect loop in ota.c is running.  Nothing to do.  */
+                    ESP_LOGI(TAG, "Watchdog: WiFi already disconnected — "
+                                  "reconnect loop running");
+                } else {
+                    /* Force a clean reconnect.  This recovers both a wedged
+                     * driver (AP removed us silently) and a server outage
+                     * (harmless — node reassociates and resumes last config).
+                     * Random jitter 0–30 s prevents the fleet reassociating
+                     * simultaneously and causing an RF storm.              */
+                    uint32_t jitter_ms = esp_random() % 30000;
+                    ESP_LOGW(TAG, "Watchdog: forcing WiFi reconnect "
+                                  "(jitter %lu ms)", (unsigned long)jitter_ms);
+                    vTaskDelay(pdMS_TO_TICKS(jitter_ms));
+                    esp_wifi_disconnect();
+                }
+            }
 
         } else {
             if (consecutive_failures > 0) {
