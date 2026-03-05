@@ -77,22 +77,7 @@ static void wifi_keepalive_task(void *param)
 {
     (void)param;
 
-    /* Subscribe to the Task Watchdog Timer.
-     *
-     * Minimal nodes have no audio_detection_task, so without this
-     * subscription the TWDT has nothing to monitor and never fires —
-     * a frozen minimal node will stay dark indefinitely rather than
-     * rebooting.  wifi_keepalive_task runs for the lifetime of the node
-     * with a known 1-second heartbeat, making it the natural TWDT owner.
-     *
-     * esp_task_wdt_reset() is called at the top of each loop iteration so
-     * the window is always < WIFI_KEEPALIVE_INTERVAL_MS (1 s), well under
-     * the WDT_TIMEOUT_S threshold.                                         */
-    esp_task_wdt_add(NULL);   /* NULL = subscribe calling task */
-
     while (1) {
-        esp_task_wdt_reset();  /* feed at top — before any blocking call */
-
         vTaskDelay(pdMS_TO_TICKS(WIFI_KEEPALIVE_INTERVAL_MS));
 
         /* Re-assert PS_NONE on every cycle.  ESP-IDF can silently re-enable
@@ -135,12 +120,37 @@ static void wifi_keepalive_task(void *param)
          * would bypass that state machine and can leave s_retry_num in
          * an inconsistent state, causing the next real disconnect to hit
          * the 30 s backoff instead of retrying immediately.              */
+        /* ── Phantom-connection guard ────────────────────────────────────
+         *
+         * Only act if wifi_is_connected() reports TRUE (the driver's
+         * event-driven flag says we are up) AND get_ap_info disagrees.
+         * That combination means the AP silently removed us without
+         * sending a deauth — the classic phantom/wedged state.
+         *
+         * If wifi_is_connected() is already FALSE, the event handler in
+         * ota.c has already fired WIFI_EVENT_STA_DISCONNECTED and the
+         * reconnect loop is running — s_retry_num is being incremented
+         * each attempt.  Calling esp_wifi_disconnect() here would abort
+         * the in-progress association handshake (get_ap_info returns
+         * NOT_CONNECT during the 2–5 s association window too), increment
+         * s_retry_num again, and exhaust WIFI_MAXIMUM_RETRY in seconds,
+         * after which the 30 s backoff timer starts — only to be aborted
+         * again one second later.  The node never reconnects.
+         *
+         * The fix: skip this block entirely when the reconnect loop is
+         * already running.  Let ota.c manage the retry state machine;
+         * this task only intervenes when the driver is wedged.          */
         wifi_ap_record_t ap_info;
-        if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
-            ESP_LOGW(TAG, "Keepalive: not associated (phantom connection detected) "
+        if (wifi_is_connected() && esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+            ESP_LOGW(TAG, "Keepalive: phantom connection detected "
+                          "(connected flag set but not associated) "
                           "— triggering reconnect via event handler");
             esp_wifi_disconnect();  /* fires WIFI_EVENT_STA_DISCONNECTED → reconnect */
             continue;               /* skip UDP probe this cycle */
+        }
+        if (!wifi_is_connected()) {
+            /* Reconnect loop already running — do nothing this cycle.   */
+            continue;
         }
 
         /* ── UDP discard keepalive ───────────────────────────────────────
