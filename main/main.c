@@ -77,7 +77,22 @@ static void wifi_keepalive_task(void *param)
 {
     (void)param;
 
+    /* Subscribe to the Task Watchdog Timer.
+     *
+     * Minimal nodes have no audio_detection_task, so without this
+     * subscription the TWDT has nothing to monitor and never fires —
+     * a frozen minimal node will stay dark indefinitely rather than
+     * rebooting.  wifi_keepalive_task runs for the lifetime of the node
+     * with a known 1-second heartbeat, making it the natural TWDT owner.
+     *
+     * esp_task_wdt_reset() is called at the top of each loop iteration so
+     * the window is always < WIFI_KEEPALIVE_INTERVAL_MS (1 s), well under
+     * the WDT_TIMEOUT_S threshold.                                         */
+    esp_task_wdt_add(NULL);   /* NULL = subscribe calling task */
+
     while (1) {
+        esp_task_wdt_reset();  /* feed at top — before any blocking call */
+
         vTaskDelay(pdMS_TO_TICKS(WIFI_KEEPALIVE_INTERVAL_MS));
 
         /* Re-assert PS_NONE on every cycle.  ESP-IDF can silently re-enable
