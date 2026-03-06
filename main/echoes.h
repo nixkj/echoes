@@ -119,8 +119,14 @@
  * to recover from a stalled peripheral without a full reboot.  The TWDT is
  * now a last-resort backstop: if the channel cycle itself somehow hangs, the
  * TWDT fires after WDT_TIMEOUT_S and forces a clean reboot.
- * 120 seconds is a generous ceiling — far beyond any legitimate block. */
-#define WDT_TIMEOUT_S           120     // 2-minute task watchdog timeout
+ *
+ * 30 seconds is chosen to be:
+ *   > I2S read timeout (5 s) + channel cycle delay (100 ms) — no false trips
+ *   > generate_and_play_bird_call max block (call ~3 s + mutex 4 s = 7 s)
+ *   < 120 s (previous value) which was so long that a genuinely wedged task
+ *     would hang visibly for 2 minutes before recovery.
+ * Must match CONFIG_ESP_TASK_WDT_TIMEOUT_S in sdkconfig.defaults.          */
+#define WDT_TIMEOUT_S           30      // 30-second task watchdog timeout
 
 /* Light sensor polling
  * LUX_POLL_INTERVAL_MS  : how often the sensor is read.  100 ms is the

@@ -9,3 +9,13 @@ CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 # Enable OTA rollback protection
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK=n
+# Task Watchdog Timer — initialise at boot so esp_task_wdt_add() is always
+# available regardless of whether esp_task_wdt_reconfigure/init succeeds at
+# runtime.  Timeout matches WDT_TIMEOUT_S in echoes.h (30 s).  trigger_panic
+# ensures a clean reboot with a backtrace rather than a silent hang.
+# idle_core_mask=0 — do not watch idle tasks; only subscribed tasks matter.
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n

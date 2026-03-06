@@ -25,6 +25,7 @@
 #include "remote_config.h"
 #include <string.h>
 #include <math.h>
+#include "esp_task_wdt.h"
 
 static const char *TAG = "ESPNOW";
 
@@ -139,13 +140,33 @@ static void espnow_rx_task(void *param)
     (void)param;
     espnow_msg_t msg;
 
+    /* ── Subscribe to the Task Watchdog ─────────────────────────────────
+     *
+     * This task runs on every node type (full and minimal).  Without this
+     * subscription the TWDT has no visibility into whether the rx loop is
+     * alive.  The queue receive blocks for up to 1 s per iteration, well
+     * inside WDT_TIMEOUT_S, so false trips are not a concern.            */
+    {
+        esp_err_t wdt_err = esp_task_wdt_add(NULL);
+        if (wdt_err != ESP_OK) {
+            ESP_LOGW(TAG, "espnow_rx: could not subscribe to watchdog: %s",
+                     esp_err_to_name(wdt_err));
+        }
+    }
+
     while (1) {
+        /* Feed the TWDT unconditionally at the top of every iteration so
+         * both the "message received" and "queue timeout" paths are covered. */
+        esp_task_wdt_reset();
+
         if (xQueueReceive(s_rx_queue, &msg, pdMS_TO_TICKS(1000)) == pdTRUE) {
-	
-            /* Minimal nodes have no Markov chain — skip all processing */
+
+            /* Minimal nodes have no Markov chain — drain the queue and
+             * continue.  TTL expiry and Markov tick run below (outside this
+             * block) on the 1-second queue timeout, not per-message.  On
+             * minimal nodes espnow_mesh_tick() is a cheap no-op (s_remote_lux
+             * is always < 0) so the overhead is negligible.               */
             if (s_markov == NULL) {
-                /* Still need to run TTL expiry even on minimal nodes */
-                espnow_mesh_tick();
                 continue;
             }
 
@@ -229,7 +250,15 @@ static void espnow_rx_task(void *param)
             }
         }
 
-        /* TTL expiry check and Markov autonomous call check */
+        /* ── Periodic maintenance (runs on every 1-second queue timeout) ──
+         *
+         * TTL expiry and Markov tick are deliberately placed here, outside
+         * the "message received" block, so they fire once per second rather
+         * than once per incoming message.  With 25 full nodes broadcasting
+         * at ~2 Hz each, running these on every message would execute them
+         * ~50 times/second — wasteful and incorrect for time-based logic.
+         * The 1-second queue timeout means this runs at ~1 Hz regardless
+         * of message rate, which matches the intent of both functions.     */
         espnow_mesh_tick();
         if (s_markov) markov_tick(s_markov);
     }
