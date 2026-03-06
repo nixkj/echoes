@@ -73,44 +73,11 @@ static const char *TAG = "MAIN";
  */
 #define WIFI_KEEPALIVE_INTERVAL_MS  1000
 
-/* Minimum gap (ms) between phantom-guard disconnects.  Prevents a second
- * disconnect from being issued during the 2–5 s association handshake that
- * the first disconnect triggers, which would double-increment s_retry_num
- * in ota.c and prematurely exhaust WIFI_MAXIMUM_RETRY.                    */
-#define KEEPALIVE_PHANTOM_SUPPRESS_MS  6000
-
-/* Persistent UDP socket — kept open across cycles to avoid exhausting the
- * lwIP PCB pool (default CONFIG_LWIP_MAX_SOCKETS = 10) with 600–1800
- * open/close cycles per hour.  Re-created on any send failure.           */
-static int s_ka_sock = -1;
-
-/* Timestamp of the last phantom-guard disconnect so we can enforce the
- * suppress window.  Shared only within this translation unit.            */
-static uint32_t s_phantom_disconnect_ms = 0;
-
 static void wifi_keepalive_task(void *param)
 {
     (void)param;
 
-    /* ── Subscribe to the Task Watchdog ─────────────────────────────────
-     *
-     * This task is exclusive to minimal nodes (full nodes are not affected
-     * by the Wi-Fi disappearance bug and never run this task).  Without
-     * subscribing here the TWDT never sees this code path.  audio_detection
-     * and flock_task run fine on minimal nodes and keep feeding the TWDT,
-     * so a wedged keepalive loop is invisible to the watchdog without this
-     * subscription.                                                        */
-    esp_err_t wdt_err = esp_task_wdt_add(NULL);
-    if (wdt_err != ESP_OK) {
-        ESP_LOGW(TAG, "keepalive: could not subscribe to watchdog: %s",
-                 esp_err_to_name(wdt_err));
-    }
-
     while (1) {
-        /* Feed the TWDT at the top of every iteration — guarantees it is
-         * reset whether we continue early or complete the full cycle.     */
-        esp_task_wdt_reset();
-
         vTaskDelay(pdMS_TO_TICKS(WIFI_KEEPALIVE_INTERVAL_MS));
 
         /* Re-assert PS_NONE on every cycle.  ESP-IDF can silently re-enable
@@ -132,6 +99,27 @@ static void wifi_keepalive_task(void *param)
          * is handled by esp_wifi_sta_get_ap_info() below.                  */
         espnow_mesh_broadcast_heartbeat();
 
+        /* ── Phantom-connection detection ───────────────────────────────
+         *
+         * esp_wifi_sta_get_ap_info() queries the WiFi driver's live
+         * association state directly — it returns ESP_ERR_WIFI_NOT_CONNECT
+         * when the STA is not actually associated, regardless of what the
+         * event-driven wifi_is_connected() flag says.
+         *
+         * This is the fix for the "silent drop" failure mode: when
+         * MikroTik logs "connection lost" without sending a deauth,
+         * WIFI_EVENT_STA_DISCONNECTED never fires, wifi_is_connected()
+         * stays true, and the node is stuck in a phantom-connected state.
+         * esp_wifi_sta_get_ap_info() catches this case.
+         *
+         * Recovery: call esp_wifi_disconnect() ONLY — do NOT call
+         * esp_wifi_connect() here.  The disconnect fires
+         * WIFI_EVENT_STA_DISCONNECTED and the event handler in ota.c
+         * calls esp_wifi_connect() while correctly managing s_retry_num
+         * and the backoff timer.  Calling esp_wifi_connect() directly
+         * would bypass that state machine and can leave s_retry_num in
+         * an inconsistent state, causing the next real disconnect to hit
+         * the 30 s backoff instead of retrying immediately.              */
         /* ── Phantom-connection guard ────────────────────────────────────
          *
          * Only act if wifi_is_connected() reports TRUE (the driver's
@@ -149,28 +137,16 @@ static void wifi_keepalive_task(void *param)
          * after which the 30 s backoff timer starts — only to be aborted
          * again one second later.  The node never reconnects.
          *
-         * SUPPRESS WINDOW: even when the conditions are met, we only fire
-         * one disconnect per KEEPALIVE_PHANTOM_SUPPRESS_MS.  Without this,
-         * two back-to-back phantom detections (this task fires every 1 s,
-         * the event loop may not have updated wifi_is_connected() yet) can
-         * issue a second esp_wifi_disconnect() during the association
-         * handshake triggered by the first, double-incrementing s_retry_num
-         * in ota.c and causing premature 30 s backoff.                     */
-        uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+         * The fix: skip this block entirely when the reconnect loop is
+         * already running.  Let ota.c manage the retry state machine;
+         * this task only intervenes when the driver is wedged.          */
         wifi_ap_record_t ap_info;
         if (wifi_is_connected() && esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
-            if ((now_ms - s_phantom_disconnect_ms) >= KEEPALIVE_PHANTOM_SUPPRESS_MS) {
-                ESP_LOGW(TAG, "Keepalive: phantom connection detected "
-                              "(connected flag set but not associated) "
-                              "— triggering reconnect via event handler");
-                s_phantom_disconnect_ms = now_ms;
-                esp_wifi_disconnect();  /* fires WIFI_EVENT_STA_DISCONNECTED → reconnect */
-            } else {
-                ESP_LOGD(TAG, "Keepalive: phantom guard suppressed "
-                              "(within %d ms of last disconnect)",
-                         KEEPALIVE_PHANTOM_SUPPRESS_MS);
-            }
-            continue;   /* skip UDP probe this cycle regardless */
+            ESP_LOGW(TAG, "Keepalive: phantom connection detected "
+                          "(connected flag set but not associated) "
+                          "— triggering reconnect via event handler");
+            esp_wifi_disconnect();  /* fires WIFI_EVENT_STA_DISCONNECTED → reconnect */
+            continue;               /* skip UDP probe this cycle */
         }
         if (!wifi_is_connected()) {
             /* Reconnect loop already running — do nothing this cycle.   */
@@ -187,12 +163,9 @@ static void wifi_keepalive_task(void *param)
          *       a deauth (reason 7), firing WIFI_EVENT_STA_DISCONNECTED
          *       and starting the reconnect loop.
          *
-         * PERSISTENT SOCKET: s_ka_sock is kept open across cycles rather
-         * than calling socket()/close() every second.  Cycling through the
-         * lwIP PCB pool 600–1800 times/hour exhausts CONFIG_LWIP_MAX_SOCKETS
-         * (default 10) under driver stress, causing socket() to return -1,
-         * which previously triggered an unnecessary esp_wifi_disconnect().
-         * The socket is only recreated on actual send failure.             */
+         * On sendto() failure (EHOSTUNREACH, ENETUNREACH, etc.) we call
+         * esp_wifi_disconnect() to hand control to the event handler's
+         * reconnect state machine — logging alone is not sufficient.      */
         esp_netif_t *netif = esp_netif_get_default_netif();
         if (netif == NULL) continue;
 
@@ -203,44 +176,35 @@ static void wifi_keepalive_task(void *param)
             continue;
         }
 
-        /* (Re)create the persistent socket if it has not been opened yet
-         * or was closed after a previous send failure.                    */
-        if (s_ka_sock < 0) {
-            s_ka_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-            if (s_ka_sock < 0) {
-                ESP_LOGW(TAG, "Keepalive: socket() failed (%d) — skipping probe", errno);
-                continue;
-            }
-            struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-            setsockopt(s_ka_sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-            ESP_LOGD(TAG, "Keepalive: UDP socket created (fd=%d)", s_ka_sock);
+        int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock < 0) {
+            ESP_LOGW(TAG, "Keepalive: socket() failed (%d)", errno);
+            continue;
         }
+
+        /* 1-second send timeout — we never expect a reply */
+        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
         struct sockaddr_in dest = {
             .sin_family      = AF_INET,
-            .sin_port        = htons(9),    /* discard port, RFC 863 */
+            .sin_port        = htons(9),    /* discard port */
             .sin_addr.s_addr = ip_info.gw.addr,
         };
 
         uint8_t buf = 0;
-        int ret = sendto(s_ka_sock, &buf, sizeof(buf), 0,
+        int ret = sendto(sock, &buf, sizeof(buf), 0,
                          (struct sockaddr *)&dest, sizeof(dest));
+        close(sock);
 
         if (ret < 0) {
             /* sendto() failure means the frame could not be delivered.
-             * Close and invalidate the socket so it is recreated next cycle,
-             * then force a clean disconnect so WIFI_EVENT_STA_DISCONNECTED
+             * Force a clean disconnect so WIFI_EVENT_STA_DISCONNECTED
              * fires and the event handler's reconnect state machine runs.
-             * Guard with the suppress window for the same reason as the
-             * phantom-guard above — don't double-disconnect.              */
+             * Do NOT call esp_wifi_connect() directly here.               */
             ESP_LOGW(TAG, "Keepalive: sendto failed (errno %d) — "
                           "forcing reassociation via event handler", errno);
-            close(s_ka_sock);
-            s_ka_sock = -1;
-            if ((now_ms - s_phantom_disconnect_ms) >= KEEPALIVE_PHANTOM_SUPPRESS_MS) {
-                s_phantom_disconnect_ms = now_ms;
-                esp_wifi_disconnect();
-            }
+            esp_wifi_disconnect();
         } else {
             ESP_LOGD(TAG, "Keepalive: UDP probe sent to gw " IPSTR,
                      IP2STR(&ip_info.gw));
