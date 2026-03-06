@@ -1521,6 +1521,11 @@ function buildFleetGrid() {
         brk.innerHTML = '<span class="fnode-row-break-dot"></span>';
         g.appendChild(brk);
       } else {
+        // Spacer before the first col-sep so group 2 aligns with group 4
+        if (sepCount === 1) {
+          const spacer = document.createElement('div');
+          g.appendChild(spacer);
+        }
         // Column separator between groups on the same row
         const sep = document.createElement('div');
         sep.className = 'fnode-col-sep';

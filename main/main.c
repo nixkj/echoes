@@ -63,10 +63,30 @@ static const char *TAG = "MAIN";
  *   that requires no software cooperation from either CPU.
  */
 
-#define ISR_WDT_TIMEOUT_S  90   /* seconds without heartbeat → reboot */
+#define ISR_WDT_TIMEOUT_S  120  /* seconds without heartbeat → hardware reset */
+
+/* Network health thresholds for the ISR WDT feeder logic.
+ *
+ * The ISR WDT heartbeat is only incremented when the node has proof of
+ * end-to-end connectivity.  The ONLY such proof is a successful HTTP
+ * config fetch (remote_config_task, every 60 s).  All local WiFi checks
+ * (wifi_is_connected, esp_wifi_sta_get_ap_info, sendto) return success
+ * when the AP has silently dropped the node.
+ *
+ * NETWORK_GRACE_MS: after boot, always feed the ISR WDT regardless of
+ *   fetch status.  Covers OTA validation (60 s), random jitter (45 s),
+ *   first poll interval (60 s), and HTTP timeout (8 s).
+ *
+ * NETWORK_DEATH_MS: after grace, if no successful fetch for this long,
+ *   stop feeding the ISR WDT.  The ISR fires ISR_WDT_TIMEOUT_S later.
+ *
+ * Total worst-case recovery: NETWORK_DEATH_MS + ISR_WDT_TIMEOUT_S
+ *   = 4 min + 2 min = 6 minutes from AP drop to hardware reset.          */
+#define NETWORK_GRACE_MS   (10u * 60u * 1000u)   /* 10 min boot grace     */
+#define NETWORK_DEATH_MS   ( 4u * 60u * 1000u)   /* 4 min stale → stop    */
 
 static gptimer_handle_t          s_isr_wdt_timer     = NULL;
-static volatile uint32_t         s_isr_wdt_heartbeat  = 0;   /* fed by tasks, checked by ISR */;
+static volatile uint32_t         s_isr_wdt_heartbeat  = 0;   /* fed by tasks, checked by ISR */
 
 /**
  * @brief GP Timer alarm callback — runs in ISR context every 1 second.
@@ -184,9 +204,32 @@ static void wifi_keepalive_task(void *param)
     while (1) {
         esp_task_wdt_reset();
 
-        /* Feed ISR WDT — this is the ONLY task that feeds it.
-         * Must be before any potentially-blocking operation.              */
-        s_isr_wdt_heartbeat++;
+        /* ── Conditional ISR WDT feed ────────────────────────────────────
+         *
+         * Feed the hardware watchdog ONLY when we have proof the network
+         * is alive.  The remote_config_task's last successful HTTP fetch
+         * timestamp (last_fetch_ms) is the sole indicator.
+         *
+         * During the boot grace period, always feed — the first config
+         * fetch hasn't happened yet and that's expected.
+         *
+         * After grace: if last_fetch_ms is stale (older than
+         * NETWORK_DEATH_MS), STOP feeding.  The ISR fires
+         * ISR_WDT_TIMEOUT_S later and triggers a hardware reset.          */
+        {
+            uint32_t now_ms  = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+            bool boot_grace  = (now_ms < NETWORK_GRACE_MS);
+
+            if (boot_grace) {
+                s_isr_wdt_heartbeat++;
+            } else {
+                uint32_t last_ok = remote_config_get()->last_fetch_ms;
+                if (last_ok != 0 && (now_ms - last_ok) < NETWORK_DEATH_MS) {
+                    s_isr_wdt_heartbeat++;
+                }
+                /* else: network presumed dead — starve the ISR WDT */
+            }
+        }
 
         vTaskDelay(pdMS_TO_TICKS(WIFI_KEEPALIVE_INTERVAL_MS));
 
