@@ -34,138 +34,267 @@
 #include "esp_random.h"
 #include "esp_netif.h"
 #include "lwip/sockets.h"
+#include "driver/gptimer.h"
 
 static const char *TAG = "MAIN";
+
+/* ========================================================================
+ * ISR-BASED HARDWARE WATCHDOG
+ * ========================================================================
+ *
+ * The Task Watchdog Timer (TWDT) monitors whether FreeRTOS tasks call
+ * esp_task_wdt_reset() within a timeout.  It CANNOT detect the failure
+ * mode that kills minimal nodes:
+ *
+ *   - All tasks continue running and feeding the TWDT.
+ *   - The WiFi driver is wedged (AP dropped the node silently).
+ *   - esp_now_send() blocks the keepalive task on the full TX buffer.
+ *   - The node is alive internally but network-dead.
+ *
+ * The TWDT sees a perfectly healthy system and never fires.
+ *
+ * This ISR-based watchdog fills the gap.  A hardware GP Timer fires a
+ * level-1 interrupt every second.  The ISR checks a volatile heartbeat
+ * counter that is incremented by the wifi_keepalive_task on every
+ * non-blocked iteration.  If the counter stops advancing for
+ * ISR_WDT_TIMEOUT_S seconds, the ISR calls esp_restart().
+ *
+ * Because this runs from a hardware timer interrupt (not a FreeRTOS
+ * task), it fires even if:
+ *   - All tasks are deadlocked
+ *   - esp_now_send() is blocking a task
+ *   - The FreeRTOS scheduler is stuck
+ *
+ * The only failure modes this cannot catch are:
+ *   - Global interrupt masking (caught by the Interrupt WDT / IWDT)
+ *   - Hardware clock failure (caught by the RTC WDT)
+ */
+
+#define ISR_WDT_TIMEOUT_S  90   /* seconds without heartbeat → reboot */
+
+static gptimer_handle_t  s_isr_wdt_timer     = NULL;
+volatile uint32_t        s_isr_wdt_heartbeat  = 0;   /* fed by tasks, checked by ISR */
+
+/**
+ * @brief GP Timer alarm callback — runs in ISR context every 1 second.
+ *
+ * Compares the heartbeat counter against its previous value.  If unchanged
+ * for ISR_WDT_TIMEOUT_S consecutive seconds, forces a hard restart.
+ * IRAM_ATTR ensures the function is in instruction RAM (required for ISR).
+ */
+static bool IRAM_ATTR isr_wdt_alarm_cb(gptimer_handle_t timer,
+                                        const gptimer_alarm_event_data_t *edata,
+                                        void *user_ctx)
+{
+    static uint32_t s_last_hb    = 0;
+    static uint32_t s_miss_count = 0;
+
+    uint32_t hb = s_isr_wdt_heartbeat;
+    if (hb == s_last_hb) {
+        s_miss_count++;
+        if (s_miss_count >= ISR_WDT_TIMEOUT_S) {
+            esp_restart();
+            /* Does not return */
+        }
+    } else {
+        s_last_hb    = hb;
+        s_miss_count = 0;
+    }
+    return false;   /* no high-priority task wakeup needed */
+}
+
+/**
+ * @brief Initialise the ISR-based hardware watchdog.
+ *
+ * Call once from app_main after all tasks are running.  The timer fires
+ * a 1-second alarm in ISR context.  Any task can feed the watchdog by
+ * incrementing s_isr_wdt_heartbeat.
+ */
+static void isr_wdt_init(void)
+{
+    gptimer_config_t timer_cfg = {
+        .clk_src       = GPTIMER_CLK_SRC_DEFAULT,
+        .direction     = GPTIMER_COUNT_UP,
+        .resolution_hz = 1000000,   /* 1 MHz → 1 µs per tick */
+    };
+    esp_err_t err = gptimer_new_timer(&timer_cfg, &s_isr_wdt_timer);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ISR WDT: failed to create timer: %s", esp_err_to_name(err));
+        return;
+    }
+
+    gptimer_alarm_config_t alarm_cfg = {
+        .alarm_count               = 1000000,   /* 1 second (1 MHz clock) */
+        .reload_count              = 0,
+        .flags.auto_reload_on_alarm = true,
+    };
+    gptimer_event_callbacks_t cbs = {
+        .on_alarm = isr_wdt_alarm_cb,
+    };
+    ESP_ERROR_CHECK(gptimer_register_event_callbacks(s_isr_wdt_timer, &cbs, NULL));
+    ESP_ERROR_CHECK(gptimer_set_alarm_action(s_isr_wdt_timer, &alarm_cfg));
+    ESP_ERROR_CHECK(gptimer_enable(s_isr_wdt_timer));
+    ESP_ERROR_CHECK(gptimer_start(s_isr_wdt_timer));
+
+    ESP_LOGI(TAG, "ISR WDT: armed (%d s timeout)", ISR_WDT_TIMEOUT_S);
+}
 
 /* ========================================================================
  * WIFI KEEPALIVE (minimal nodes only)
  * ========================================================================
  *
  * ROOT CAUSE: Minimal nodes receive ~50 ESP-NOW frames/s from full nodes
- * but rarely transmit.  This leaves the radio hardware in a receive-dominant
- * state where the 802.11 CSMA/CA transmit state machine is not regularly
- * exercised.  The MikroTik AP periodically sends null-frame probes to each
- * associated client and requires a hardware MAC ACK in response.  On full
- * nodes the radio is always in an active transmit state (lux broadcasts every
- * ~500 ms), so these probes are always ACKed.  On minimal nodes, the radio
- * can miss a probe during a receive-dominant window, causing the AP to log
- * "connection lost" and silently remove the client — no deauth is sent, so
- * WIFI_EVENT_STA_DISCONNECTED never fires and the node vanishes.
+ * but rarely transmit.  The MikroTik AP's null-frame probe goes un-ACKed,
+ * the AP silently removes the client, and WIFI_EVENT_STA_DISCONNECTED
+ * never fires — the node vanishes with no software-visible event.
  *
- * PRIMARY FIX: broadcast an ESP-NOW HEARTBEAT frame every interval.  This
- * executes a complete 802.11 CSMA/CA transmit cycle — carrier sense, backoff,
- * transmit, wait for MAC ACK — which is exactly the activity that keeps the
- * transmit state machine engaged and the radio responsive to the AP's probes.
- * The heartbeat carries no data and is silently discarded by all receivers.
+ * KEEPALIVE: a 1-byte UDP datagram to the gateway's discard port (9).
+ * This is a unicast 802.11 DATA frame that:
+ *   (a) keeps the AP's per-client inactivity timer alive, AND
+ *   (b) exercises the radio's CSMA/CA transmit path (carrier sense →
+ *       backoff → transmit → wait for MAC ACK from the AP).
+ * The socket has SO_SNDTIMEO = 1 s, so sendto() can NEVER block
+ * indefinitely — unlike esp_now_send() which has no timeout and can
+ * block forever when the WiFi TX buffer is full.
  *
- * SECONDARY: also send a 1-byte UDP datagram to the gateway's discard port.
- * This resets the AP's per-client inactivity timer and, if the AP has already
- * silently dropped the client, the outbound DATA frame will elicit a deauth
- * response (reason 7), firing WIFI_EVENT_STA_DISCONNECTED and kicking the
- * normal reconnect loop — recovery within one keepalive interval.
+ * PHANTOM DETECTION: esp_wifi_sta_get_ap_info() returns the actual
+ * association state from the hardware.  When wifi_is_connected() is
+ * TRUE (driver flag) but get_ap_info() fails (not actually associated),
+ * the AP dropped us silently.  We trigger reconnection.
  *
- * TERTIARY: re-assert WIFI_PS_NONE on every cycle, guarding against the
- * ESP-IDF driver silently re-enabling modem sleep after internal state changes.
+ * RECOVERY ESCALATION (3 levels):
+ *   1. Phantom detected → esp_wifi_disconnect() (normal reconnect)
+ *   2. After PHANTOM_ESCALATION_COUNT failures → esp_wifi_stop/start
+ *   3. After ISR_WDT_TIMEOUT_S without heartbeat → ISR WDT reboots
  *
- * 1 seconds matches the lux broadcast interval of full nodes and is well
- * under any AP's inactivity or null-frame timeout.  The heartbeat costs
- * ~8 bytes of air time per cycle; the UDP datagram costs ~60 bytes.
+ * The ISR-based hardware watchdog (see above) monitors a heartbeat
+ * counter that this task increments each iteration.  If the task is
+ * blocked (e.g. by a previous bug where esp_now_send blocked), the
+ * ISR fires and reboots the node.
+ *
+ * IMPORTANT: this task does NOT call esp_now_send().  The original
+ * heartbeat broadcast used esp_now_send() which calls
+ * esp_wifi_internal_tx().  When the AP has silently dropped the node,
+ * the WiFi TX buffer fills because frames can't be transmitted, and
+ * esp_now_send() blocks indefinitely waiting for buffer space — there
+ * is no timeout parameter.  This blocked the keepalive task entirely,
+ * preventing phantom detection and the hard restart timer from running.
+ * The UDP sendto() with SO_SNDTIMEO is strictly superior: it exercises
+ * the same radio transmit path, generates a unicast frame (which the
+ * AP ACKs at the MAC layer — broadcast is unacknowledged), and has a
+ * guaranteed 1-second timeout.
  */
 #define WIFI_KEEPALIVE_INTERVAL_MS  1000
+
+/* Minimum gap (ms) between phantom-guard disconnects. */
+#define KEEPALIVE_PHANTOM_SUPPRESS_MS  6000
+
+/* How often (loop iterations) we run esp_wifi_sta_get_ap_info(). */
+#define PHANTOM_CHECK_INTERVAL  10
+
+/* After this many phantom→disconnect cycles without recovery, escalate
+ * to a full Wi-Fi stack restart (stop+start). */
+#define PHANTOM_ESCALATION_COUNT  5
+
+/* Persistent UDP socket. */
+static int s_ka_sock = -1;
+
+/* Last phantom-guard disconnect timestamp. */
+static uint32_t s_phantom_disconnect_ms = 0;
 
 static void wifi_keepalive_task(void *param)
 {
     (void)param;
 
+    /* Subscribe to the Task Watchdog. */
+    esp_err_t wdt_err = esp_task_wdt_add(NULL);
+    if (wdt_err != ESP_OK) {
+        ESP_LOGW(TAG, "keepalive: could not subscribe to watchdog: %s",
+                 esp_err_to_name(wdt_err));
+    }
+
+    uint8_t phantom_check_counter = 0;
+    uint8_t phantom_failures      = 0;
+
     while (1) {
+        esp_task_wdt_reset();
+
+        /* ── Feed the ISR hardware watchdog ──────────────────────────────
+         *
+         * This is the FIRST thing in the loop body — before any operation
+         * that could conceivably block.  As long as we reach this point
+         * every second, the ISR watchdog stays happy.  If anything below
+         * blocks (which should no longer be possible after removing
+         * esp_now_send), the ISR WDT fires after ISR_WDT_TIMEOUT_S. */
+        s_isr_wdt_heartbeat++;
+
         vTaskDelay(pdMS_TO_TICKS(WIFI_KEEPALIVE_INTERVAL_MS));
 
-        /* Re-assert PS_NONE on every cycle.  ESP-IDF can silently re-enable
-         * modem sleep after certain internal driver state changes (e.g. a
-         * brief reassociation or internal reset).  This is cheap and ensures
-         * the radio stays fully awake between keepalive transmissions so it
-         * reliably ACKs the AP's null-frame probes.                         */
-        esp_wifi_set_ps(WIFI_PS_NONE);
+        uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
-        /* ESP-NOW heartbeat — resets the AP's per-STA inactivity timer.
-         * Minimal nodes receive ~50 ESP-NOW frames/second but rarely
-         * transmit, leaving the radio in a receive-dominant state.
-         * Any outbound frame keeps the AP's idle timer from expiring.
+        /* ── Skip all Wi-Fi work when disconnected ───────────────────────
          *
-         * Note: broadcast frames (FF:FF:FF:FF:FF:FF) are NOT ACKed by the
-         * AP at the 802.11 MAC layer — 802.11 broadcast is unacknowledged.
-         * The prevention value is keeping the AP's inactivity timer reset
-         * before it can expire; phantom-connection detection and recovery
-         * is handled by esp_wifi_sta_get_ap_info() below.                  */
-        espnow_mesh_broadcast_heartbeat();
-
-        /* ── Phantom-connection detection ───────────────────────────────
-         *
-         * esp_wifi_sta_get_ap_info() queries the WiFi driver's live
-         * association state directly — it returns ESP_ERR_WIFI_NOT_CONNECT
-         * when the STA is not actually associated, regardless of what the
-         * event-driven wifi_is_connected() flag says.
-         *
-         * This is the fix for the "silent drop" failure mode: when
-         * MikroTik logs "connection lost" without sending a deauth,
-         * WIFI_EVENT_STA_DISCONNECTED never fires, wifi_is_connected()
-         * stays true, and the node is stuck in a phantom-connected state.
-         * esp_wifi_sta_get_ap_info() catches this case.
-         *
-         * Recovery: call esp_wifi_disconnect() ONLY — do NOT call
-         * esp_wifi_connect() here.  The disconnect fires
-         * WIFI_EVENT_STA_DISCONNECTED and the event handler in ota.c
-         * calls esp_wifi_connect() while correctly managing s_retry_num
-         * and the backoff timer.  Calling esp_wifi_connect() directly
-         * would bypass that state machine and can leave s_retry_num in
-         * an inconsistent state, causing the next real disconnect to hit
-         * the 30 s backoff instead of retrying immediately.              */
-        /* ── Phantom-connection guard ────────────────────────────────────
-         *
-         * Only act if wifi_is_connected() reports TRUE (the driver's
-         * event-driven flag says we are up) AND get_ap_info disagrees.
-         * That combination means the AP silently removed us without
-         * sending a deauth — the classic phantom/wedged state.
-         *
-         * If wifi_is_connected() is already FALSE, the event handler in
-         * ota.c has already fired WIFI_EVENT_STA_DISCONNECTED and the
-         * reconnect loop is running — s_retry_num is being incremented
-         * each attempt.  Calling esp_wifi_disconnect() here would abort
-         * the in-progress association handshake (get_ap_info returns
-         * NOT_CONNECT during the 2–5 s association window too), increment
-         * s_retry_num again, and exhaust WIFI_MAXIMUM_RETRY in seconds,
-         * after which the 30 s backoff timer starts — only to be aborted
-         * again one second later.  The node never reconnects.
-         *
-         * The fix: skip this block entirely when the reconnect loop is
-         * already running.  Let ota.c manage the retry state machine;
-         * this task only intervenes when the driver is wedged.          */
-        wifi_ap_record_t ap_info;
-        if (wifi_is_connected() && esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
-            ESP_LOGW(TAG, "Keepalive: phantom connection detected "
-                          "(connected flag set but not associated) "
-                          "— triggering reconnect via event handler");
-            esp_wifi_disconnect();  /* fires WIFI_EVENT_STA_DISCONNECTED → reconnect */
-            continue;               /* skip UDP probe this cycle */
-        }
+         * When wifi_is_connected() is FALSE, the ota.c event handler owns
+         * the reconnect.  Calling any Wi-Fi API here during the association
+         * handshake can wedge the driver's internal state machine.         */
         if (!wifi_is_connected()) {
-            /* Reconnect loop already running — do nothing this cycle.   */
             continue;
+        }
+
+        /* ── Below here: driver thinks we are connected ──────────────── */
+
+        /* ── Phantom-connection guard (throttled) ────────────────────────
+         *
+         * Check every PHANTOM_CHECK_INTERVAL iterations whether the AP
+         * still knows about us.  wifi_is_connected() is TRUE but the AP
+         * may have silently removed our association.                       */
+        if (++phantom_check_counter >= PHANTOM_CHECK_INTERVAL) {
+            phantom_check_counter = 0;
+
+            wifi_ap_record_t ap_info;
+            if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+                /* Phantom: driver says connected, hardware says not. */
+                if ((now_ms - s_phantom_disconnect_ms) >= KEEPALIVE_PHANTOM_SUPPRESS_MS) {
+                    phantom_failures++;
+
+                    if (phantom_failures >= PHANTOM_ESCALATION_COUNT) {
+                        ESP_LOGW(TAG, "Keepalive: %d phantom cycles — "
+                                      "restarting Wi-Fi stack",
+                                 phantom_failures);
+                        s_phantom_disconnect_ms = now_ms;
+                        if (s_ka_sock >= 0) {
+                            close(s_ka_sock);
+                            s_ka_sock = -1;
+                        }
+                        esp_wifi_disconnect();
+                        esp_wifi_stop();
+                        vTaskDelay(pdMS_TO_TICKS(1000));
+                        esp_wifi_start();   /* fires STA_START → connect */
+                        phantom_failures = 0;
+                    } else {
+                        ESP_LOGW(TAG, "Keepalive: phantom [%d/%d] — "
+                                      "triggering reconnect",
+                                 phantom_failures, PHANTOM_ESCALATION_COUNT);
+                        s_phantom_disconnect_ms = now_ms;
+                        esp_wifi_disconnect();
+                    }
+                }
+                continue;   /* skip UDP probe this cycle */
+            } else {
+                /* AP confirmed — reset failure counter. */
+                if (phantom_failures > 0) {
+                    ESP_LOGI(TAG, "Keepalive: AP confirmed — "
+                                  "clearing %d phantom failure(s)",
+                             phantom_failures);
+                }
+                phantom_failures = 0;
+            }
         }
 
         /* ── UDP discard keepalive ───────────────────────────────────────
          *
-         * Send a 1-byte datagram to the gateway's discard port (9, RFC 863).
-         * The gateway silently drops it; we care only about the unicast
-         * 802.11 DATA frame it generates, which:
-         *   (a) resets the AP's per-client inactivity timer, and
-         *   (b) if the AP has already removed our association, will elicit
-         *       a deauth (reason 7), firing WIFI_EVENT_STA_DISCONNECTED
-         *       and starting the reconnect loop.
-         *
-         * On sendto() failure (EHOSTUNREACH, ENETUNREACH, etc.) we call
-         * esp_wifi_disconnect() to hand control to the event handler's
-         * reconnect state machine — logging alone is not sufficient.      */
+         * 1-byte datagram to the gateway's discard port (RFC 863).
+         * SO_SNDTIMEO = 1 s guarantees this NEVER blocks indefinitely. */
         esp_netif_t *netif = esp_netif_get_default_netif();
         if (netif == NULL) continue;
 
@@ -176,35 +305,30 @@ static void wifi_keepalive_task(void *param)
             continue;
         }
 
-        int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        if (sock < 0) {
-            ESP_LOGW(TAG, "Keepalive: socket() failed (%d)", errno);
-            continue;
+        if (s_ka_sock < 0) {
+            s_ka_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if (s_ka_sock < 0) {
+                ESP_LOGW(TAG, "Keepalive: socket() failed (%d)", errno);
+                continue;
+            }
+            struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+            setsockopt(s_ka_sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
         }
-
-        /* 1-second send timeout — we never expect a reply */
-        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
         struct sockaddr_in dest = {
             .sin_family      = AF_INET,
-            .sin_port        = htons(9),    /* discard port */
+            .sin_port        = htons(9),
             .sin_addr.s_addr = ip_info.gw.addr,
         };
 
         uint8_t buf = 0;
-        int ret = sendto(sock, &buf, sizeof(buf), 0,
+        int ret = sendto(s_ka_sock, &buf, sizeof(buf), 0,
                          (struct sockaddr *)&dest, sizeof(dest));
-        close(sock);
 
         if (ret < 0) {
-            /* sendto() failure means the frame could not be delivered.
-             * Force a clean disconnect so WIFI_EVENT_STA_DISCONNECTED
-             * fires and the event handler's reconnect state machine runs.
-             * Do NOT call esp_wifi_connect() directly here.               */
-            ESP_LOGW(TAG, "Keepalive: sendto failed (errno %d) — "
-                          "forcing reassociation via event handler", errno);
-            esp_wifi_disconnect();
+            ESP_LOGW(TAG, "Keepalive: sendto failed (errno %d)", errno);
+            close(s_ka_sock);
+            s_ka_sock = -1;
         } else {
             ESP_LOGD(TAG, "Keepalive: UDP probe sent to gw " IPSTR,
                      IP2STR(&ip_info.gw));
@@ -510,10 +634,17 @@ void app_main(void)
          * Full nodes generate outbound 802.11 frames every ~500 ms via the
          * lux broadcast, so their AP inactivity timer never expires.
          * Minimal nodes have no such traffic; without this task they will
-         * silently disappear from the AP's wireless registration table
-         * after the AP's inactivity timeout (10–30 min on MikroTik) with
-         * no disconnect event and no reconnect.  See wifi_keepalive_task()
-         * above for the full explanation.                                  */
+         * silently disappear from the AP's wireless registration table.
+         *
+         * This task also owns phantom detection and recovery escalation.
+         * See wifi_keepalive_task() for the full explanation.
+         *
+         * IMPORTANT: this task does NOT use esp_now_send() for keepalive.
+         * esp_now_send() can block indefinitely when the WiFi TX buffer is
+         * full (no timeout parameter), which previously froze the entire
+         * task.  The UDP probe (sendto with SO_SNDTIMEO=1s) is used
+         * instead — it exercises the same radio transmit path and has a
+         * guaranteed timeout.                                              */
         if (hw_config == HW_CONFIG_MINIMAL) {
             xTaskCreate(wifi_keepalive_task, "wifi_ka", 4096, NULL, 4, NULL); // was 2
             ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
@@ -602,6 +733,25 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "System started successfully!");
+
+    /* ── ISR-based hardware watchdog ─────────────────────────────────────
+     *
+     * Arm the GP Timer ISR watchdog AFTER all tasks have been created
+     * and started.  The keepalive task (minimal nodes only) feeds the
+     * heartbeat counter on every iteration.  If it stops (e.g. because
+     * a WiFi API call blocks indefinitely), the ISR fires after
+     * ISR_WDT_TIMEOUT_S and reboots the node.
+     *
+     * On full nodes (no keepalive task), the audio_detection_task feeds
+     * the ISR watchdog via the same counter — added below.
+     *
+     * This catches failure modes invisible to the Task WDT:
+     *   - esp_now_send() blocking on a full TX buffer
+     *   - WiFi driver internal deadlock
+     *   - FreeRTOS scheduler hang                                         */
+    if (hw_config == HW_CONFIG_MINIMAL) {
+        isr_wdt_init();
+    }
 
     /* Log final startup summary */
     ESP_LOGI(TAG, "Startup Summary:");

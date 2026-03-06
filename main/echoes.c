@@ -949,13 +949,13 @@ void audio_detection_task(void *param) {
             set_led(vu_level, 0.0f);
 
 	    // ─────────────────────────────────────────────────────────────
-            // FEED THE WATCHDOG EVERY ITERATION
-            // This is the critical line. The loop runs at ~1 ms, so feeding
-            // the WDT here guarantees that even if the node is in the
-            // "stuck with white LED on" state, the watchdog will still
-            // trigger a clean reboot instead of hanging forever.
+            // FEED WATCHDOGS EVERY ITERATION
+            // The TWDT catches this task stalling.
+            // The ISR WDT (minimal nodes only) catches system-wide stalls
+            // where all tasks run but the keepalive task is blocked.
             // ─────────────────────────────────────────────────────────────
             esp_task_wdt_reset();
+            s_isr_wdt_heartbeat++;
             
             // Small delay
             vTaskDelay(pdMS_TO_TICKS(1));

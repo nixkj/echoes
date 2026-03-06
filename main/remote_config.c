@@ -31,25 +31,17 @@
  * CONNECTIVITY WATCHDOG
  *
  * After RCFG_MAX_CONSECUTIVE_FAILURES consecutive poll failures the watchdog
- * forces a WiFi reconnect — but ONLY on full nodes.
+ * forces a WiFi reconnect.  This recovers a wedged driver state (where the
+ * driver believes it is associated but the AP has silently removed it and
+ * WIFI_EVENT_STA_DISCONNECTED never fires).
  *
- * On minimal nodes, the wifi_keepalive_task in main.c owns all Wi-Fi
- * recovery: phantom detection, escalation to stop/start, and the hard
- * reboot timer.  Having a second independent caller of esp_wifi_disconnect()
- * here races with the keepalive task's own recovery, potentially issuing
- * a disconnect during an in-progress association handshake.  This
- * double-increments s_retry_num in ota.c and exhausts WIFI_MAXIMUM_RETRY,
- * preventing reconnection — the exact failure mode that was stalling
- * minimal nodes.
- *
- * On full nodes, there is no keepalive task, so this watchdog remains the
- * sole mid-session recovery path for a wedged driver state where the
- * AP silently removed the client and WIFI_EVENT_STA_DISCONNECTED never
- * fires.  (Full nodes rarely hit this because their 500 ms lux broadcasts
- * keep the radio active, but it is still a useful safety net.)
+ * The ESP-NOW heartbeat does not prevent this: esp_now_send() returns ESP_OK
+ * even in the wedged state because the driver queues the frame locally
+ * without requiring AP-side confirmation.
  *
  * A random jitter of 0–30 s is applied before the reconnect so that nodes
- * which boot near-simultaneously do not reassociate at the same instant.
+ * which boot near-simultaneously (within the 17 s fleet boot window) do not
+ * reassociate at the same instant and cause an RF storm.
  *
  * A server outage is indistinguishable from a wedged driver via HTTP alone,
  * so we reconnect in both cases.  Reconnecting when the server is simply
@@ -483,17 +475,15 @@ void remote_config_task(void *param)
                 } else if (get_hardware_config() == HW_CONFIG_MINIMAL) {
                     /* Minimal nodes: wifi_keepalive_task owns all Wi-Fi
                      * recovery (phantom detection, stop/start escalation,
-                     * hard reboot timer).  Calling esp_wifi_disconnect()
-                     * here would race with the keepalive task and can wedge
-                     * the driver — the exact failure mode we are fixing.
-                     * Log only; keepalive handles recovery.                */
+                     * ISR WDT backup).  Calling esp_wifi_disconnect() here
+                     * would race with the keepalive task and can wedge the
+                     * driver.  Log only; keepalive handles recovery.       */
                     ESP_LOGI(TAG, "Watchdog: minimal node — deferring WiFi "
                                   "recovery to keepalive task");
                 } else {
                     /* Full nodes: no keepalive task exists, so this is the
                      * sole mid-session recovery path.  Force a clean
-                     * reconnect.  Random jitter 0–30 s prevents the fleet
-                     * reassociating simultaneously and causing an RF storm. */
+                     * reconnect.  Random jitter prevents fleet storm.      */
                     uint32_t jitter_ms = esp_random() % 30000;
                     ESP_LOGW(TAG, "Watchdog: forcing WiFi reconnect "
                                   "(jitter %lu ms)", (unsigned long)jitter_ms);

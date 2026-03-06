@@ -19,3 +19,13 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+# Interrupt Watchdog — catches global interrupt masking that would prevent
+# the Task WDT from firing.  300 ms default.  Fires a level-4 (NMI)
+# interrupt that cannot be masked — last line of defence before the RTC WDT.
+CONFIG_ESP_INT_WDT=y
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=300
+# Stack overflow detection — enables canary-based detection for all tasks.
+# A corrupted stack could silently hang the scheduler without triggering
+# any watchdog, because the TCB or WDT data structures are in heap adjacent
+# to the stack.  This catches overflows before they cause silent corruption.
+CONFIG_COMPILER_STACK_CHECK_MODE_STRONG=y
