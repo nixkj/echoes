@@ -30,25 +30,27 @@
 /* =========================================================================
  * CONNECTIVITY WATCHDOG
  *
- * After RCFG_MAX_CONSECUTIVE_FAILURES consecutive poll failures the watchdog
- * forces a WiFi reconnect.  This recovers a wedged driver state (where the
- * driver believes it is associated but the AP has silently removed it and
- * WIFI_EVENT_STA_DISCONNECTED never fires).
+ * The HTTP config fetch is the ONLY operation that verifies end-to-end
+ * bidirectional connectivity.  Every local check (wifi_is_connected,
+ * esp_wifi_sta_get_ap_info, sendto) only verifies driver state — they
+ * all return success when the AP has silently dropped the node.
  *
- * The ESP-NOW heartbeat does not prevent this: esp_now_send() returns ESP_OK
- * even in the wedged state because the driver queues the frame locally
- * without requiring AP-side confirmation.
+ * Escalation for minimal nodes (which have no other recovery path):
+ *   RCFG_FAILURES_WIFI_RESTART consecutive failures →
+ *       esp_wifi_stop() + esp_wifi_start()  (reinit radio hardware)
+ *   RCFG_FAILURES_HARD_REBOOT consecutive failures →
+ *       esp_restart()  (last resort)
  *
- * A random jitter of 0–30 s is applied before the reconnect so that nodes
- * which boot near-simultaneously (within the 17 s fleet boot window) do not
- * reassociate at the same instant and cause an RF storm.
+ * Full nodes use a simpler disconnect (they have no keepalive task to
+ * conflict with) and rarely need this because their frequent lux
+ * broadcasts keep the radio active.
  *
- * A server outage is indistinguishable from a wedged driver via HTTP alone,
- * so we reconnect in both cases.  Reconnecting when the server is simply
- * down is harmless — the node reassociates within seconds and resumes its
- * last known config.
+ * Jitter is applied before any WiFi operation to prevent all 50 nodes
+ * from reassociating simultaneously.
  * ========================================================================= */
 #define RCFG_MAX_CONSECUTIVE_FAILURES   3
+#define RCFG_FAILURES_WIFI_RESTART      3   /* minimal: stop/start WiFi */
+#define RCFG_FAILURES_HARD_REBOOT       5   /* minimal: full reboot */
 
 /* =========================================================================
  * RTC SLOW MEMORY
@@ -460,35 +462,73 @@ void remote_config_task(void *param)
         if (err != ESP_OK) {
             consecutive_failures++;
             ESP_LOGW(TAG, "Config poll failed (%s) — keeping previous values "
-                          "[consecutive failures: %d/%d]",
+                          "[consecutive failures: %d]",
                      esp_err_to_name(err),
-                     consecutive_failures, RCFG_MAX_CONSECUTIVE_FAILURES);
+                     consecutive_failures);
 
-            if (consecutive_failures >= RCFG_MAX_CONSECUTIVE_FAILURES) {
-                consecutive_failures = 0;
+            if (get_hardware_config() == HW_CONFIG_MINIMAL) {
+                /* ── Minimal node escalation ─────────────────────────────
+                 *
+                 * This HTTP fetch is the ONLY proof of end-to-end network
+                 * connectivity.  wifi_is_connected(), get_ap_info(), and
+                 * sendto() all return success when the AP has silently
+                 * dropped the node.  Only a bidirectional TCP exchange
+                 * (HTTP GET) can detect the loss.
+                 *
+                 * Level 1 (RCFG_FAILURES_WIFI_RESTART): full WiFi radio
+                 *   reinit.  Recovers hardware TX stalls where the
+                 *   radio can receive but not transmit.
+                 *
+                 * Level 2 (RCFG_FAILURES_HARD_REBOOT): system reboot.
+                 *   Recovers driver deadlocks, DMA corruption, and
+                 *   any other state where WiFi restart is insufficient.
+                 *
+                 * These are the ONLY reliable recovery mechanisms.
+                 * The ISR WDT in main.c is the backstop if this task
+                 * itself stalls.                                          */
 
-                if (!wifi_is_connected()) {
-                    /* Driver already knows it is disconnected — the normal
-                     * reconnect loop in ota.c is running.  Nothing to do.  */
-                    ESP_LOGI(TAG, "Watchdog: WiFi already disconnected — "
-                                  "reconnect loop running");
-                } else if (get_hardware_config() == HW_CONFIG_MINIMAL) {
-                    /* Minimal nodes: wifi_keepalive_task owns all Wi-Fi
-                     * recovery (phantom detection, stop/start escalation,
-                     * ISR WDT backup).  Calling esp_wifi_disconnect() here
-                     * would race with the keepalive task and can wedge the
-                     * driver.  Log only; keepalive handles recovery.       */
-                    ESP_LOGI(TAG, "Watchdog: minimal node — deferring WiFi "
-                                  "recovery to keepalive task");
-                } else {
-                    /* Full nodes: no keepalive task exists, so this is the
-                     * sole mid-session recovery path.  Force a clean
-                     * reconnect.  Random jitter prevents fleet storm.      */
-                    uint32_t jitter_ms = esp_random() % 30000;
-                    ESP_LOGW(TAG, "Watchdog: forcing WiFi reconnect "
-                                  "(jitter %lu ms)", (unsigned long)jitter_ms);
-                    vTaskDelay(pdMS_TO_TICKS(jitter_ms));
-                    esp_wifi_disconnect();
+                if (consecutive_failures >= RCFG_FAILURES_HARD_REBOOT) {
+                    ESP_LOGE(TAG, "Watchdog: %d config failures — "
+                                  "forcing hard reboot", consecutive_failures);
+                    vTaskDelay(pdMS_TO_TICKS(esp_random() % 10000));
+                    esp_restart();
+                    /* Does not return */
+
+                } else if (consecutive_failures >= RCFG_FAILURES_WIFI_RESTART) {
+                    if (!wifi_is_connected()) {
+                        ESP_LOGI(TAG, "Watchdog: WiFi already disconnected");
+                    } else {
+                        uint32_t jitter_ms = esp_random() % 15000;
+                        ESP_LOGW(TAG, "Watchdog: %d config failures — "
+                                      "restarting WiFi stack (jitter %lu ms)",
+                                 consecutive_failures,
+                                 (unsigned long)jitter_ms);
+                        vTaskDelay(pdMS_TO_TICKS(jitter_ms));
+                        esp_wifi_disconnect();
+                        esp_wifi_stop();
+                        vTaskDelay(pdMS_TO_TICKS(1000));
+                        esp_wifi_start();   /* fires STA_START → connect */
+                    }
+                    /* Do NOT reset consecutive_failures — let it escalate
+                     * to hard reboot if WiFi restart doesn't work.        */
+                }
+
+            } else {
+                /* ── Full node: simple disconnect ────────────────────────
+                 * Full nodes have no keepalive task to conflict with.     */
+                if (consecutive_failures >= RCFG_MAX_CONSECUTIVE_FAILURES) {
+                    consecutive_failures = 0;
+                    if (!wifi_is_connected()) {
+                        ESP_LOGI(TAG, "Watchdog: WiFi already disconnected — "
+                                      "reconnect loop running");
+                    } else {
+                        uint32_t jitter_ms = esp_random() % 30000;
+                        ESP_LOGW(TAG, "Watchdog: forcing WiFi reconnect "
+                                      "(jitter %lu ms)",
+                                 (unsigned long)jitter_ms);
+                        vTaskDelay(pdMS_TO_TICKS(jitter_ms));
+                        esp_wifi_disconnect();
+                    }
                 }
             }
 

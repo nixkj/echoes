@@ -162,13 +162,11 @@ static void espnow_rx_task(void *param)
         if (xQueueReceive(s_rx_queue, &msg, pdMS_TO_TICKS(1000)) == pdTRUE) {
 
             /* Minimal nodes have no Markov chain — flock timestamps are
-             * already recorded in the on_data_recv callback.  Drain the
-             * queue in one burst and yield, rather than looping through
-             * individual messages with `continue` (which prevented the
-             * periodic maintenance block below from ever running and kept
-             * the task spinning at 50+ wakeups/second for no purpose).   */
+             * already recorded in on_data_recv.  Drain the queue in one
+             * burst instead of looping with `continue`, which previously
+             * prevented the periodic maintenance block below from running
+             * and kept the task spinning at ~50 wakeups/sec.              */
             if (s_markov == NULL) {
-                /* Drain remaining messages in a single burst. */
                 while (xQueueReceive(s_rx_queue, &msg, 0) == pdTRUE) { }
                 /* Fall through to periodic maintenance below. */
             } else {
@@ -252,7 +250,7 @@ static void espnow_rx_task(void *param)
                 break;
             }
 
-            } /* end of else (s_markov != NULL) */
+            } /* end else (s_markov != NULL) */
         }
 
         /* ── Periodic maintenance (runs on every 1-second queue timeout) ──

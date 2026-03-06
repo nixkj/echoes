@@ -35,45 +35,38 @@
 #include "esp_netif.h"
 #include "lwip/sockets.h"
 #include "driver/gptimer.h"
+#include "soc/rtc_cntl_reg.h"
 
 static const char *TAG = "MAIN";
 
 /* ========================================================================
- * ISR-BASED HARDWARE WATCHDOG
+ * ISR-BASED HARDWARE WATCHDOG (minimal nodes only)
  * ========================================================================
  *
- * The Task Watchdog Timer (TWDT) monitors whether FreeRTOS tasks call
- * esp_task_wdt_reset() within a timeout.  It CANNOT detect the failure
- * mode that kills minimal nodes:
+ * A GP Timer fires a level-1 interrupt every second.  The ISR checks a
+ * heartbeat counter that ONLY the wifi_keepalive_task increments.  If
+ * the counter stops advancing for ISR_WDT_TIMEOUT_S seconds, the ISR
+ * triggers an immediate hardware reset via the RTC control register.
  *
- *   - All tasks continue running and feeding the TWDT.
- *   - The WiFi driver is wedged (AP dropped the node silently).
- *   - esp_now_send() blocks the keepalive task on the full TX buffer.
- *   - The node is alive internally but network-dead.
+ * Why only the keepalive task feeds it:
+ *   The purpose is to detect the specific failure where the keepalive
+ *   task is blocked (e.g. by esp_now_send or a WiFi driver deadlock)
+ *   while other tasks (audio, flock) continue running normally.  If
+ *   multiple tasks feed the counter, one healthy task masks the stall
+ *   of another — exactly the bug in the previous revision.
  *
- * The TWDT sees a perfectly healthy system and never fires.
- *
- * This ISR-based watchdog fills the gap.  A hardware GP Timer fires a
- * level-1 interrupt every second.  The ISR checks a volatile heartbeat
- * counter that is incremented by the wifi_keepalive_task on every
- * non-blocked iteration.  If the counter stops advancing for
- * ISR_WDT_TIMEOUT_S seconds, the ISR calls esp_restart().
- *
- * Because this runs from a hardware timer interrupt (not a FreeRTOS
- * task), it fires even if:
- *   - All tasks are deadlocked
- *   - esp_now_send() is blocking a task
- *   - The FreeRTOS scheduler is stuck
- *
- * The only failure modes this cannot catch are:
- *   - Global interrupt masking (caught by the Interrupt WDT / IWDT)
- *   - Hardware clock failure (caught by the RTC WDT)
+ * Why RTC register write instead of esp_restart():
+ *   esp_restart() calls esp_ipc_call_blocking() for cross-core sync.
+ *   If the other CPU is stuck (common in WiFi driver deadlocks), the
+ *   IPC never completes and the ISR hangs forever.  Writing directly
+ *   to RTC_CNTL_OPTIONS0_REG triggers an immediate SoC-level reset
+ *   that requires no software cooperation from either CPU.
  */
 
 #define ISR_WDT_TIMEOUT_S  90   /* seconds without heartbeat → reboot */
 
-static gptimer_handle_t  s_isr_wdt_timer     = NULL;
-volatile uint32_t        s_isr_wdt_heartbeat  = 0;   /* fed by tasks, checked by ISR */
+static gptimer_handle_t          s_isr_wdt_timer     = NULL;
+static volatile uint32_t         s_isr_wdt_heartbeat  = 0;   /* fed by tasks, checked by ISR */;
 
 /**
  * @brief GP Timer alarm callback — runs in ISR context every 1 second.
@@ -93,8 +86,10 @@ static bool IRAM_ATTR isr_wdt_alarm_cb(gptimer_handle_t timer,
     if (hb == s_last_hb) {
         s_miss_count++;
         if (s_miss_count >= ISR_WDT_TIMEOUT_S) {
-            esp_restart();
-            /* Does not return */
+            /* Direct RTC hardware reset — no software cooperation needed.
+             * Safe from ISR context, safe with both CPUs stuck.           */
+            SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
+            while (1) { }   /* never reached */
         }
     } else {
         s_last_hb    = hb;
@@ -136,71 +131,44 @@ static void isr_wdt_init(void)
     ESP_ERROR_CHECK(gptimer_enable(s_isr_wdt_timer));
     ESP_ERROR_CHECK(gptimer_start(s_isr_wdt_timer));
 
-    ESP_LOGI(TAG, "ISR WDT: armed (%d s timeout)", ISR_WDT_TIMEOUT_S);
+    ESP_LOGI(TAG, "ISR WDT: armed (%d s timeout, RTC reset)", ISR_WDT_TIMEOUT_S);
 }
 
 /* ========================================================================
  * WIFI KEEPALIVE (minimal nodes only)
  * ========================================================================
  *
- * ROOT CAUSE: Minimal nodes receive ~50 ESP-NOW frames/s from full nodes
- * but rarely transmit.  The MikroTik AP's null-frame probe goes un-ACKed,
- * the AP silently removes the client, and WIFI_EVENT_STA_DISCONNECTED
- * never fires — the node vanishes with no software-visible event.
+ * This task is the SOLE feeder of the ISR hardware watchdog.  If this
+ * task blocks for any reason, the ISR WDT fires after ISR_WDT_TIMEOUT_S
+ * and triggers a hardware reset.  No other task feeds the ISR WDT.
  *
- * KEEPALIVE: a 1-byte UDP datagram to the gateway's discard port (9).
- * This is a unicast 802.11 DATA frame that:
- *   (a) keeps the AP's per-client inactivity timer alive, AND
- *   (b) exercises the radio's CSMA/CA transmit path (carrier sense →
- *       backoff → transmit → wait for MAC ACK from the AP).
- * The socket has SO_SNDTIMEO = 1 s, so sendto() can NEVER block
- * indefinitely — unlike esp_now_send() which has no timeout and can
- * block forever when the WiFi TX buffer is full.
+ * KEEPALIVE MECHANISM: a 1-byte UDP datagram to the gateway's discard
+ * port (RFC 863), sent via a socket with SO_SNDTIMEO = 1 s.  This
+ * guarantees sendto() NEVER blocks indefinitely.
  *
- * PHANTOM DETECTION: esp_wifi_sta_get_ap_info() returns the actual
- * association state from the hardware.  When wifi_is_connected() is
- * TRUE (driver flag) but get_ap_info() fails (not actually associated),
- * the AP dropped us silently.  We trigger reconnection.
+ * esp_now_send() is NOT used.  It calls esp_wifi_internal_tx() which
+ * blocks indefinitely when the WiFi TX buffer is full (no timeout).
+ * When the AP silently drops the node, the TX buffer fills because
+ * frames can't be transmitted, and esp_now_send() blocks forever —
+ * freezing the keepalive task and all its recovery mechanisms.
  *
- * RECOVERY ESCALATION (3 levels):
- *   1. Phantom detected → esp_wifi_disconnect() (normal reconnect)
- *   2. After PHANTOM_ESCALATION_COUNT failures → esp_wifi_stop/start
- *   3. After ISR_WDT_TIMEOUT_S without heartbeat → ISR WDT reboots
+ * PHANTOM DETECTION is NOT relied upon for recovery.  When the AP drops
+ * a node silently, esp_wifi_sta_get_ap_info() returns ESP_OK from
+ * cached driver state — it does not probe the AP.  wifi_is_connected()
+ * also returns TRUE.  sendto() also returns success because lwIP
+ * accepts the datagram regardless of whether the radio transmits it.
+ * Every local check sees a healthy system.
  *
- * The ISR-based hardware watchdog (see above) monitors a heartbeat
- * counter that this task increments each iteration.  If the task is
- * blocked (e.g. by a previous bug where esp_now_send blocked), the
- * ISR fires and reboots the node.
- *
- * IMPORTANT: this task does NOT call esp_now_send().  The original
- * heartbeat broadcast used esp_now_send() which calls
- * esp_wifi_internal_tx().  When the AP has silently dropped the node,
- * the WiFi TX buffer fills because frames can't be transmitted, and
- * esp_now_send() blocks indefinitely waiting for buffer space — there
- * is no timeout parameter.  This blocked the keepalive task entirely,
- * preventing phantom detection and the hard restart timer from running.
- * The UDP sendto() with SO_SNDTIMEO is strictly superior: it exercises
- * the same radio transmit path, generates a unicast frame (which the
- * AP ACKs at the MAC layer — broadcast is unacknowledged), and has a
- * guaranteed 1-second timeout.
+ * APPLICATION-LAYER VERIFICATION: the remote_config_task polls the
+ * server every 60 seconds via HTTP.  This is the ONLY operation that
+ * proves end-to-end bidirectional connectivity.  After 3 consecutive
+ * failures (~3 min), it forces a WiFi stop/start.  After 5 failures
+ * (~5 min), it forces a full reboot.  See remote_config.c.
  */
 #define WIFI_KEEPALIVE_INTERVAL_MS  1000
 
-/* Minimum gap (ms) between phantom-guard disconnects. */
-#define KEEPALIVE_PHANTOM_SUPPRESS_MS  6000
-
-/* How often (loop iterations) we run esp_wifi_sta_get_ap_info(). */
-#define PHANTOM_CHECK_INTERVAL  10
-
-/* After this many phantom→disconnect cycles without recovery, escalate
- * to a full Wi-Fi stack restart (stop+start). */
-#define PHANTOM_ESCALATION_COUNT  5
-
 /* Persistent UDP socket. */
 static int s_ka_sock = -1;
-
-/* Last phantom-guard disconnect timestamp. */
-static uint32_t s_phantom_disconnect_ms = 0;
 
 static void wifi_keepalive_task(void *param)
 {
@@ -209,92 +177,35 @@ static void wifi_keepalive_task(void *param)
     /* Subscribe to the Task Watchdog. */
     esp_err_t wdt_err = esp_task_wdt_add(NULL);
     if (wdt_err != ESP_OK) {
-        ESP_LOGW(TAG, "keepalive: could not subscribe to watchdog: %s",
+        ESP_LOGW(TAG, "keepalive: could not subscribe to TWDT: %s",
                  esp_err_to_name(wdt_err));
     }
-
-    uint8_t phantom_check_counter = 0;
-    uint8_t phantom_failures      = 0;
 
     while (1) {
         esp_task_wdt_reset();
 
-        /* ── Feed the ISR hardware watchdog ──────────────────────────────
-         *
-         * This is the FIRST thing in the loop body — before any operation
-         * that could conceivably block.  As long as we reach this point
-         * every second, the ISR watchdog stays happy.  If anything below
-         * blocks (which should no longer be possible after removing
-         * esp_now_send), the ISR WDT fires after ISR_WDT_TIMEOUT_S. */
+        /* Feed ISR WDT — this is the ONLY task that feeds it.
+         * Must be before any potentially-blocking operation.              */
         s_isr_wdt_heartbeat++;
 
         vTaskDelay(pdMS_TO_TICKS(WIFI_KEEPALIVE_INTERVAL_MS));
 
-        uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-
-        /* ── Skip all Wi-Fi work when disconnected ───────────────────────
-         *
-         * When wifi_is_connected() is FALSE, the ota.c event handler owns
-         * the reconnect.  Calling any Wi-Fi API here during the association
-         * handshake can wedge the driver's internal state machine.         */
+        /* Skip all WiFi work when the driver knows it's disconnected.
+         * The ota.c event handler owns reconnection in that case.         */
         if (!wifi_is_connected()) {
             continue;
         }
 
-        /* ── Below here: driver thinks we are connected ──────────────── */
-
-        /* ── Phantom-connection guard (throttled) ────────────────────────
+        /* ── UDP keepalive probe ─────────────────────────────────────────
          *
-         * Check every PHANTOM_CHECK_INTERVAL iterations whether the AP
-         * still knows about us.  wifi_is_connected() is TRUE but the AP
-         * may have silently removed our association.                       */
-        if (++phantom_check_counter >= PHANTOM_CHECK_INTERVAL) {
-            phantom_check_counter = 0;
-
-            wifi_ap_record_t ap_info;
-            if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
-                /* Phantom: driver says connected, hardware says not. */
-                if ((now_ms - s_phantom_disconnect_ms) >= KEEPALIVE_PHANTOM_SUPPRESS_MS) {
-                    phantom_failures++;
-
-                    if (phantom_failures >= PHANTOM_ESCALATION_COUNT) {
-                        ESP_LOGW(TAG, "Keepalive: %d phantom cycles — "
-                                      "restarting Wi-Fi stack",
-                                 phantom_failures);
-                        s_phantom_disconnect_ms = now_ms;
-                        if (s_ka_sock >= 0) {
-                            close(s_ka_sock);
-                            s_ka_sock = -1;
-                        }
-                        esp_wifi_disconnect();
-                        esp_wifi_stop();
-                        vTaskDelay(pdMS_TO_TICKS(1000));
-                        esp_wifi_start();   /* fires STA_START → connect */
-                        phantom_failures = 0;
-                    } else {
-                        ESP_LOGW(TAG, "Keepalive: phantom [%d/%d] — "
-                                      "triggering reconnect",
-                                 phantom_failures, PHANTOM_ESCALATION_COUNT);
-                        s_phantom_disconnect_ms = now_ms;
-                        esp_wifi_disconnect();
-                    }
-                }
-                continue;   /* skip UDP probe this cycle */
-            } else {
-                /* AP confirmed — reset failure counter. */
-                if (phantom_failures > 0) {
-                    ESP_LOGI(TAG, "Keepalive: AP confirmed — "
-                                  "clearing %d phantom failure(s)",
-                             phantom_failures);
-                }
-                phantom_failures = 0;
-            }
-        }
-
-        /* ── UDP discard keepalive ───────────────────────────────────────
+         * 1-byte datagram to the gateway's discard port.  The frame
+         * exercises the radio TX path and keeps the AP's inactivity
+         * timer alive.  SO_SNDTIMEO = 1 s guarantees no infinite block.
          *
-         * 1-byte datagram to the gateway's discard port (RFC 863).
-         * SO_SNDTIMEO = 1 s guarantees this NEVER blocks indefinitely. */
+         * We do NOT check the return value to trigger reconnection:
+         * sendto() returns success even when the radio can't transmit
+         * (lwIP queues the packet locally).  Application-layer
+         * verification is handled by remote_config_task instead.          */
         esp_netif_t *netif = esp_netif_get_default_netif();
         if (netif == NULL) continue;
 
@@ -307,10 +218,7 @@ static void wifi_keepalive_task(void *param)
 
         if (s_ka_sock < 0) {
             s_ka_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-            if (s_ka_sock < 0) {
-                ESP_LOGW(TAG, "Keepalive: socket() failed (%d)", errno);
-                continue;
-            }
+            if (s_ka_sock < 0) continue;
             struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
             setsockopt(s_ka_sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
         }
@@ -326,12 +234,8 @@ static void wifi_keepalive_task(void *param)
                          (struct sockaddr *)&dest, sizeof(dest));
 
         if (ret < 0) {
-            ESP_LOGW(TAG, "Keepalive: sendto failed (errno %d)", errno);
             close(s_ka_sock);
             s_ka_sock = -1;
-        } else {
-            ESP_LOGD(TAG, "Keepalive: UDP probe sent to gw " IPSTR,
-                     IP2STR(&ip_info.gw));
         }
     }
 }
@@ -629,22 +533,11 @@ void app_main(void)
         xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);
         ESP_LOGI(TAG, "Remote config polling task started");
 
-        /* Keepalive task: minimal nodes only.
+        /* Keepalive + ISR WDT: minimal nodes only.
          *
-         * Full nodes generate outbound 802.11 frames every ~500 ms via the
-         * lux broadcast, so their AP inactivity timer never expires.
-         * Minimal nodes have no such traffic; without this task they will
-         * silently disappear from the AP's wireless registration table.
-         *
-         * This task also owns phantom detection and recovery escalation.
-         * See wifi_keepalive_task() for the full explanation.
-         *
-         * IMPORTANT: this task does NOT use esp_now_send() for keepalive.
-         * esp_now_send() can block indefinitely when the WiFi TX buffer is
-         * full (no timeout parameter), which previously froze the entire
-         * task.  The UDP probe (sendto with SO_SNDTIMEO=1s) is used
-         * instead — it exercises the same radio transmit path and has a
-         * guaranteed timeout.                                              */
+         * wifi_keepalive_task is the SOLE feeder of the ISR hardware
+         * watchdog.  If it stalls, the ISR fires and resets the SoC.
+         * See wifi_keepalive_task() for the full explanation.              */
         if (hw_config == HW_CONFIG_MINIMAL) {
             xTaskCreate(wifi_keepalive_task, "wifi_ka", 4096, NULL, 4, NULL); // was 2
             ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
@@ -734,21 +627,8 @@ void app_main(void)
 
     ESP_LOGI(TAG, "System started successfully!");
 
-    /* ── ISR-based hardware watchdog ─────────────────────────────────────
-     *
-     * Arm the GP Timer ISR watchdog AFTER all tasks have been created
-     * and started.  The keepalive task (minimal nodes only) feeds the
-     * heartbeat counter on every iteration.  If it stops (e.g. because
-     * a WiFi API call blocks indefinitely), the ISR fires after
-     * ISR_WDT_TIMEOUT_S and reboots the node.
-     *
-     * On full nodes (no keepalive task), the audio_detection_task feeds
-     * the ISR watchdog via the same counter — added below.
-     *
-     * This catches failure modes invisible to the Task WDT:
-     *   - esp_now_send() blocking on a full TX buffer
-     *   - WiFi driver internal deadlock
-     *   - FreeRTOS scheduler hang                                         */
+    /* Arm ISR hardware watchdog — minimal nodes only.
+     * Must be AFTER keepalive task is created (it feeds the heartbeat). */
     if (hw_config == HW_CONFIG_MINIMAL) {
         isr_wdt_init();
     }

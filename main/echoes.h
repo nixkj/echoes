@@ -329,11 +329,4 @@ audio_buffer_t *get_audio_buffer(void);
 typedef struct markov_chain_t markov_chain_t;
 markov_chain_t *get_markov(void);
 
-/* ISR-based hardware watchdog heartbeat counter.
- * Declared in main.c, incremented by tasks on every iteration.
- * A GP Timer ISR checks this counter; if it stops advancing for
- * ISR_WDT_TIMEOUT_S seconds, the ISR reboots the node.
- * Only armed on minimal nodes (see main.c).                        */
-extern volatile uint32_t s_isr_wdt_heartbeat;
-
 #endif /* ECHOES_H */
