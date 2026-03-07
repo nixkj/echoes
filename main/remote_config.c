@@ -36,22 +36,29 @@
  * esp_wifi_sta_get_ap_info, sendto) only verifies driver state — they
  * all return success when the AP has silently dropped the node.
  *
- * Escalation for minimal nodes (which have no other recovery path):
- *   RCFG_FAILURES_WIFI_RESTART consecutive failures →
- *       esp_wifi_stop() + esp_wifi_start()  (reinit radio hardware)
- *   RCFG_FAILURES_HARD_REBOOT consecutive failures →
- *       esp_restart()  (last resort)
+ * Recovery for minimal nodes:
+ *   RCFG_FAILURES_HARD_REBOOT consecutive failures → RTC hard reboot.
  *
- * Full nodes use a simpler disconnect (they have no keepalive task to
- * conflict with) and rarely need this because their frequent lux
- * broadcasts keep the radio active.
+ * There is intentionally NO intermediate "WiFi disconnect and reconnect"
+ * escalation level for minimal nodes.  Calling esp_wifi_disconnect() while
+ * the node is receiving ~50 ESP-NOW frames/second (from 25 full nodes
+ * broadcasting lux every 500 ms) corrupts the WiFi driver's internal
+ * reconnect state machine.  Symptoms: the radio stops ACKing the AP's
+ * null-frame keepalive probes, the AP logs "connection lost", and all
+ * subsequent reconnect attempts silently fail — even though audio_detection,
+ * flock, and keepalive tasks keep running and feeding their watchdogs.
+ * The node appears permanently dead without ever triggering a reset.
  *
- * Jitter is applied before any WiFi operation to prevent all 50 nodes
- * from reassociating simultaneously.
+ * Full nodes call esp_wifi_disconnect() safely because their 500 ms lux
+ * broadcasts keep the radio continuously active, preventing the driver
+ * from entering the stuck-reconnect state.
+ *
+ * For minimal nodes: let the WiFi driver manage its own reconnection via
+ * the event handler.  The ISR WDT in main.c is the backstop for genuine
+ * driver deadlocks.  Only force a hard reboot after sustained failure.
  * ========================================================================= */
 #define RCFG_MAX_CONSECUTIVE_FAILURES   3
-#define RCFG_FAILURES_WIFI_RESTART      3   /* minimal: stop/start WiFi */
-#define RCFG_FAILURES_HARD_REBOOT       5   /* minimal: full reboot */
+#define RCFG_FAILURES_HARD_REBOOT       10  /* minimal: hard reboot after ~10 min */
 
 /* =========================================================================
  * RTC SLOW MEMORY
@@ -464,46 +471,31 @@ void remote_config_task(void *param)
             if (get_hardware_config() == HW_CONFIG_MINIMAL) {
                 /* ── Minimal node escalation ─────────────────────────────
                  *
-                 * This HTTP fetch is the ONLY proof of end-to-end network
-                 * connectivity.  wifi_is_connected(), get_ap_info(), and
+                 * HTTP is the ONLY proof of end-to-end connectivity.
+                 * wifi_is_connected(), esp_wifi_sta_get_ap_info(), and
                  * sendto() all return success when the AP has silently
-                 * dropped the node.  Only a bidirectional TCP exchange
-                 * (HTTP GET) can detect the loss.
+                 * dropped the node.
                  *
-                 * Level 1 (RCFG_FAILURES_WIFI_RESTART): full WiFi radio
-                 *   reinit.  Recovers hardware TX stalls where the
-                 *   radio can receive but not transmit.
+                 * There is NO intermediate WiFi disconnect/reconnect step.
+                 * Calling esp_wifi_disconnect() under heavy ESP-NOW RX load
+                 * (25 full nodes broadcasting every 500 ms) corrupts the
+                 * driver's reconnect state machine — the radio stops ACKing
+                 * null-frame probes, the AP logs "connection lost", and all
+                 * reconnect attempts silently fail while all watchdog-feeding
+                 * tasks continue running normally (no reset is ever triggered).
                  *
-                 * Level 2 (RCFG_FAILURES_HARD_REBOOT): system reboot.
-                 *   Recovers driver deadlocks, DMA corruption, and
-                 *   any other state where WiFi restart is insufficient.
-                 *
-                 * These are the ONLY reliable recovery mechanisms.
-                 * The ISR WDT in main.c is the backstop if this task
-                 * itself stalls.                                          */
+                 * Recovery: let the WiFi driver manage its own reconnection
+                 * via the WIFI_EVENT_STA_DISCONNECTED handler in ota.c.
+                 * After RCFG_FAILURES_HARD_REBOOT sustained failures (~10 min
+                 * at 60 s poll interval) force a hard RTC reset as last resort.
+                 * The ISR WDT in main.c is the backstop if THIS task stalls. */
 
                 if (consecutive_failures >= RCFG_FAILURES_HARD_REBOOT) {
                     ESP_LOGE(TAG, "Watchdog: %d config failures — "
                                   "forcing hard reboot", consecutive_failures);
                     vTaskDelay(pdMS_TO_TICKS(esp_random() % 10000));
-		    /* Better than esp_restart() */
-		    SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
-		    while (1) { }   /* never reached — RTC reset fires immediately */
-                    /* Does not return */
-
-                } else if (consecutive_failures >= RCFG_FAILURES_WIFI_RESTART) {
-                    if (!wifi_is_connected()) {
-                        ESP_LOGI(TAG, "Watchdog: WiFi already disconnected");
-			} else {
-			    uint32_t jitter_ms = esp_random() % 15000;
-			    ESP_LOGW(TAG, "Watchdog: %d config failures — "
-					  "forcing WiFi disconnect (jitter %lu ms)",
-				     consecutive_failures, (unsigned long)jitter_ms);
-			    vTaskDelay(pdMS_TO_TICKS(jitter_ms));
-			    esp_wifi_disconnect();
-			    // WIFI_EVENT_STA_DISCONNECTED fires → event handler calls esp_wifi_connect()
-			    // No esp_wifi_stop(), no ESP-NOW teardown, no deadlock.
-		    }
+                    SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
+                    while (1) { }   /* does not return — RTC reset fires */
                 }
 
             } else {

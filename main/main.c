@@ -82,7 +82,7 @@ static const char *TAG = "MAIN";
  *
  * Total worst-case recovery: NETWORK_DEATH_MS + ISR_WDT_TIMEOUT_S
  *   = 4 min + 2 min = 6 minutes from AP drop to hardware reset.          */
-#define NETWORK_GRACE_MS   (10u * 60u * 1000u)   /* 10 min boot grace     */
+#define NETWORK_GRACE_MS   ( 2u * 60u * 1000u)   /*  2 min boot grace     */
 #define NETWORK_DEATH_MS   ( 4u * 60u * 1000u)   /* 4 min stale → stop    */
 
 static gptimer_handle_t          s_isr_wdt_timer     = NULL;
@@ -572,21 +572,6 @@ void app_main(void)
          * event handler (ota.c) so it applies on every (re)connect, including
          * during the OTA validation window.  No call needed here.           */
 
-        /* Start remote config polling task (60-second interval) */
-        xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);
-        ESP_LOGI(TAG, "Remote config polling task started");
-
-        /* Keepalive + ISR WDT: minimal nodes only.
-         *
-         * wifi_keepalive_task is the SOLE feeder of the ISR hardware
-         * watchdog.  If it stalls, the ISR fires and resets the SoC.
-         * See wifi_keepalive_task() for the full explanation.              */
-        if (hw_config == HW_CONFIG_MINIMAL) {
-            xTaskCreate(wifi_keepalive_task, "wifi_ka", 4096, NULL, 4, NULL); // was 2
-            ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
-                     WIFI_KEEPALIVE_INTERVAL_MS / 1000);
-        }
-
         /* OPTIONAL: periodic OTA polling task (disabled by default).
          *
          * The default workflow above checks for updates once at boot and is
@@ -669,6 +654,29 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "System started successfully!");
+
+    /* Remote config + keepalive tasks: started unconditionally so they run
+     * even when the initial WiFi connection failed.
+     *
+     * If these were only created on the wifi_connected path then a failed
+     * initial connection followed by isr_wdt_init() below would arm the ISR
+     * WDT with no task ever feeding it → permanent 120 s reset loop.
+     *
+     * The WiFi reconnect timer in ota.c retries every 30 s.  Once connectivity
+     * is established, remote_config_task will succeed on its next 60 s poll and
+     * keepalive_task will start feeding the ISR WDT heartbeat.  The 10-minute
+     * boot grace period in wifi_keepalive_task gives ample time for this.    */
+    xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);
+    ESP_LOGI(TAG, "Remote config polling task started");
+
+    /* wifi_keepalive_task is the SOLE feeder of the ISR hardware watchdog.
+     * If it stalls, the ISR fires and resets the SoC.
+     * See wifi_keepalive_task() for the full explanation.                   */
+    if (hw_config == HW_CONFIG_MINIMAL) {
+        xTaskCreate(wifi_keepalive_task, "wifi_ka", 4096, NULL, 4, NULL);
+        ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
+                 WIFI_KEEPALIVE_INTERVAL_MS / 1000);
+    }
 
     /* Arm ISR hardware watchdog — minimal nodes only.
      * Must be AFTER keepalive task is created (it feeds the heartbeat). */
