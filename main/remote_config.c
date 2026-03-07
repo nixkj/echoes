@@ -444,32 +444,12 @@ esp_err_t remote_config_fetch(void)
 
 void remote_config_task(void *param)
 {
-    esp_task_wdt_add(NULL);   // subscribe to WDT
     (void)param;
     int consecutive_failures = 0;
 
-    // Initial jitter
-    uint32_t jitter = esp_random() % 45000;
-    uint32_t elapsed = 0;
-    while (elapsed < jitter) {
-        esp_task_wdt_reset();
-        uint32_t chunk = (jitter - elapsed > 5000) ? 5000 : (jitter - elapsed);
-        vTaskDelay(pdMS_TO_TICKS(chunk));
-        elapsed += chunk;
-    }
+    vTaskDelay(pdMS_TO_TICKS(esp_random() % 45000));
 
     while (1) {
-        // Feed WDT during the 60-second poll sleep
-        uint32_t slept = 0;
-        while (slept < REMOTE_CONFIG_POLL_INTERVAL_MS) {
-            esp_task_wdt_reset();
-            uint32_t chunk = (REMOTE_CONFIG_POLL_INTERVAL_MS - slept > 5000)
-                             ? 5000 : (REMOTE_CONFIG_POLL_INTERVAL_MS - slept);
-            vTaskDelay(pdMS_TO_TICKS(chunk));
-            slept += chunk;
-        }
-        esp_task_wdt_reset();   // before the HTTP fetch
-
         vTaskDelay(pdMS_TO_TICKS(REMOTE_CONFIG_POLL_INTERVAL_MS));
         ESP_LOGI(TAG, "Polling config server…");
         esp_err_t err = remote_config_fetch();
