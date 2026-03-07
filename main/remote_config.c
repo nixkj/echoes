@@ -21,6 +21,7 @@
 #include "esp_attr.h"
 #include "esp_wifi.h"
 #include "esp_random.h"
+#include "esp_task_wdt.h"
 #include "startup.h"
 #include "ota.h"
 #include "echoes.h"
@@ -443,18 +444,32 @@ esp_err_t remote_config_fetch(void)
 
 void remote_config_task(void *param)
 {
+    esp_task_wdt_add(NULL);   // subscribe to WDT
     (void)param;
     int consecutive_failures = 0;
 
-    /* Spread the fleet's poll cycles across a 45-second window.
-     * All 50 nodes boot within ~17 s of each other and would otherwise poll
-     * in tight synchrony.  If the watchdog fires on all of them at once the
-     * resulting simultaneous reassociation storm knocks other nodes off the
-     * AP.  This one-time delay at startup permanently desynchronises the
-     * fleet with zero ongoing overhead.                                    */
-    vTaskDelay(pdMS_TO_TICKS(esp_random() % 45000));
+    // Initial jitter
+    uint32_t jitter = esp_random() % 45000;
+    uint32_t elapsed = 0;
+    while (elapsed < jitter) {
+        esp_task_wdt_reset();
+        uint32_t chunk = (jitter - elapsed > 5000) ? 5000 : (jitter - elapsed);
+        vTaskDelay(pdMS_TO_TICKS(chunk));
+        elapsed += chunk;
+    }
 
     while (1) {
+        // Feed WDT during the 60-second poll sleep
+        uint32_t slept = 0;
+        while (slept < REMOTE_CONFIG_POLL_INTERVAL_MS) {
+            esp_task_wdt_reset();
+            uint32_t chunk = (REMOTE_CONFIG_POLL_INTERVAL_MS - slept > 5000)
+                             ? 5000 : (REMOTE_CONFIG_POLL_INTERVAL_MS - slept);
+            vTaskDelay(pdMS_TO_TICKS(chunk));
+            slept += chunk;
+        }
+        esp_task_wdt_reset();   // before the HTTP fetch
+
         vTaskDelay(pdMS_TO_TICKS(REMOTE_CONFIG_POLL_INTERVAL_MS));
         ESP_LOGI(TAG, "Polling config server…");
         esp_err_t err = remote_config_fetch();
@@ -497,20 +512,16 @@ void remote_config_task(void *param)
                 } else if (consecutive_failures >= RCFG_FAILURES_WIFI_RESTART) {
                     if (!wifi_is_connected()) {
                         ESP_LOGI(TAG, "Watchdog: WiFi already disconnected");
-                    } else {
-                        uint32_t jitter_ms = esp_random() % 15000;
-                        ESP_LOGW(TAG, "Watchdog: %d config failures — "
-                                      "restarting WiFi stack (jitter %lu ms)",
-                                 consecutive_failures,
-                                 (unsigned long)jitter_ms);
-                        vTaskDelay(pdMS_TO_TICKS(jitter_ms));
-                        esp_wifi_disconnect();
-                        esp_wifi_stop();
-                        vTaskDelay(pdMS_TO_TICKS(1000));
-                        esp_wifi_start();   /* fires STA_START → connect */
-                    }
-                    /* Do NOT reset consecutive_failures — let it escalate
-                     * to hard reboot if WiFi restart doesn't work.        */
+			} else {
+			    uint32_t jitter_ms = esp_random() % 15000;
+			    ESP_LOGW(TAG, "Watchdog: %d config failures — "
+					  "forcing WiFi disconnect (jitter %lu ms)",
+				     consecutive_failures, (unsigned long)jitter_ms);
+			    vTaskDelay(pdMS_TO_TICKS(jitter_ms));
+			    esp_wifi_disconnect();
+			    // WIFI_EVENT_STA_DISCONNECTED fires → event handler calls esp_wifi_connect()
+			    // No esp_wifi_stop(), no ESP-NOW teardown, no deadlock.
+		    }
                 }
 
             } else {

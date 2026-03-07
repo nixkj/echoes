@@ -131,6 +131,7 @@ static void isr_wdt_init(void)
         .clk_src       = GPTIMER_CLK_SRC_DEFAULT,
         .direction     = GPTIMER_COUNT_UP,
         .resolution_hz = 1000000,   /* 1 MHz → 1 µs per tick */
+	.intr_priority  = 5,        /* level 5 is not masked by taskENTER_CRITICAL() */
     };
     esp_err_t err = gptimer_new_timer(&timer_cfg, &s_isr_wdt_timer);
     if (err != ESP_OK) {
@@ -280,6 +281,9 @@ static void wifi_keepalive_task(void *param)
             close(s_ka_sock);
             s_ka_sock = -1;
         }
+
+	// Runs every WIFI_KEEPALIVE_INTERVAL_MS (1 second)
+        espnow_mesh_broadcast_heartbeat();
     }
 }
 
