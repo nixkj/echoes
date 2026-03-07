@@ -22,6 +22,7 @@
 #include "esp_wifi.h"
 #include "esp_random.h"
 #include "esp_task_wdt.h"
+#include "soc/rtc_cntl_reg.h"
 #include "startup.h"
 #include "ota.h"
 #include "echoes.h"
@@ -486,7 +487,8 @@ void remote_config_task(void *param)
                     ESP_LOGE(TAG, "Watchdog: %d config failures — "
                                   "forcing hard reboot", consecutive_failures);
                     vTaskDelay(pdMS_TO_TICKS(esp_random() % 10000));
-                    esp_restart();
+		    /* Better than esp_restart() */
+		    SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
                     /* Does not return */
 
                 } else if (consecutive_failures >= RCFG_FAILURES_WIFI_RESTART) {
@@ -563,7 +565,8 @@ void remote_config_task(void *param)
                     vTaskDelay(pdMS_TO_TICKS(250));
                 }
                 vTaskDelay(pdMS_TO_TICKS(500));
-                esp_restart();
+		// Better than esp_restart()
+                SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
             }
         }
     }

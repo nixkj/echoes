@@ -131,7 +131,6 @@ static void isr_wdt_init(void)
         .clk_src       = GPTIMER_CLK_SRC_DEFAULT,
         .direction     = GPTIMER_COUNT_UP,
         .resolution_hz = 1000000,   /* 1 MHz → 1 µs per tick */
-	.intr_priority  = 5,        /* level 5 is not masked by taskENTER_CRITICAL() */
     };
     esp_err_t err = gptimer_new_timer(&timer_cfg, &s_isr_wdt_timer);
     if (err != ESP_OK) {
@@ -281,9 +280,6 @@ static void wifi_keepalive_task(void *param)
             close(s_ka_sock);
             s_ka_sock = -1;
         }
-
-	// Runs every WIFI_KEEPALIVE_INTERVAL_MS (1 second)
-        espnow_mesh_broadcast_heartbeat();
     }
 }
 
@@ -481,9 +477,9 @@ void app_main(void)
          * esp_ota_begin() refuses to flash while the running partition is unconfirmed
          * (ESP_ERR_OTA_ROLLBACK_INVALID_STATE).
          *
-         * We wait here for up to 1 minute.  If the system stays alive that long it has
+         * We wait here for up to 30 seconds.  If the system stays alive that long it has
          * proven stability and we mark valid, then proceed to check for updates.
-         * If the firmware crashes before 1 minute the bootloader will automatically
+         * If the firmware crashes before 30 seconds the bootloader will automatically
          * roll back to the previous image on the next boot — which is the intended
          * safety behaviour.                                                          */
         {
@@ -497,7 +493,7 @@ void app_main(void)
                 /* Slow blue pulse while waiting — signals "validating" without appearing dead. */
                 const int pulse_ms     = 2000;   /* one full breath cycle */
                 const int step_ms      = 50;
-                const int total_steps  = 60000 / step_ms;   /* 1 minutes */
+                const int total_steps  = 30000 / step_ms;   /* 30 seconds */
 
                 for (int i = 0; i < total_steps; i++) {
                     float phase     = (float)(i % (pulse_ms / step_ms)) / (pulse_ms / step_ms);
