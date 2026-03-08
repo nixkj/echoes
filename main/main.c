@@ -509,10 +509,10 @@ void app_main(void)
         xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, &h_audio);
         if (h_audio)  vTaskSuspend(h_audio);
 
-        if (hw_config == HW_CONFIG_FULL) {
+//        if (hw_config == HW_CONFIG_FULL) {
             xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, &h_lux);
-            if (h_lux)  vTaskSuspend(h_lux);
-        }
+//            if (h_lux)  vTaskSuspend(h_lux);
+//        }
 
         xTaskCreate(flock_task, "flock", 4096, NULL, 4, &h_flock);
         if (h_flock)  vTaskSuspend(h_flock);
@@ -698,9 +698,9 @@ void app_main(void)
         /* Stack: see WiFi path above for sizing rationale. */
         xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, NULL);
 
-        if (hw_config == HW_CONFIG_FULL) {
+//        if (hw_config == HW_CONFIG_FULL) {
             xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
-        }
+//        }
 
         xTaskCreate(flock_task, "flock", 4096, NULL, 4, NULL);
         ESP_LOGI(TAG, "Flock task started");
