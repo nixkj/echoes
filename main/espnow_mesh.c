@@ -91,12 +91,8 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info,
     const espnow_msg_t *msg = (const espnow_msg_t *)data;
     if (msg->magic != ESPNOW_MAGIC) return;
 
-    /* Record arrival timestamp for flock mode detection.
-     * HEARTBEAT frames are excluded — they are radio keepalives with no
-     * application meaning and must not contribute to flock detection.
-     * With 25 minimal nodes heartbeating every 2 s, including them would
-     * produce 75 events per 6 s window and permanently lock flock mode on. */
-    if (msg->msg_type != (uint8_t)ESPNOW_MSG_HEARTBEAT) {
+    /* Record arrival timestamp for flock mode detection. */
+    {
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         s_rx_times[s_rx_head] = now;
         s_rx_head = (s_rx_head + 1) % FLOCK_RING_MAX;
@@ -240,13 +236,7 @@ static void espnow_rx_task(void *param)
                 break;
             }
 
-            case ESPNOW_MSG_HEARTBEAT:
-                /* Intentionally empty — sent by minimal nodes to keep their
-                 * radio hardware's 802.11 transmit state machine active.
-                 * Carries no application data; all receivers discard it.   */
-                break;
-
-            default:
+default:
                 break;
             }
 
@@ -412,36 +402,6 @@ void espnow_mesh_broadcast_light(float lux)
         ESP_LOGW(TAG, "Light broadcast failed: %s", esp_err_to_name(err));
     } else {
         ESP_LOGI(TAG, "Broadcast lux %.1f", lux);
-    }
-}
-
-void espnow_mesh_broadcast_heartbeat(void)
-{
-    /* Send an ESPNOW_MSG_HEARTBEAT frame.  The payload carries no data;
-     * all receivers discard it in the rx task switch.  The purpose is
-     * purely to execute a complete 802.11 CSMA/CA transmit cycle on the
-     * minimal node's radio hardware, keeping the transmit state machine
-     * active so the AP's null-frame keepalive probes are reliably ACKed.
-     *
-     * This is the root-cause fix for minimal nodes silently dropping off
-     * the MikroTik AP: they receive ~50 ESP-NOW frames/s from full nodes
-     * but almost never transmit, leaving the radio in a receive-dominant
-     * state where hardware MAC ACKs can be missed.                       */
-    espnow_msg_t msg = {
-        .magic     = ESPNOW_MAGIC,
-        .msg_type  = (uint8_t)ESPNOW_MSG_HEARTBEAT,
-        .detection = 0,
-        .reserved  = 0,
-        .lux       = 0.0f,
-    };
-
-    esp_err_t err = esp_now_send(BROADCAST_MAC,
-                                 (const uint8_t *)&msg,
-                                 sizeof(msg));
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Heartbeat broadcast failed: %s", esp_err_to_name(err));
-    } else {
-        ESP_LOGD(TAG, "Heartbeat broadcast sent");
     }
 }
 
