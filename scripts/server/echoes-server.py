@@ -573,8 +573,18 @@ def _stale_node_monitor() -> None:
     last_seen_ts goes stale, then suppresses repeats for _STALE_REPEAT_S
     seconds so the log doesn't flood for a node that remains down.
     Logs a recovery INFO when a previously-stale node is seen again.
+
+    State: last_warned maps mac → float timestamp of the last WARNING, or
+    None when the node is currently healthy (or has never been warned).
+
+    Using None (not 0) as the healthy sentinel is critical.  If 0 were used,
+    `now - 0` equals the current Unix timestamp (~1.7 billion), which is
+    always ≥ _STALE_REPEAT_S.  That means a node that recovers and is
+    immediately set to 0 would re-trigger STALE on the very next check cycle
+    instead of waiting _STALE_REPEAT_S seconds — producing the observed
+    pattern of STALE → RECOVERED → STALE every 5 minutes for a healthy node.
     """
-    # mac → timestamp of last STALE warning emitted (or 0 if node is healthy)
+    # mac → float timestamp of last STALE warning, or None if currently healthy
     last_warned: dict = {}
 
     # Small startup grace: don't warn about nodes that haven't polled yet
@@ -590,7 +600,7 @@ def _stale_node_monitor() -> None:
         for mac, node in snapshot:
             ts = node.get("last_seen_ts")
             if not ts:
-                continue   # node has never polled (startup-report only)
+                continue   # node has never polled this session — not monitored yet
 
             silent_s = int(now - ts)
             node_id   = node.get("id", "?")
@@ -598,21 +608,21 @@ def _stale_node_monitor() -> None:
             last_seen = node.get("last_seen", "?")
 
             if silent_s > _STALE_THRESHOLD_S:
-                prev_warn = last_warned.get(mac, 0)
-                if now - prev_warn >= _STALE_REPEAT_S:
+                prev_warn = last_warned.get(mac)   # None if healthy/never-warned
+                if prev_warn is None or now - prev_warn >= _STALE_REPEAT_S:
                     log.warning(
                         f"STALE  {mac}  id={node_id}  type={node_type}"
                         f"  last_seen={last_seen}  silent={silent_s}s"
                     )
                     last_warned[mac] = now
             else:
-                # Node is healthy — if it was previously flagged, log recovery
-                if mac in last_warned and last_warned[mac] > 0:
+                # Node is healthy — log recovery if it was previously flagged
+                if last_warned.get(mac) is not None:
                     log.info(
                         f"RECOVERED  {mac}  id={node_id}  type={node_type}"
-                        f"  was_silent={int(last_warned[mac] - ts)}s"
+                        f"  silent_was={int(now - ts)}s"
                     )
-                    last_warned[mac] = 0
+                last_warned[mac] = None   # explicit healthy sentinel
 
 
 # Load persisted state immediately at import time (works with WSGI runners too)
