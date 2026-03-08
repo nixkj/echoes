@@ -511,7 +511,7 @@ void app_main(void)
 
 //        if (hw_config == HW_CONFIG_FULL) {
             xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, &h_lux);
-//            if (h_lux)  vTaskSuspend(h_lux);
+            if (h_lux)  vTaskSuspend(h_lux);
 //        }
 
         xTaskCreate(flock_task, "flock", 4096, NULL, 4, &h_flock);
