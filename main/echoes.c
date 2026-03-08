@@ -1048,7 +1048,7 @@ void lux_based_birds_task(void *param) {
     /* s_zero_confirm: counts consecutive near-zero polls.
      * Full logic is documented at the gate itself, below.                */
 #define LUX_NEAR_ZERO      2.0f   /* lux threshold for "effectively dark"  */
-#define LUX_ZERO_CONFIRM   4      /* consecutive polls required to confirm  */
+#define LUX_ZERO_CONFIRM   6      /* consecutive polls required to confirm  */
     int s_zero_confirm = 0;
 
     while (1) {
@@ -1084,11 +1084,11 @@ void lux_based_birds_task(void *param) {
          * to the flash/delta logic.  The counter resets on any poll that
          * reads above LUX_NEAR_ZERO.
          *
-         * LUX_ZERO_CONFIRM = 4: at 500 ms/poll this requires 2 s of
-         * sustained near-zero before broadcasting.  ALS-PT19 artifacts
-         * last exactly 1 poll (500 ms); genuine lighting changes sustain
-         * for many seconds.  4 polls gives 3 artifact periods of margin
-         * while adding only 2 s of latency to genuine darkness events.    */
+         * LUX_ZERO_CONFIRM = 6: at 500 ms/poll this requires 3 s of
+         * sustained near-zero before broadcasting.  Live captures show
+         * the ALS-PT19 artifact lasts exactly 4 consecutive polls (~2 s);
+         * 6 polls gives 2 full polls of margin above that while adding
+         * only 3 s of latency to genuine sustained darkness events.        */
         if (lux <= LUX_NEAR_ZERO) {
             s_zero_confirm++;
             if (s_zero_confirm < LUX_ZERO_CONFIRM) {
