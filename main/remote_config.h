@@ -181,7 +181,7 @@ void remote_config_init(void);
  *
  * @return ESP_OK, ESP_ERR_TIMEOUT, ESP_FAIL, etc.
  */
-esp_err_t remote_config_fetch(void);
+esp_err_t remote_config_fetch(int failures);
 
 /**
  * @brief FreeRTOS task that polls the server every REMOTE_CONFIG_POLL_INTERVAL_MS.

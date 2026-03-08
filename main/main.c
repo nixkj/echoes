@@ -106,6 +106,16 @@ static bool IRAM_ATTR isr_wdt_alarm_cb(gptimer_handle_t timer,
     if (hb == s_last_hb) {
         s_miss_count++;
         if (s_miss_count >= ISR_WDT_TIMEOUT_S) {
+            /* Write diagnostic state before resetting.  We are in ISR context
+             * so heap size and RSSI cannot be safely read — pass 0 for both.
+             * startup_write_rtc_diag() is IRAM_ATTR (pure memory writes).   */
+            startup_write_rtc_diag(
+                RTC_DIAG_CAUSE_ISR_WDT,
+                0,   /* consecutive_failures not accessible from ISR */
+                0,   /* heap not safely readable from ISR             */
+                0,   /* RSSI not safely readable from ISR             */
+                (uint32_t)(xTaskGetTickCountFromISR() *
+                           portTICK_PERIOD_MS / 1000));
             /* Direct RTC hardware reset — no software cooperation needed.
              * Safe from ISR context, safe with both CPUs stuck.           */
             SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
@@ -402,7 +412,7 @@ void app_main(void)
 
         /* Fetch remote config from server (best-effort — defaults used on failure) */
         ESP_LOGI(TAG, "Fetching remote configuration...");
-        esp_err_t cfg_err = remote_config_fetch();
+        esp_err_t cfg_err = remote_config_fetch(0);
         if (cfg_err == ESP_OK) {
             ESP_LOGI(TAG, "Remote config applied successfully");
         } else {

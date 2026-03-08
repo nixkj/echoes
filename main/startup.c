@@ -13,11 +13,45 @@
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_mac.h"
+#include "esp_attr.h"
 
 #include <string.h>
 #include <stdio.h>
 
 static const char *TAG = "STARTUP";
+
+/* ========================================================================
+ * RTC DIAGNOSTIC — persists across software resets, cleared on power-on
+ * ======================================================================== */
+
+RTC_NOINIT_ATTR static echoes_rtc_diag_t s_rtc_diag;
+
+/**
+ * @brief Write pre-reset diagnostic state to RTC_NOINIT memory.
+ * IRAM_ATTR: safe to call from ISR context (pure memory writes, no alloc).
+ */
+void IRAM_ATTR startup_write_rtc_diag(uint32_t cause, uint32_t failures,
+                                       uint32_t heap, int32_t rssi,
+                                       uint32_t uptime_s)
+{
+    s_rtc_diag.cause                = cause;
+    s_rtc_diag.consecutive_failures = failures;
+    s_rtc_diag.heap_free            = heap;
+    s_rtc_diag.rssi                 = rssi;
+    s_rtc_diag.uptime_s             = uptime_s;
+    s_rtc_diag.magic                = RTC_DIAG_MAGIC;  /* write magic last */
+}
+
+/* Human-readable label for RTC_DIAG_CAUSE_* constants */
+static const char *rtc_diag_cause_str(uint32_t cause)
+{
+    switch (cause) {
+    case RTC_DIAG_CAUSE_RCFG:    return "RCFG_REBOOT";
+    case RTC_DIAG_CAUSE_REMOTE:  return "REMOTE_RESTART";
+    case RTC_DIAG_CAUSE_ISR_WDT: return "ISR_WDT";
+    default:                     return "UNKNOWN";
+    }
+}
 
 /* ========================================================================
  * HELPER FUNCTIONS
@@ -106,6 +140,33 @@ esp_err_t startup_capture_identity(startup_report_t *report, hardware_config_t h
     }
 
     ESP_LOGI(TAG, "Device MAC: %s  Node type: %s", report->mac_address, report->node_type);
+
+    /* Read previous-boot RTC diagnostic — valid only after a software reset
+     * triggered by one of our own reset paths (ISR WDT, RCFG reboot, remote
+     * restart).  On power-on the RTC_NOINIT region is random garbage so we
+     * check the magic word before trusting any of the fields.              */
+    report->has_prev_diag = false;
+    if (s_rtc_diag.magic == RTC_DIAG_MAGIC) {
+        report->has_prev_diag       = true;
+        report->prev_diag_failures  = s_rtc_diag.consecutive_failures;
+        report->prev_diag_heap      = s_rtc_diag.heap_free;
+        report->prev_diag_rssi      = s_rtc_diag.rssi;
+        report->prev_diag_uptime_s  = s_rtc_diag.uptime_s;
+        strncpy(report->prev_diag_cause,
+                rtc_diag_cause_str(s_rtc_diag.cause),
+                sizeof(report->prev_diag_cause) - 1);
+        report->prev_diag_cause[sizeof(report->prev_diag_cause) - 1] = '\0';
+        /* Invalidate so we don't re-report it on a subsequent power-on reset
+         * that happens to land on the same memory pattern.                  */
+        s_rtc_diag.magic = 0;
+        ESP_LOGI(TAG, "Prev-boot diag: cause=%s failures=%lu heap=%lu rssi=%d uptime=%lus",
+                 report->prev_diag_cause,
+                 (unsigned long)report->prev_diag_failures,
+                 (unsigned long)report->prev_diag_heap,
+                 (int)report->prev_diag_rssi,
+                 (unsigned long)report->prev_diag_uptime_s);
+    }
+
     return ESP_OK;
 }
 
@@ -149,23 +210,56 @@ esp_err_t startup_send_report(const startup_report_t *report)
     ESP_LOGI(TAG, "Sending startup report to %s", STARTUP_REPORT_URL);
     
     // Build JSON payload
-    char post_data[512];
-    int len = snprintf(post_data, sizeof(post_data),
-        "{"
-        "\"mac\":\"%s\","
-        "\"firmware\":\"%s\","
-        "\"node_type\":\"%s\","
-        "\"reset_reason\":\"%s\","
-        "\"has_errors\":%s,"
-        "\"error_message\":\"%s\""
-        "}",
-        report->mac_address,
-        FIRMWARE_VERSION,
-        report->node_type,
-        report->reset_reason,
-        report->has_errors ? "true" : "false",
-        report->error_message
-    );
+    char post_data[768];
+    int len;
+
+    if (report->has_prev_diag) {
+        len = snprintf(post_data, sizeof(post_data),
+            "{"
+            "\"mac\":\"%s\","
+            "\"firmware\":\"%s\","
+            "\"node_type\":\"%s\","
+            "\"reset_reason\":\"%s\","
+            "\"has_errors\":%s,"
+            "\"error_message\":\"%s\","
+            "\"prev_diag\":{"
+                "\"cause\":\"%s\","
+                "\"failures\":%lu,"
+                "\"heap\":%lu,"
+                "\"rssi\":%d,"
+                "\"uptime_s\":%lu"
+            "}"
+            "}",
+            report->mac_address,
+            FIRMWARE_VERSION,
+            report->node_type,
+            report->reset_reason,
+            report->has_errors ? "true" : "false",
+            report->error_message,
+            report->prev_diag_cause,
+            (unsigned long)report->prev_diag_failures,
+            (unsigned long)report->prev_diag_heap,
+            (int)report->prev_diag_rssi,
+            (unsigned long)report->prev_diag_uptime_s
+        );
+    } else {
+        len = snprintf(post_data, sizeof(post_data),
+            "{"
+            "\"mac\":\"%s\","
+            "\"firmware\":\"%s\","
+            "\"node_type\":\"%s\","
+            "\"reset_reason\":\"%s\","
+            "\"has_errors\":%s,"
+            "\"error_message\":\"%s\""
+            "}",
+            report->mac_address,
+            FIRMWARE_VERSION,
+            report->node_type,
+            report->reset_reason,
+            report->has_errors ? "true" : "false",
+            report->error_message
+        );
+    }
     
     if (len >= sizeof(post_data)) {
         ESP_LOGE(TAG, "POST data buffer too small");

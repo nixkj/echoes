@@ -361,7 +361,7 @@ void remote_config_init(void)
     ESP_LOGI(TAG, "Remote config initialised with defaults");
 }
 
-esp_err_t remote_config_fetch(void)
+esp_err_t remote_config_fetch(int failures)
 {
     /* Reset body accumulator */
     s_http_body_len  = 0;
@@ -385,6 +385,33 @@ esp_err_t remote_config_fetch(void)
     char mac_str[18] = {0};
     if (startup_get_mac_address(mac_str) == ESP_OK) {
         esp_http_client_set_header(client, "X-Device-MAC", mac_str);
+    }
+
+    /* Diagnostic telemetry headers — logged by the server on every poll.
+     * Gives 60-second-resolution visibility into node health right up to
+     * the moment a node stops polling, without requiring serial access.   */
+    {
+        char buf[32];
+
+        snprintf(buf, sizeof(buf), "%lu",
+                 (unsigned long)esp_get_free_heap_size());
+        esp_http_client_set_header(client, "X-Heap-Free", buf);
+
+        snprintf(buf, sizeof(buf), "%lu",
+                 (unsigned long)(xTaskGetTickCount() *
+                                 portTICK_PERIOD_MS / 1000));
+        esp_http_client_set_header(client, "X-Uptime-S", buf);
+
+        snprintf(buf, sizeof(buf), "%d", failures);
+        esp_http_client_set_header(client, "X-Poll-Failures", buf);
+
+        wifi_ap_record_t ap;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            snprintf(buf, sizeof(buf), "%d", ap.rssi);
+        } else {
+            snprintf(buf, sizeof(buf), "0");
+        }
+        esp_http_client_set_header(client, "X-RSSI", buf);
     }
 
     esp_err_t err = esp_http_client_perform(client);
@@ -459,7 +486,7 @@ void remote_config_task(void *param)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(REMOTE_CONFIG_POLL_INTERVAL_MS));
         ESP_LOGI(TAG, "Polling config server…");
-        esp_err_t err = remote_config_fetch();
+        esp_err_t err = remote_config_fetch(consecutive_failures);
 
         if (err != ESP_OK) {
             consecutive_failures++;
@@ -494,6 +521,18 @@ void remote_config_task(void *param)
                     ESP_LOGE(TAG, "Watchdog: %d config failures — "
                                   "forcing hard reboot", consecutive_failures);
                     vTaskDelay(pdMS_TO_TICKS(esp_random() % 10000));
+                    {
+                        wifi_ap_record_t ap;
+                        int32_t rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
+                                       ? ap.rssi : 0;
+                        startup_write_rtc_diag(
+                            RTC_DIAG_CAUSE_RCFG,
+                            (uint32_t)consecutive_failures,
+                            esp_get_free_heap_size(),
+                            rssi,
+                            (uint32_t)(xTaskGetTickCount() *
+                                       portTICK_PERIOD_MS / 1000));
+                    }
                     SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
                     while (1) { }   /* does not return — RTC reset fires */
                 }
@@ -557,6 +596,18 @@ void remote_config_task(void *param)
                     vTaskDelay(pdMS_TO_TICKS(250));
                 }
                 vTaskDelay(pdMS_TO_TICKS(500));
+                {
+                    wifi_ap_record_t ap;
+                    int32_t rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
+                                   ? ap.rssi : 0;
+                    startup_write_rtc_diag(
+                        RTC_DIAG_CAUSE_REMOTE,
+                        (uint32_t)consecutive_failures,
+                        esp_get_free_heap_size(),
+                        rssi,
+                        (uint32_t)(xTaskGetTickCount() *
+                                   portTICK_PERIOD_MS / 1000));
+                }
 		// Better than esp_restart()
                 SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
 		while (1) { }   /* never reached */

@@ -645,6 +645,7 @@ def startup_report():
         reset_reason = data.get("reset_reason",  "unknown")
         has_errors   = data.get("has_errors",    False)
         error_msg    = data.get("error_message", "")
+        prev_diag    = data.get("prev_diag",     None)   # dict or None
         ip           = request.remote_addr or "unknown"
 
         # Warn in the main server log for abnormal resets and hard errors
@@ -655,12 +656,32 @@ def startup_report():
             log.warning(f"STARTUP  {mac}  type={node_type}  fw={firmware}  ip={ip}"
                         f"  ERROR: {error_msg}")
 
+        # Log prev_diag whenever present — this is the key diagnostic record
+        # that tells us what state a node was in immediately before it reset.
+        if prev_diag:
+            cause    = prev_diag.get("cause",    "?")
+            failures = prev_diag.get("failures", "?")
+            heap     = prev_diag.get("heap",     "?")
+            rssi     = prev_diag.get("rssi",     "?")
+            uptime   = prev_diag.get("uptime_s", "?")
+            log.warning(
+                f"PREV_DIAG  {mac}  cause={cause}  failures={failures}"
+                f"  heap={heap}  rssi={rssi}  uptime={uptime}s"
+            )
+
         if mac:
             _node_startup(mac, node_type, firmware, ip)
 
         # Write a line to the dedicated startup report log.
         timestamp  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         errors_str = error_msg if (has_errors and error_msg) else ("unknown error" if has_errors else "NO")
+        diag_str   = ""
+        if prev_diag:
+            diag_str = (f" | PrevDiag: cause={prev_diag.get('cause','?')}"
+                        f" failures={prev_diag.get('failures','?')}"
+                        f" heap={prev_diag.get('heap','?')}"
+                        f" rssi={prev_diag.get('rssi','?')}"
+                        f" uptime={prev_diag.get('uptime_s','?')}s")
         startup_log.info(
             f"[{timestamp}] Startup Report"
             f" | MAC: {mac}"
@@ -669,6 +690,7 @@ def startup_report():
             f" | IP: {ip}"
             f" | Reset: {reset_reason}"
             f" | Errors: {errors_str}"
+            + diag_str
         )
 
     except Exception as e:
@@ -752,6 +774,29 @@ def get_config():
     mac = request.headers.get("X-Device-MAC", "").strip().upper()
     if mac:
         _node_poll(mac, request.remote_addr or "")
+
+    # Log diagnostic telemetry headers when present (firmware 7.1.1+).
+    # These give 60-second-resolution visibility into node health without
+    # requiring serial access.  Logged at DEBUG normally, WARNING when
+    # consecutive failures > 0 so abnormal nodes stand out in the log.
+    # For now have set log to INFO while troubleshooting
+    heap     = request.headers.get("X-Heap-Free",     "")
+    uptime   = request.headers.get("X-Uptime-S",      "")
+    failures = request.headers.get("X-Poll-Failures", "")
+    rssi     = request.headers.get("X-RSSI",          "")
+    if mac and any([heap, uptime, failures, rssi]):
+        diag = (f"POLL  {mac}"
+                + (f"  heap={heap}"     if heap     else "")
+                + (f"  uptime={uptime}s" if uptime   else "")
+                + (f"  failures={failures}" if failures else "")
+                + (f"  rssi={rssi}"     if rssi     else ""))
+        try:
+            if int(failures) > 0:
+                log.warning(diag)
+            else:
+                log.info(diag)
+        except (ValueError, TypeError):
+            log.info(diag)
 
     flat = {k: v["value"] for k, v in _config.items()}
     flat["_server_time"]        = time.time()
