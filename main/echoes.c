@@ -1045,38 +1045,14 @@ void lux_based_birds_task(void *param) {
     float last_acted_lux = -1000.0f;  /* lux at the last mapper update */
     float prev_lux       = -1.0f;     /* reading from the previous tick */
 
-    /* Near-zero confirmation counter.
-     *
-     * A genuine transition into darkness (prev_lux > LUX_NEAR_ZERO, lux ~0)
-     * must be observed on LUX_ZERO_CONFIRM consecutive polls before the task
-     * acts on it and broadcasts to the mesh.  This provides a one-poll grace
-     * period that filters the common pattern of:
-     *
-     *   poll N  : brief light event (phone torch etc.)  → real reading, act
-     *   poll N+1: light source gone, room dark           → 0.0, wait
-     *   poll N+2: still dark                             → 0.0, confirmed, act
-     *
-     * Without confirmation, poll N+1 immediately triggers a flash-detection
-     * broadcast for the sudden darkness, which is technically correct but
-     * produces a noisy mesh event for a transient that the installation did
-     * not meaningfully experience.  With one confirmation poll the transient
-     * must persist for LUX_POLL_INTERVAL_MS before being acted upon, which
-     * is long enough to distinguish a genuine lighting change from a brief
-     * phone torch that already turned off by the next sample.
-     *
-     * LUX_NEAR_ZERO: anything below this is treated as "effectively dark"
-     *   for the purpose of this guard.  2 lux captures readings that the
-     *   ADC rounds to 0–8 raw counts in a dim but non-zero environment.
-     *
-     * LUX_ZERO_CONFIRM: 2 means one extra poll (the transition poll plus
-     *   one confirmation).  Adds at most LUX_POLL_INTERVAL_MS (500 ms)
-     *   latency to genuine darkness broadcasts — imperceptible.           */
+    /* s_zero_confirm: counts consecutive near-zero polls.
+     * Full logic is documented at the gate itself, below.                */
 #define LUX_NEAR_ZERO      2.0f   /* lux threshold for "effectively dark"  */
-#define LUX_ZERO_CONFIRM   2      /* consecutive polls required to confirm  */
+#define LUX_ZERO_CONFIRM   4      /* consecutive polls required to confirm  */
     int s_zero_confirm = 0;
 
     while (1) {
-        esp_task_wdt_reset();  /* fed each poll cycle — proves task is alive */
+        esp_task_wdt_reset();  /* fed each poll cycle -- proves task is alive */
 
         remote_config_t cfg_snap;
         if (!remote_config_snapshot(&cfg_snap)) {
@@ -1092,20 +1068,40 @@ void lux_based_birds_task(void *param) {
             continue;
         }
 
-        /* Near-zero confirmation gate — see block comment above. */
-        if (lux <= LUX_NEAR_ZERO && prev_lux > LUX_NEAR_ZERO) {
+        /* Near-zero confirmation gate.
+         *
+         * Bug in previous version: the condition was
+         *   lux <= LUX_NEAR_ZERO && prev_lux > LUX_NEAR_ZERO
+         * which only triggered on the FIRST transition into the near-zero
+         * range.  On the second consecutive zero poll prev_lux had already
+         * been set to the held near-zero value, so the condition was false
+         * and the zero broadcast through -- producing the consistent ~1.0 s
+         * (2-poll) artifact seen in the sniffer logs.
+         *
+         * Fix: gate on lux <= LUX_NEAR_ZERO unconditionally.  Every near-
+         * zero poll increments the counter; only once LUX_ZERO_CONFIRM
+         * consecutive polls have been accumulated does the code fall through
+         * to the flash/delta logic.  The counter resets on any poll that
+         * reads above LUX_NEAR_ZERO.
+         *
+         * LUX_ZERO_CONFIRM = 4: at 500 ms/poll this requires 2 s of
+         * sustained near-zero before broadcasting.  ALS-PT19 artifacts
+         * last exactly 1 poll (500 ms); genuine lighting changes sustain
+         * for many seconds.  4 polls gives 3 artifact periods of margin
+         * while adding only 2 s of latency to genuine darkness events.    */
+        if (lux <= LUX_NEAR_ZERO) {
             s_zero_confirm++;
             if (s_zero_confirm < LUX_ZERO_CONFIRM) {
-                /* Tentative darkness — update prev_lux so next poll's
-                 * raw_delta is computed from this reading, but skip all
-                 * flash/broadcast logic until confirmed.                */
+                /* Still accumulating -- update prev_lux so raw_delta is
+                 * computed correctly when we eventually confirm, but skip
+                 * all flash/broadcast logic for this poll.                */
                 prev_lux = lux;
                 vTaskDelay(pdMS_TO_TICKS(cfg->lux_poll_interval_ms));
                 continue;
             }
-            /* Confirmed — fall through and let flash/delta logic handle it */
-        } else if (lux > LUX_NEAR_ZERO) {
-            s_zero_confirm = 0;  /* reset whenever we're back in lit range   */
+            /* Confirmed -- fall through and let flash/delta logic handle it */
+        } else {
+            s_zero_confirm = 0;  /* reset on any lit reading               */
         }
 
         float delta     = lux - last_acted_lux;
