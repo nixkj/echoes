@@ -241,6 +241,54 @@ static void wifi_keepalive_task(void *param)
             }
         }
 
+        /* ── HTTP stuck detector ─────────────────────────────────────────
+         *
+         * esp_http_client's timeout_ms sets SO_RCVTIMEO / SO_SNDTIMEO on
+         * the underlying socket, but does NOT apply to the TCP connect()
+         * phase.  When the AP silently drops this node, the WiFi driver
+         * still considers itself associated and keeps retransmitting SYN
+         * frames.  lwIP's exponential-backoff retransmit timer can keep
+         * connect() alive for many minutes — far beyond REMOTE_CONFIG_
+         * HTTP_TIMEOUT_MS — permanently blocking remote_config_task.
+         *
+         * A blocked remote_config_task never increments consecutive_
+         * failures and never reaches RCFG_FAILURES_HARD_REBOOT.  The ISR
+         * WDT should still fire (keepalive_task is independent), but as a
+         * belt-and-suspenders measure we also detect the stuck HTTP call
+         * here and trigger a direct hardware reset.
+         *
+         * g_rcfg_http_attempt_start_ms is set just before
+         * esp_http_client_perform() and cleared on return.  If it has
+         * been non-zero for longer than HTTP_STUCK_TIMEOUT_MS we know
+         * connect() is hung and will never time out on its own.           */
+        {
+            uint32_t attempt_start = g_rcfg_http_attempt_start_ms;
+            if (attempt_start != 0) {
+                uint32_t now_ms     = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+                uint32_t attempt_ms = now_ms - attempt_start;
+                if (attempt_ms > HTTP_STUCK_TIMEOUT_MS) {
+                    /* Read diagnostics from task context (safe here). */
+                    int8_t rssi = 0;
+                    wifi_ap_record_t ap;
+                    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+                        rssi = ap.rssi;
+                    }
+                    ESP_LOGE(TAG,
+                             "HTTP stuck for %lums — AP silently dropped node."
+                             "  Triggering hardware reset.",
+                             (unsigned long)attempt_ms);
+                    startup_write_rtc_diag(
+                        RTC_DIAG_CAUSE_HTTP_STUCK,
+                        0,                          /* consecutive_failures N/A */
+                        (uint32_t)esp_get_free_heap_size(),
+                        (int32_t)rssi,
+                        (uint32_t)(now_ms / 1000));
+                    SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
+                    while (1) { }   /* never reached */
+                }
+            }
+        }
+
         vTaskDelay(pdMS_TO_TICKS(WIFI_KEEPALIVE_INTERVAL_MS));
 
         /* Skip all WiFi work when the driver knows it's disconnected.

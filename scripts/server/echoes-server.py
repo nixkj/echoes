@@ -21,6 +21,7 @@ build.sh deploy.
 """
 
 from flask import Flask, jsonify, request, render_template_string, send_from_directory
+import argparse
 import csv
 import json
 import logging
@@ -39,12 +40,12 @@ from logging.handlers import RotatingFileHandler
 # Logging
 # ---------------------------------------------------------------------------
 
-def _setup_logging(log_dir: Path) -> None:
+def _setup_logging(log_dir: Path, debug: bool = False) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     fmt = logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s",
                             datefmt="%Y-%m-%d %H:%M:%S")
     root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    root.setLevel(logging.DEBUG if debug else logging.INFO)
     # Console
     ch = logging.StreamHandler()
     ch.setFormatter(fmt)
@@ -548,6 +549,15 @@ _STALE_THRESHOLD_S = 180
 # 60 seconds for a node that is known to be down.
 _STALE_REPEAT_S = 300   # re-warn every 5 minutes at most
 
+# Human-readable labels for RTC_DIAG_CAUSE_* constants (must match startup.h).
+_CAUSE_LABELS = {
+    0: "NONE",
+    1: "RCFG_REBOOT",
+    2: "REMOTE_CMD",
+    3: "ISR_WDT",
+    4: "HTTP_STUCK",
+}
+
 def _stale_node_monitor() -> None:
     """Background thread: warn when a node stops polling.
 
@@ -721,13 +731,14 @@ def startup_report():
         # Log prev_diag whenever present — this is the key diagnostic record
         # that tells us what state a node was in immediately before it reset.
         if prev_diag:
-            cause    = prev_diag.get("cause",    "?")
+            cause_raw   = prev_diag.get("cause", "?")
+            cause_label = _CAUSE_LABELS.get(cause_raw, f"UNKNOWN({cause_raw})")
             failures = prev_diag.get("failures", "?")
             heap     = prev_diag.get("heap",     "?")
             rssi     = prev_diag.get("rssi",     "?")
             uptime   = prev_diag.get("uptime_s", "?")
             log.warning(
-                f"PREV_DIAG  {mac}  cause={cause}  failures={failures}"
+                f"PREV_DIAG  {mac}  cause={cause_label}  failures={failures}"
                 f"  heap={heap}  rssi={rssi}  uptime={uptime}s"
             )
 
@@ -739,7 +750,8 @@ def startup_report():
         errors_str = error_msg if (has_errors and error_msg) else ("unknown error" if has_errors else "NO")
         diag_str   = ""
         if prev_diag:
-            diag_str = (f" | PrevDiag: cause={prev_diag.get('cause','?')}"
+            cause_raw = prev_diag.get("cause", "?")
+            diag_str = (f" | PrevDiag: cause={_CAUSE_LABELS.get(cause_raw, 'UNKNOWN(' + str(cause_raw) + ')')}"
                         f" failures={prev_diag.get('failures','?')}"
                         f" heap={prev_diag.get('heap','?')}"
                         f" rssi={prev_diag.get('rssi','?')}"
@@ -841,7 +853,6 @@ def get_config():
     # These give 60-second-resolution visibility into node health without
     # requiring serial access.  Logged at DEBUG normally, WARNING when
     # consecutive failures > 0 so abnormal nodes stand out in the log.
-    # For now have set log to INFO while troubleshooting
     heap     = request.headers.get("X-Heap-Free",     "")
     uptime   = request.headers.get("X-Uptime-S",      "")
     failures = request.headers.get("X-Poll-Failures", "")
@@ -856,11 +867,9 @@ def get_config():
             if int(failures) > 0:
                 log.warning(diag)
             else:
-                #log.debug(diag)
-                log.info(diag)
+                log.debug(diag)
         except (ValueError, TypeError):
-            #log.debug(diag)
-            log.info(diag)
+            log.debug(diag)
 
     flat = {k: v["value"] for k, v in _config.items()}
     flat["_server_time"]        = time.time()
@@ -1768,10 +1777,49 @@ def web_ui():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Echoes of the Machine — fleet server (port 8002)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python3 echoes-server.py                  # normal operation
+  python3 echoes-server.py --debug          # DEBUG logging (all polls visible)
+  python3 echoes-server.py --port 8080      # custom port
+  python3 echoes-server.py --debug --port 8080
+
+Debug mode enables:
+  - All log.debug() calls (individual polls, Tasmota failures, etc.)
+  - Flask debug mode (auto-reload on code change, detailed tracebacks)
+""",
+    )
+    parser.add_argument(
+        "--debug", "-d",
+        action="store_true",
+        default=False,
+        help="Enable DEBUG-level logging and Flask debug mode",
+    )
+    parser.add_argument(
+        "--port", "-p",
+        type=int,
+        default=8002,
+        metavar="PORT",
+        help="TCP port to listen on (default: 8002)",
+    )
+    args = parser.parse_args()
+
+    # Re-initialise logging now that we know the --debug flag.
+    # _setup_logging() was already called at module load time (INFO level) so
+    # background threads already have a working logger.  Clear existing handlers
+    # first to avoid duplicates, then re-add with the correct level.
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    _setup_logging(LOG_DIR, debug=args.debug)
+
     FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
     log.info("=" * 60)
     log.info("Echoes of the Machine — Consolidated Server")
-    log.info(f"Port         : 8002")
+    log.info(f"Port         : {args.port}")
+    log.info(f"Log level    : {'DEBUG' if args.debug else 'INFO'}")
     log.info(f"Nodes file   : {NODES_FILE}  ({len(_catalogue)} node(s))")
     log.info(f"Config file  : {CONFIG_FILE}")
     log.info(f"Firmware dir : {FIRMWARE_DIR}")
@@ -1783,4 +1831,6 @@ if __name__ == "__main__":
     log.info("  GET  /nodes             fleet registry JSON")
     log.info("  GET  /                  config + fleet web UI")
     log.info("=" * 60)
-    app.run(host="0.0.0.0", port=8002, debug=False, threaded=True)
+    if args.debug:
+        log.debug("DEBUG logging active — every poll will be visible in the log")
+    app.run(host="0.0.0.0", port=args.port, debug=args.debug, threaded=True)

@@ -54,6 +54,26 @@
 /** HTTP timeout for config fetch (ms). */
 #define REMOTE_CONFIG_HTTP_TIMEOUT_MS    8000
 
+/**
+ * @brief Timestamp (tick ms) set when esp_http_client_perform() is entered,
+ * cleared to 0 when it returns (success or failure).
+ *
+ * wifi_keepalive_task monitors this value.  If an attempt stays in-flight for
+ * longer than HTTP_STUCK_TIMEOUT_MS the keepalive task performs a direct
+ * hardware reset — this catches the case where TCP connect() hangs
+ * indefinitely because the AP has silently dropped the node but the lwIP
+ * retransmit timer keeps the call alive for minutes.
+ *
+ * Written only by remote_config_task (single writer).
+ * Read only by wifi_keepalive_task (single reader).
+ * volatile is sufficient — no mutex needed for this flag pattern.
+ */
+extern volatile uint32_t g_rcfg_http_attempt_start_ms;
+
+/** If g_rcfg_http_attempt_start_ms is non-zero and older than this,
+ *  wifi_keepalive_task triggers an immediate hardware reset (ms). */
+#define HTTP_STUCK_TIMEOUT_MS  30000    /* 30 s — 4× nominal HTTP timeout */
+
 /** Maximum size of the JSON response body (bytes). */
 #define REMOTE_CONFIG_MAX_BODY_SIZE      4096
 

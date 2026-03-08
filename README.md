@@ -200,7 +200,7 @@ All logs are written to `/var/log/echoes/`:
 ### Using build.sh (recommended)
 
 ```bash
-./build.sh version patch     # 7.1.2 → 7.1.3 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh version patch     # 7.1.3 → 7.1.4 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
 ./build.sh deploy            # Copy binary + version.txt to /opt/echoes/firmware/; archive copy saved to firmware/archive/<version>/
 ```
@@ -217,7 +217,7 @@ Or in one step:
 # Edit FIRMWARE_VERSION in main/ota.h, then:
 idf.py build
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.1.2" > /opt/echoes/firmware/version.txt
+echo "7.1.3" > /opt/echoes/firmware/version.txt
 ```
 
 Each deploy also saves a copy of the binary to `/opt/echoes/firmware/archive/<version>/` alongside a `manifest.txt` recording the version, timestamp, deploying user, MD5, and file size. If the same version is deployed again the archive entry is suffixed with a datestamp rather than overwritten.
@@ -236,9 +236,9 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.1.2 → 7.1.3) |
-| `./build.sh version minor` | Increment minor version (e.g. 7.1.2 → 7.2.0) |
-| `./build.sh version major` | Increment major version (e.g. 7.1.2 → 8.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.1.3 → 7.1.4) |
+| `./build.sh version minor` | Increment minor version (e.g. 7.1.3 → 7.2.0) |
+| `./build.sh version major` | Increment major version (e.g. 7.1.3 → 8.0.0) |
 | `./build.sh deploy` | Copy binary and `version.txt` to `/opt/echoes/firmware/`; archive a versioned copy with manifest to `/opt/echoes/firmware/archive/<version>/` |
 | `./build.sh services` | Install the consolidated `echoes-server` as a systemd service (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -387,7 +387,7 @@ I (567) main_task: Calling app_main()
 I (570) ECHOES: LEDs initialized
 I (572) MAIN: ========================================
 I (577) MAIN: Echoes of the Machine
-I (580) MAIN: Firmware Version: 7.1.2
+I (580) MAIN: Firmware Version: 7.1.3
 I (584) MAIN: ========================================
 I (606) RCFG: Remote config initialised with defaults
 I (606) MAIN: Initializing system...
@@ -434,9 +434,10 @@ I (7733) ECHOES: 🎤 Listening for whistles, voice, claps, and birdsong...
 
 ## Version History
 
-**7.1.2** Current version
+**7.1.3** Current version
 - Tidy up the code that was not making any difference to Wi-Fi on the minimal nodes
 - Include additional diagnostic information to try get to the bottom of minimal nodes dropping
+- Add a debug option to echoes-server.py
 
 **7.0.8** 
 - Attempt to further improve WDT/ISR and Wi-Fi reconnect on minimal nodes

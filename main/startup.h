@@ -48,10 +48,11 @@
 #define RTC_DIAG_MAGIC          0xD1A90001u
 
 /* reset cause codes stored in echoes_rtc_diag_t.cause */
-#define RTC_DIAG_CAUSE_NONE     0u   /* no prior diagnostic (power-on or first boot) */
-#define RTC_DIAG_CAUSE_RCFG     1u   /* remote_config_task: RCFG_FAILURES_HARD_REBOOT */
-#define RTC_DIAG_CAUSE_REMOTE   2u   /* remote_config_task: server-commanded restart   */
-#define RTC_DIAG_CAUSE_ISR_WDT  3u   /* ISR hardware watchdog timeout                  */
+#define RTC_DIAG_CAUSE_NONE      0u  /* no prior diagnostic (power-on or first boot)    */
+#define RTC_DIAG_CAUSE_RCFG      1u  /* remote_config_task: RCFG_FAILURES_HARD_REBOOT   */
+#define RTC_DIAG_CAUSE_REMOTE    2u  /* remote_config_task: server-commanded restart     */
+#define RTC_DIAG_CAUSE_ISR_WDT   3u  /* ISR hardware watchdog timeout                   */
+#define RTC_DIAG_CAUSE_HTTP_STUCK 4u /* wifi_keepalive: HTTP connect() hung > 30 s      */
 
 typedef struct {
     uint32_t magic;              /* RTC_DIAG_MAGIC when struct is valid               */

@@ -158,6 +158,11 @@ static const remote_config_t CONFIG_DEFAULTS = {
 
 static remote_config_t s_cfg;
 
+/* Set to xTaskGetTickCount()*portTICK_PERIOD_MS just before
+ * esp_http_client_perform() and cleared to 0 on return.
+ * Monitored by wifi_keepalive_task to detect a hung connect(). */
+volatile uint32_t g_rcfg_http_attempt_start_ms = 0;
+
 /* Mutex that protects s_cfg against concurrent read/write between the
  * remote_config_task (writer) and any application task calling
  * remote_config_get() (readers).  On a dual-core ESP32 multi-byte struct
@@ -414,7 +419,16 @@ esp_err_t remote_config_fetch(int failures)
         esp_http_client_set_header(client, "X-RSSI", buf);
     }
 
+    /* Mark the attempt start so wifi_keepalive_task can detect a hung
+     * connect().  Cleared unconditionally before this function returns. */
+    g_rcfg_http_attempt_start_ms =
+        (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
     esp_err_t err = esp_http_client_perform(client);
+
+    /* Clear immediately — the hung-connect window is over either way. */
+    g_rcfg_http_attempt_start_ms = 0;
+
     int status    = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
