@@ -338,6 +338,20 @@ static void wifi_keepalive_task(void *param)
             close(s_ka_sock);
             s_ka_sock = -1;
         }
+
+        /* ── ESP-NOW heartbeat ───────────────────────────────────────────
+         *
+         * Executes a complete 802.11 CSMA/CA transmit cycle on the radio,
+         * keeping the TX state machine active so the AP's null-frame
+         * keepalive probes are reliably ACKed.
+         *
+         * Placed here — after the UDP probe, inside wifi_is_connected() —
+         * so it only fires when the radio is in a known-good associated
+         * state.  espnow_mesh_broadcast_heartbeat() is always safe to call
+         * after espnow_mesh_init() (which runs before this task is created
+         * on both the WiFi and no-WiFi boot paths); a failed send logs a
+         * warning and returns without blocking.                            */
+        espnow_mesh_broadcast_heartbeat();
     }
 }
 

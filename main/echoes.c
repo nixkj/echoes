@@ -455,16 +455,35 @@ float get_lux_level(void)
 
         if (adc_handle == NULL) return -1.0f;
 
-        int adc_raw;
-        esp_err_t ret = adc_oneshot_read(adc_handle,
-                                         ADC_CHANNEL_6,
-                                         &adc_raw);
+        /* Multi-sample averaging with zero-rejection.
+         *
+         * A single adc_oneshot_read() on the ALS-PT19 can occasionally
+         * return 0 due to charge-injection from the ADC's internal sampling
+         * capacitor discharging through the sensor's high source impedance
+         * (~50 kΩ).  Taking ADC_OVERSAMPLE readings and averaging only the
+         * non-zero results suppresses these artefacts without masking genuine
+         * darkness — if ALL reads return 0 the room really is dark and we
+         * return 0.0 correctly.
+         *
+         * Four back-to-back oneshot reads add ~200 µs overhead total, which
+         * is immaterial at the 500 ms LUX_POLL_INTERVAL_MS call rate.      */
+#define ADC_OVERSAMPLE  4
+        int32_t adc_sum   = 0;
+        int     adc_valid = 0;
 
-        if (ret == ESP_OK) {
-            return adc_raw * 0.24f;   // Your rough lux estimate
+        for (int s = 0; s < ADC_OVERSAMPLE; s++) {
+            int raw = 0;
+            if (adc_oneshot_read(adc_handle, ADC_CHANNEL_6, &raw) == ESP_OK
+                    && raw > 0) {
+                adc_sum += raw;
+                adc_valid++;
+            }
         }
 
-        return -1.0f;
+        /* All reads returned 0 → room is genuinely dark, return 0.0.
+         * At least one non-zero read → average those only.           */
+        if (adc_valid == 0) return 0.0f;
+        return (float)(adc_sum / adc_valid) * 0.24f;
     }
 
     return -1.0f;
@@ -1026,6 +1045,36 @@ void lux_based_birds_task(void *param) {
     float last_acted_lux = -1000.0f;  /* lux at the last mapper update */
     float prev_lux       = -1.0f;     /* reading from the previous tick */
 
+    /* Near-zero confirmation counter.
+     *
+     * A genuine transition into darkness (prev_lux > LUX_NEAR_ZERO, lux ~0)
+     * must be observed on LUX_ZERO_CONFIRM consecutive polls before the task
+     * acts on it and broadcasts to the mesh.  This provides a one-poll grace
+     * period that filters the common pattern of:
+     *
+     *   poll N  : brief light event (phone torch etc.)  → real reading, act
+     *   poll N+1: light source gone, room dark           → 0.0, wait
+     *   poll N+2: still dark                             → 0.0, confirmed, act
+     *
+     * Without confirmation, poll N+1 immediately triggers a flash-detection
+     * broadcast for the sudden darkness, which is technically correct but
+     * produces a noisy mesh event for a transient that the installation did
+     * not meaningfully experience.  With one confirmation poll the transient
+     * must persist for LUX_POLL_INTERVAL_MS before being acted upon, which
+     * is long enough to distinguish a genuine lighting change from a brief
+     * phone torch that already turned off by the next sample.
+     *
+     * LUX_NEAR_ZERO: anything below this is treated as "effectively dark"
+     *   for the purpose of this guard.  2 lux captures readings that the
+     *   ADC rounds to 0–8 raw counts in a dim but non-zero environment.
+     *
+     * LUX_ZERO_CONFIRM: 2 means one extra poll (the transition poll plus
+     *   one confirmation).  Adds at most LUX_POLL_INTERVAL_MS (500 ms)
+     *   latency to genuine darkness broadcasts — imperceptible.           */
+#define LUX_NEAR_ZERO      2.0f   /* lux threshold for "effectively dark"  */
+#define LUX_ZERO_CONFIRM   2      /* consecutive polls required to confirm  */
+    int s_zero_confirm = 0;
+
     while (1) {
         esp_task_wdt_reset();  /* fed each poll cycle — proves task is alive */
 
@@ -1041,6 +1090,22 @@ void lux_based_birds_task(void *param) {
         if (lux < 0.0f) {
             vTaskDelay(pdMS_TO_TICKS(cfg->lux_poll_interval_ms));
             continue;
+        }
+
+        /* Near-zero confirmation gate — see block comment above. */
+        if (lux <= LUX_NEAR_ZERO && prev_lux > LUX_NEAR_ZERO) {
+            s_zero_confirm++;
+            if (s_zero_confirm < LUX_ZERO_CONFIRM) {
+                /* Tentative darkness — update prev_lux so next poll's
+                 * raw_delta is computed from this reading, but skip all
+                 * flash/broadcast logic until confirmed.                */
+                prev_lux = lux;
+                vTaskDelay(pdMS_TO_TICKS(cfg->lux_poll_interval_ms));
+                continue;
+            }
+            /* Confirmed — fall through and let flash/delta logic handle it */
+        } else if (lux > LUX_NEAR_ZERO) {
+            s_zero_confirm = 0;  /* reset whenever we're back in lit range   */
         }
 
         float delta     = lux - last_acted_lux;
