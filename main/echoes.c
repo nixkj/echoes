@@ -1110,69 +1110,6 @@ void lux_based_birds_task(void *param) {
     vTaskDelete(NULL);
 }
 
-/* ========================================================================
- * MINIMAL NODE LUX REPORT TASK
- *
- * Lightweight lux reporter for minimal (no-speaker) nodes.
- *
- * Purpose: broadcast ambient light level to the mesh so full nodes can
- * factor in lux readings from across the installation, not just their
- * own sensor.  Minimal nodes have an analog ADC sensor (GPIO34) but no
- * BH1750, speaker, or Markov chain.
- *
- * Deliberately NOT used for flash detection, bird-call triggering, or
- * Markov updates — those are full-node responsibilities.  This task only
- * reads and broadcasts, keeping its RF footprint small.
- *
- * Rate: polls every LUX_REPORT_INTERVAL_MS (5 s).  This is 10× slower
- * than the full-node lux task's 500 ms rate.  Lux is a slowly-varying
- * ambient signal; 5-second resolution is sufficient for the installation's
- * mood-following behaviour.  The lower rate also reduces ESP-NOW TX load
- * on the shared WiFi channel — with 25 minimal nodes at 5 s each, the
- * contribution is ≤ 5 frames/s fleet-wide, vs 50 frames/s if all 25 ran
- * at 500 ms.
- *
- * The broadcast is additionally gated by espnow_lux_threshold (remote
- * config): a reading is only sent if it differs from the last transmitted
- * value by at least that amount.  This suppresses chatter when lux is
- * stable (e.g. overnight).
- * ======================================================================== */
-
-#define LUX_REPORT_INTERVAL_MS  5000   /* 5 s — slow poll for ambient lux */
-
-void lux_report_task(void *param)
-{
-    (void)param;
-
-    if (g_system_state.light_sensor_type == LIGHT_SENSOR_NONE) {
-        ESP_LOGW(TAG, "lux_report: no sensor — task exiting");
-        vTaskDelete(NULL);
-        return;
-    }
-
-    ESP_LOGI(TAG, "lux_report: minimal lux broadcast active (%d s interval)",
-             LUX_REPORT_INTERVAL_MS / 1000);
-
-    float last_broadcast_lux = -1000.0f;
-
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(LUX_REPORT_INTERVAL_MS));
-
-        float lux = get_lux_level();
-        if (lux < 0.0f) continue;   /* sensor read failed — skip */
-
-        const remote_config_t *cfg = remote_config_get();
-        float threshold = cfg->espnow_lux_threshold;
-
-        if (fabsf(lux - last_broadcast_lux) >= threshold) {
-            espnow_mesh_broadcast_light(lux);
-            last_broadcast_lux = lux;
-            ESP_LOGD(TAG, "lux_report: broadcast %.1f lux", lux);
-        }
-    }
-
-    vTaskDelete(NULL);
-}
 
 /* ========================================================================
  * FLOCK MODE TASK

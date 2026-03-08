@@ -307,7 +307,6 @@ void generate_and_play_bird_call(bird_call_mapper_t *mapper, const char *functio
 
 /* Lux-based bird selection */
 void lux_based_birds_task(void *param);
-void lux_report_task(void *param);
 
 /* Flock mode — driven by ESP-NOW mesh message rate */
 void flock_task(void *param);

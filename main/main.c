@@ -480,8 +480,8 @@ void app_main(void)
          * (either after a successful update+restart, or after all retry attempts
          * are exhausted).  We resume them explicitly below.
          *
-         * NOTE: lux_based_birds_task is only created for full hardware, so its
-         * handle may be NULL — ota_register_tasks() accepts NULL safely.
+         * NOTE: lux_based_birds_task handle may be NULL if creation failed —
+         * ota_register_tasks() accepts NULL safely.
          */
 
         /* -- Pre-create tasks in suspended state for OTA registration -- */
@@ -509,10 +509,8 @@ void app_main(void)
         xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, &h_audio);
         if (h_audio)  vTaskSuspend(h_audio);
 
-        if (hw_config == HW_CONFIG_FULL) {
-            xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, &h_lux);
-            if (h_lux)  vTaskSuspend(h_lux);
-        }
+        xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, &h_lux);
+        if (h_lux)  vTaskSuspend(h_lux);
 
         xTaskCreate(flock_task, "flock", 4096, NULL, 4, &h_flock);
         if (h_flock)  vTaskSuspend(h_flock);
@@ -626,14 +624,7 @@ void app_main(void)
         ota_resume_tasks();
         ESP_LOGI(TAG, "Application tasks resumed");
 
-        /* Minimal nodes report ambient lux to the mesh via a lightweight
-         * dedicated task.  Started here — after espnow_mesh_init() — so
-         * esp_now_send() is never called before the stack is ready.
-         * Priority 3: same as demo_task, below audio/lux/flock.           */
-        if (hw_config == HW_CONFIG_MINIMAL) {
-            xTaskCreate(lux_report_task, "lux_report", 2048, NULL, 3, NULL);
-            ESP_LOGI(TAG, "Minimal lux report task started");
-        }
+
 
         /* esp_wifi_set_ps(WIFI_PS_NONE) is now called in the IP_EVENT_STA_GOT_IP
          * event handler (ota.c) so it applies on every (re)connect, including
@@ -707,21 +698,13 @@ void app_main(void)
         /* Stack: see WiFi path above for sizing rationale. */
         xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, NULL);
 
-        if (hw_config == HW_CONFIG_FULL) {
-            xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
-        }
+        xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
 
         xTaskCreate(flock_task, "flock", 4096, NULL, 4, NULL);
         ESP_LOGI(TAG, "Flock task started");
 
         xTaskCreate(demo_task, "demo", 4096, NULL, 3, NULL);
         ESP_LOGI(TAG, "Demo task started");
-
-        /* Minimal lux reporter — started after espnow_mesh_init() above. */
-        if (hw_config == HW_CONFIG_MINIMAL) {
-            xTaskCreate(lux_report_task, "lux_report", 2048, NULL, 3, NULL);
-            ESP_LOGI(TAG, "Minimal lux report task started");
-        }
     } else {
         ESP_LOGI(TAG, "Echoes of the Machine running (tasks already started)");
     }
