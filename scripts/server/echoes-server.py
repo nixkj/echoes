@@ -539,12 +539,74 @@ def _registry_background_saver() -> None:
             _registry_dirty = False
 
 
+# How long without a poll before a node is considered stale.
+# 3× the 60-second poll interval gives one missed poll as tolerance.
+_STALE_THRESHOLD_S = 180
+
+# How long to suppress repeat STALE warnings for the same node once it has
+# already been flagged.  Avoids filling the log with the same warning every
+# 60 seconds for a node that is known to be down.
+_STALE_REPEAT_S = 300   # re-warn every 5 minutes at most
+
+def _stale_node_monitor() -> None:
+    """Background thread: warn when a node stops polling.
+
+    Checks every 60 seconds.  Emits a WARNING the first time a node's
+    last_seen_ts goes stale, then suppresses repeats for _STALE_REPEAT_S
+    seconds so the log doesn't flood for a node that remains down.
+    Logs a recovery INFO when a previously-stale node is seen again.
+    """
+    # mac → timestamp of last STALE warning emitted (or 0 if node is healthy)
+    last_warned: dict = {}
+
+    # Small startup grace: don't warn about nodes that haven't polled yet
+    # (e.g. server just started, nodes are still booting).
+    time.sleep(_STALE_THRESHOLD_S)
+
+    while True:
+        time.sleep(60)
+        now = time.time()
+        with _nodes_lock:
+            snapshot = list(_nodes.items())
+
+        for mac, node in snapshot:
+            ts = node.get("last_seen_ts")
+            if not ts:
+                continue   # node has never polled (startup-report only)
+
+            silent_s = int(now - ts)
+            node_id   = node.get("id", "?")
+            node_type = node.get("node_type", "?")
+            last_seen = node.get("last_seen", "?")
+
+            if silent_s > _STALE_THRESHOLD_S:
+                prev_warn = last_warned.get(mac, 0)
+                if now - prev_warn >= _STALE_REPEAT_S:
+                    log.warning(
+                        f"STALE  {mac}  id={node_id}  type={node_type}"
+                        f"  last_seen={last_seen}  silent={silent_s}s"
+                    )
+                    last_warned[mac] = now
+            else:
+                # Node is healthy — if it was previously flagged, log recovery
+                if mac in last_warned and last_warned[mac] > 0:
+                    log.info(
+                        f"RECOVERED  {mac}  id={node_id}  type={node_type}"
+                        f"  was_silent={int(last_warned[mac] - ts)}s"
+                    )
+                    last_warned[mac] = 0
+
+
 # Load persisted state immediately at import time (works with WSGI runners too)
 _load_nodes()
 
 # Start background saver daemon thread
 _saver_thread = threading.Thread(target=_registry_background_saver, daemon=True, name="registry-saver")
 _saver_thread.start()
+
+# Start stale-node monitor daemon thread
+_stale_thread = threading.Thread(target=_stale_node_monitor, daemon=True, name="stale-monitor")
+_stale_thread.start()
 
 
 def _node_startup(mac: str, node_type: str, firmware: str, ip: str) -> None:
@@ -794,8 +856,10 @@ def get_config():
             if int(failures) > 0:
                 log.warning(diag)
             else:
+                #log.debug(diag)
                 log.info(diag)
         except (ValueError, TypeError):
+            #log.debug(diag)
             log.info(diag)
 
     flat = {k: v["value"] for k, v in _config.items()}
