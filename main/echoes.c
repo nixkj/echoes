@@ -455,35 +455,16 @@ float get_lux_level(void)
 
         if (adc_handle == NULL) return -1.0f;
 
-        /* Multi-sample averaging with zero-rejection.
-         *
-         * A single adc_oneshot_read() on the ALS-PT19 can occasionally
-         * return 0 due to charge-injection from the ADC's internal sampling
-         * capacitor discharging through the sensor's high source impedance
-         * (~50 kΩ).  Taking ADC_OVERSAMPLE readings and averaging only the
-         * non-zero results suppresses these artefacts without masking genuine
-         * darkness — if ALL reads return 0 the room really is dark and we
-         * return 0.0 correctly.
-         *
-         * Four back-to-back oneshot reads add ~200 µs overhead total, which
-         * is immaterial at the 500 ms LUX_POLL_INTERVAL_MS call rate.      */
-#define ADC_OVERSAMPLE  4
-        int32_t adc_sum   = 0;
-        int     adc_valid = 0;
+        int adc_raw;
+        esp_err_t ret = adc_oneshot_read(adc_handle,
+                                         ADC_CHANNEL_6,
+                                         &adc_raw);
 
-        for (int s = 0; s < ADC_OVERSAMPLE; s++) {
-            int raw = 0;
-            if (adc_oneshot_read(adc_handle, ADC_CHANNEL_6, &raw) == ESP_OK
-                    && raw > 0) {
-                adc_sum += raw;
-                adc_valid++;
-            }
+        if (ret == ESP_OK) {
+            return adc_raw * 0.24f;   // Your rough lux estimate
         }
 
-        /* All reads returned 0 → room is genuinely dark, return 0.0.
-         * At least one non-zero read → average those only.           */
-        if (adc_valid == 0) return 0.0f;
-        return (float)(adc_sum / adc_valid) * 0.24f;
+        return -1.0f;
     }
 
     return -1.0f;
@@ -1045,14 +1026,8 @@ void lux_based_birds_task(void *param) {
     float last_acted_lux = -1000.0f;  /* lux at the last mapper update */
     float prev_lux       = -1.0f;     /* reading from the previous tick */
 
-    /* s_zero_confirm: counts consecutive near-zero polls.
-     * Full logic is documented at the gate itself, below.                */
-#define LUX_NEAR_ZERO      2.0f   /* lux threshold for "effectively dark"  */
-#define LUX_ZERO_CONFIRM   6      /* consecutive polls required to confirm  */
-    int s_zero_confirm = 0;
-
     while (1) {
-        esp_task_wdt_reset();  /* fed each poll cycle -- proves task is alive */
+        esp_task_wdt_reset();  /* fed each poll cycle — proves task is alive */
 
         remote_config_t cfg_snap;
         if (!remote_config_snapshot(&cfg_snap)) {
@@ -1066,42 +1041,6 @@ void lux_based_birds_task(void *param) {
         if (lux < 0.0f) {
             vTaskDelay(pdMS_TO_TICKS(cfg->lux_poll_interval_ms));
             continue;
-        }
-
-        /* Near-zero confirmation gate.
-         *
-         * Bug in previous version: the condition was
-         *   lux <= LUX_NEAR_ZERO && prev_lux > LUX_NEAR_ZERO
-         * which only triggered on the FIRST transition into the near-zero
-         * range.  On the second consecutive zero poll prev_lux had already
-         * been set to the held near-zero value, so the condition was false
-         * and the zero broadcast through -- producing the consistent ~1.0 s
-         * (2-poll) artifact seen in the sniffer logs.
-         *
-         * Fix: gate on lux <= LUX_NEAR_ZERO unconditionally.  Every near-
-         * zero poll increments the counter; only once LUX_ZERO_CONFIRM
-         * consecutive polls have been accumulated does the code fall through
-         * to the flash/delta logic.  The counter resets on any poll that
-         * reads above LUX_NEAR_ZERO.
-         *
-         * LUX_ZERO_CONFIRM = 6: at 500 ms/poll this requires 3 s of
-         * sustained near-zero before broadcasting.  Live captures show
-         * the ALS-PT19 artifact lasts exactly 4 consecutive polls (~2 s);
-         * 6 polls gives 2 full polls of margin above that while adding
-         * only 3 s of latency to genuine sustained darkness events.        */
-        if (lux <= LUX_NEAR_ZERO) {
-            s_zero_confirm++;
-            if (s_zero_confirm < LUX_ZERO_CONFIRM) {
-                /* Still accumulating -- update prev_lux so raw_delta is
-                 * computed correctly when we eventually confirm, but skip
-                 * all flash/broadcast logic for this poll.                */
-                prev_lux = lux;
-                vTaskDelay(pdMS_TO_TICKS(cfg->lux_poll_interval_ms));
-                continue;
-            }
-            /* Confirmed -- fall through and let flash/delta logic handle it */
-        } else {
-            s_zero_confirm = 0;  /* reset on any lit reading               */
         }
 
         float delta     = lux - last_acted_lux;
@@ -1166,6 +1105,70 @@ void lux_based_birds_task(void *param) {
         }
 
         vTaskDelay(pdMS_TO_TICKS(cfg->lux_poll_interval_ms));
+    }
+
+    vTaskDelete(NULL);
+}
+
+/* ========================================================================
+ * MINIMAL NODE LUX REPORT TASK
+ *
+ * Lightweight lux reporter for minimal (no-speaker) nodes.
+ *
+ * Purpose: broadcast ambient light level to the mesh so full nodes can
+ * factor in lux readings from across the installation, not just their
+ * own sensor.  Minimal nodes have an analog ADC sensor (GPIO34) but no
+ * BH1750, speaker, or Markov chain.
+ *
+ * Deliberately NOT used for flash detection, bird-call triggering, or
+ * Markov updates — those are full-node responsibilities.  This task only
+ * reads and broadcasts, keeping its RF footprint small.
+ *
+ * Rate: polls every LUX_REPORT_INTERVAL_MS (5 s).  This is 10× slower
+ * than the full-node lux task's 500 ms rate.  Lux is a slowly-varying
+ * ambient signal; 5-second resolution is sufficient for the installation's
+ * mood-following behaviour.  The lower rate also reduces ESP-NOW TX load
+ * on the shared WiFi channel — with 25 minimal nodes at 5 s each, the
+ * contribution is ≤ 5 frames/s fleet-wide, vs 50 frames/s if all 25 ran
+ * at 500 ms.
+ *
+ * The broadcast is additionally gated by espnow_lux_threshold (remote
+ * config): a reading is only sent if it differs from the last transmitted
+ * value by at least that amount.  This suppresses chatter when lux is
+ * stable (e.g. overnight).
+ * ======================================================================== */
+
+#define LUX_REPORT_INTERVAL_MS  5000   /* 5 s — slow poll for ambient lux */
+
+void lux_report_task(void *param)
+{
+    (void)param;
+
+    if (g_system_state.light_sensor_type == LIGHT_SENSOR_NONE) {
+        ESP_LOGW(TAG, "lux_report: no sensor — task exiting");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "lux_report: minimal lux broadcast active (%d s interval)",
+             LUX_REPORT_INTERVAL_MS / 1000);
+
+    float last_broadcast_lux = -1000.0f;
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(LUX_REPORT_INTERVAL_MS));
+
+        float lux = get_lux_level();
+        if (lux < 0.0f) continue;   /* sensor read failed — skip */
+
+        const remote_config_t *cfg = remote_config_get();
+        float threshold = cfg->espnow_lux_threshold;
+
+        if (fabsf(lux - last_broadcast_lux) >= threshold) {
+            espnow_mesh_broadcast_light(lux);
+            last_broadcast_lux = lux;
+            ESP_LOGD(TAG, "lux_report: broadcast %.1f lux", lux);
+        }
     }
 
     vTaskDelete(NULL);
