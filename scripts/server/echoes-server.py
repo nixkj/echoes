@@ -503,6 +503,14 @@ def _load_nodes() -> None:
                     mac = entry.get("mac", "").strip().upper()
                     if not mac:
                         continue
+                    # last_seen_ts is a runtime field — it must NOT survive a
+                    # server restart.  If it were restored, the stale monitor
+                    # would fire immediately for every node whose previous
+                    # session ended more than _STALE_THRESHOLD_S seconds ago,
+                    # producing a flood of false-positive warnings on every
+                    # restart.  Clearing it here means the stale monitor
+                    # ignores a node until it polls the current server instance.
+                    entry["last_seen_ts"] = None
                     if mac in _nodes:
                         # Preserve catalogue id; merge everything else.
                         existing_id = _nodes[mac].get("id")
