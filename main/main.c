@@ -217,6 +217,18 @@ void isr_wdt_lux_feed(void)
     s_lux_alive_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
 
+/**
+ * @brief Return the tick count (ms) of the last lux_task keep-alive stamp.
+ *
+ * Called by espnow_mesh.c to populate ESPNOW_FLAG_LUX_ALIVE in outgoing
+ * messages.  Returns 0 until lux_task has completed its first poll cycle.
+ * Declared extern in espnow_mesh.c to avoid a circular header dependency.
+ */
+uint32_t main_get_lux_alive_ms(void)
+{
+    return s_lux_alive_ms;
+}
+
 /* ========================================================================
  * WIFI KEEPALIVE (minimal nodes only)
  * ========================================================================

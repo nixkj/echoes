@@ -26,6 +26,12 @@
 #include <string.h>
 #include <math.h>
 #include "esp_task_wdt.h"
+#include "esp_timer.h"
+
+/* Both on-wire structs must stay at 8 bytes so the single len-check in
+ * on_data_recv() covers both message types without branching.            */
+_Static_assert(sizeof(espnow_msg_t)        == 8, "espnow_msg_t must be 8 bytes");
+_Static_assert(sizeof(espnow_status_msg_t) == 8, "espnow_status_msg_t must be 8 bytes");
 
 static const char *TAG = "ESPNOW";
 
@@ -66,6 +72,17 @@ static float               s_local_lux       = -1.0f;
 
 /* Timestamp of last sound broadcast */
 static uint32_t s_last_sound_broadcast_ms = 0;
+
+/* ── STATUS heartbeat ──────────────────────────────────────────────────── */
+
+/** How often to send a STATUS heartbeat, in milliseconds.
+ *  30 s × 50 nodes = ~1.7 heartbeats/s fleet-wide — negligible air load.  */
+#define ESPNOW_STATUS_INTERVAL_MS  30000u
+
+/* Per-node TX sequence counter for STATUS messages.  Wraps at 255.
+ * Gaps seen in the sniffer = air congestion / lost packets, not silent node. */
+static uint8_t  s_tx_seq             = 0;
+static uint32_t s_last_status_ms     = 0;   /* when we last sent a STATUS msg */
 
 /* Guard against double-initialisation */
 static bool s_initialized = false;
@@ -238,6 +255,19 @@ static void espnow_rx_task(void *param)
 
 default:
                 break;
+            case ESPNOW_MSG_STATUS: {
+                /* Diagnostic telemetry from a peer — log and discard.
+                 * No functional action; this data is for the sniffer and
+                 * the serial monitor, not for influencing bird selection. */
+                const espnow_status_msg_t *s =
+                    (const espnow_status_msg_t *)(const void *)&msg;
+                ESP_LOGD(TAG,
+                         "Peer STATUS seq=%u rssi=%d http_stale=%um "
+                         "uptime=%um flags=0x%02x",
+                         s->seq, s->rssi, s->http_stale_m,
+                         s->uptime_m, s->status_flags);
+                break;
+            }
             }
 
             } /* end else (s_markov != NULL) */
@@ -254,7 +284,150 @@ default:
          * of message rate, which matches the intent of both functions.     */
         espnow_mesh_tick();
         if (s_markov) markov_tick(s_markov);
+
+        /* ── STATUS heartbeat ────────────────────────────────────────────
+         *
+         * Send a health snapshot every ESPNOW_STATUS_INTERVAL_MS.  This
+         * task runs independently of lux_task and remote_config_task, so
+         * the heartbeat continues even when those tasks have stalled —
+         * making the failure visible on the sniffer without physical access.
+         *
+         * Stagger first transmission by up to 10 s on top of the normal
+         * interval to avoid a synchronised burst when the whole fleet
+         * reboots simultaneously.                                          */
+        {
+            uint32_t now_ms = millis();
+            uint32_t interval = ESPNOW_STATUS_INTERVAL_MS;
+            if (s_last_status_ms == 0) {
+                /* First heartbeat: delay by [interval + random 0-10 s] */
+                interval += (uint32_t)(esp_random() % 10000u);
+            }
+            if ((now_ms - s_last_status_ms) >= interval) {
+                send_status();
+            }
+        }
     }
+}
+
+/* ========================================================================
+ * NODE HEALTH FLAGS  (shared by all outgoing message types)
+ * ========================================================================
+ *
+ * build_status_flags() snapshots the node's health state into the compact
+ * ESPNOW_FLAG_* byte that is included in every outgoing message.  Called
+ * at broadcast time so the flags always reflect the moment of transmission.
+ *
+ * lux_alive relies on s_lux_alive_ms in main.c; we access it via a small
+ * getter rather than exposing the volatile directly across translation units.
+ */
+
+/* Forward declaration — defined in main.c; not in any shared header because
+ * it is only needed here.                                                   */
+extern uint32_t main_get_lux_alive_ms(void);
+
+static uint8_t build_status_flags(void)
+{
+    uint32_t now_ms = millis();
+    uint8_t  flags  = 0;
+
+    /* Node type */
+    if (get_hardware_config() == HW_CONFIG_FULL) {
+        flags |= ESPNOW_FLAG_NODE_FULL;
+    }
+
+    /* WiFi association — note: returns ESP_OK even when the AP has silently
+     * dropped the node, so WIFI_ASSOC only rules OUT a driver-level
+     * disconnect; it does NOT confirm end-to-end connectivity.             */
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        flags |= ESPNOW_FLAG_WIFI_ASSOC;
+    }
+
+    /* HTTP health — the only true end-to-end proof.
+     * 150 s = 2.5 × the 60 s poll interval; a single missed poll does not
+     * clear the flag, but two consecutive failures do.                     */
+    uint32_t last_fetch = remote_config_get()->last_fetch_ms;
+    if (last_fetch != 0 && (now_ms - last_fetch) < 150000u) {
+        flags |= ESPNOW_FLAG_HTTP_RECENT;
+    }
+
+    /* lux_task liveness — same LUX_DEAD_MS window used by wifi_keepalive  */
+    uint32_t lux_stamp = main_get_lux_alive_ms();
+    if (lux_stamp != 0 && (now_ms - lux_stamp) < 10000u /* LUX_DEAD_MS */) {
+        flags |= ESPNOW_FLAG_LUX_ALIVE;
+    }
+
+    /* Flock mode */
+    if (s_flock_active) {
+        flags |= ESPNOW_FLAG_FLOCK;
+    }
+
+    return flags;
+}
+
+/* ========================================================================
+ * STATUS HEARTBEAT
+ * ========================================================================
+ *
+ * Sent every ESPNOW_STATUS_INTERVAL_MS from the espnow_rx_task maintenance
+ * tick — a task that runs independently of lux_task and remote_config_task.
+ * This means a node with a dead lux_task (which produces no lux broadcasts)
+ * is still visible on the sniffer every 30 seconds, making silent-but-alive
+ * failures observable without physical access to the node.
+ *
+ * Key diagnostic fields:
+ *   rssi         — the node's own AP RSSI, not the sniffer-side measurement.
+ *                  Lets us distinguish a node that is far from the AP from
+ *                  one that is close but having driver issues.
+ *   http_stale_m — minutes since last successful HTTP config fetch.
+ *                  Rising value = network connectivity degrading.
+ *                  0 = healthy.  255 = saturated (≥ 4.25 hours stale).
+ *   seq          — TX sequence number.  Gaps in sniffer = air congestion /
+ *                  dropped packets, NOT a silent node.
+ *   uptime_m     — minutes since last reboot.  Lets the sniffer calculate
+ *                  exactly when a node booted and correlate with log events.
+ */
+static void send_status(void)
+{
+    uint32_t now_ms = millis();
+
+    /* RSSI */
+    wifi_ap_record_t ap;
+    int8_t rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) ? (int8_t)ap.rssi : 0;
+
+    /* HTTP staleness in minutes, capped at 255 */
+    uint32_t last_fetch  = remote_config_get()->last_fetch_ms;
+    uint32_t stale_ms    = (last_fetch != 0) ? (now_ms - last_fetch) : UINT32_MAX;
+    uint32_t stale_m_raw = stale_ms / 60000u;
+    uint8_t  http_stale  = (stale_m_raw > 255u) ? 255u : (uint8_t)stale_m_raw;
+
+    /* Uptime in minutes, saturated at 65535 */
+    uint64_t uptime_us  = (uint64_t)esp_timer_get_time();
+    uint32_t uptime_m_raw = (uint32_t)(uptime_us / 60000000ULL);
+    uint16_t uptime_m   = (uptime_m_raw > 65535u) ? 65535u : (uint16_t)uptime_m_raw;
+
+    espnow_status_msg_t msg = {
+        .magic        = ESPNOW_MAGIC,
+        .msg_type     = (uint8_t)ESPNOW_MSG_STATUS,
+        .status_flags = build_status_flags(),
+        .rssi         = rssi,
+        .http_stale_m = http_stale,
+        .seq          = s_tx_seq++,
+        .uptime_m     = uptime_m,
+    };
+
+    esp_err_t err = esp_now_send(BROADCAST_MAC,
+                                 (const uint8_t *)&msg,
+                                 sizeof(msg));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "STATUS broadcast failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGD(TAG,
+                 "STATUS seq=%u rssi=%d http_stale=%um uptime=%um flags=0x%02x",
+                 msg.seq, rssi, http_stale, uptime_m, msg.status_flags);
+    }
+
+    s_last_status_ms = now_ms;
 }
 
 /* ========================================================================
@@ -358,11 +531,11 @@ void espnow_mesh_broadcast_sound(detection_type_t detection)
     }
 
     espnow_msg_t msg = {
-        .magic     = ESPNOW_MAGIC,
-        .msg_type  = (uint8_t)ESPNOW_MSG_SOUND,
-        .detection = (uint8_t)detection,
-        .reserved  = 0,
-        .lux       = 0.0f,
+        .magic        = ESPNOW_MAGIC,
+        .msg_type     = (uint8_t)ESPNOW_MSG_SOUND,
+        .detection    = (uint8_t)detection,
+        .status_flags = build_status_flags(),
+        .lux          = 0.0f,
     };
 
     esp_err_t err = esp_now_send(BROADCAST_MAC,
@@ -388,11 +561,11 @@ void espnow_mesh_broadcast_light(float lux)
     if (s_markov) markov_set_lux(s_markov, lux);
 
     espnow_msg_t msg = {
-        .magic     = ESPNOW_MAGIC,
-        .msg_type  = (uint8_t)ESPNOW_MSG_LIGHT,
-        .detection = 0,
-        .reserved  = 0,
-        .lux       = lux,
+        .magic        = ESPNOW_MAGIC,
+        .msg_type     = (uint8_t)ESPNOW_MSG_LIGHT,
+        .detection    = 0,
+        .status_flags = build_status_flags(),
+        .lux          = lux,
     };
 
     esp_err_t err = esp_now_send(BROADCAST_MAC,

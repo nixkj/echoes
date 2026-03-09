@@ -53,23 +53,83 @@
 #define ESPNOW_MAGIC    0xEC  /**< Simple sanity byte to filter alien traffic */
 
 typedef enum {
-    ESPNOW_MSG_SOUND = 1,   /**< A sound event was detected */
-    ESPNOW_MSG_LIGHT = 2,   /**< Light level changed significantly */
-
+    ESPNOW_MSG_SOUND   = 1, /**< A sound event was detected                  */
+    ESPNOW_MSG_LIGHT   = 2, /**< Light level changed significantly            */
+    ESPNOW_MSG_STATUS  = 3, /**< Periodic node health heartbeat               */
 } espnow_msg_type_t;
 
-/**
- * @brief On-wire message — kept deliberately small (< 250 bytes ESP-NOW limit).
+/* ── Node health flags — carried in status_flags byte of every message ───
  *
- * Total size: 8 bytes.
+ * Included in all outgoing messages so that every broadcast (not just the
+ * 30-second STATUS heartbeat) carries a snapshot of the node's health at
+ * that instant.  Five bits; bits 2-0 are reserved for future use.
+ *
+ * Interpretation when receiving:
+ *   WIFI_ASSOC   — driver association still OK.  Note: this does NOT mean
+ *                  end-to-end connectivity — the AP can drop a node while
+ *                  still reporting association.
+ *   HTTP_RECENT  — a successful config fetch occurred within the last 150 s
+ *                  (2.5 × the 60 s poll interval).  This IS end-to-end proof.
+ *   LUX_ALIVE    — lux_task has stamped its keep-alive within LUX_DEAD_MS
+ *                  (10 s).  If clear on a minimal node, lux_task has stalled.
+ *   FLOCK        — node is currently in flock mode.
+ *   NODE_FULL    — set=full node (BH1750 + audio), clear=minimal node.
+ *
+ * Backward compatibility: older nodes transmitted 0x00 in the byte that is
+ * now status_flags.  Receivers that don't understand the flags will simply
+ * see flags=0x00, which is indistinguishable from a healthy minimal node
+ * at night with no flock — a benign interpretation.                        */
+#define ESPNOW_FLAG_NODE_FULL    (1u << 7)
+#define ESPNOW_FLAG_WIFI_ASSOC   (1u << 6)
+#define ESPNOW_FLAG_HTTP_RECENT  (1u << 5)
+#define ESPNOW_FLAG_LUX_ALIVE    (1u << 4)
+#define ESPNOW_FLAG_FLOCK        (1u << 3)
+/* bits 2-0: reserved */
+
+/**
+ * @brief SOUND / LIGHT on-wire message.
+ *
+ * Total size: 8 bytes.  The `reserved` byte from earlier revisions is now
+ * `status_flags`; on-wire size is unchanged so older receivers are unaffected.
  */
 typedef struct __attribute__((packed)) {
     uint8_t  magic;         /**< Always ESPNOW_MAGIC                          */
-    uint8_t  msg_type;      /**< espnow_msg_type_t                            */
+    uint8_t  msg_type;      /**< ESPNOW_MSG_SOUND or ESPNOW_MSG_LIGHT         */
     uint8_t  detection;     /**< detection_type_t (valid for SOUND messages)  */
-    uint8_t  reserved;      /**< Padding / future use                         */
+    uint8_t  status_flags;  /**< ESPNOW_FLAG_* health bits (was reserved=0)   */
     float    lux;           /**< Current lux reading (valid for LIGHT msgs)   */
 } espnow_msg_t;
+
+/**
+ * @brief Periodic health heartbeat — ESPNOW_MSG_STATUS.
+ *
+ * Sent every ESPNOW_STATUS_INTERVAL_MS from espnow_rx_task regardless of
+ * whether any sound or light events have occurred.  This means a node with
+ * a dead lux_task (no lux broadcasts) is still visible on the sniffer every
+ * 30 seconds, making the failure mode observable before physical intervention.
+ *
+ * Same 8-byte footprint as espnow_msg_t.  The on_data_recv callback already
+ * gates on len == sizeof(espnow_msg_t), and both structs compile to 8 bytes
+ * (enforced by the static assert in espnow_mesh.c).
+ */
+typedef struct __attribute__((packed)) {
+    uint8_t  magic;         /**< Always ESPNOW_MAGIC                          */
+    uint8_t  msg_type;      /**< Always ESPNOW_MSG_STATUS                     */
+    uint8_t  status_flags;  /**< ESPNOW_FLAG_* health bits                    */
+    int8_t   rssi;          /**< AP RSSI in dBm as reported by this node;
+                             *   0 = could not read (e.g. not associated).
+                             *   Note: this is the node's own measurement, not
+                             *   the sniffer-side RSSI.                        */
+    uint8_t  http_stale_m;  /**< Minutes since last successful HTTP fetch;
+                             *   0  = fresh (fetched within the last minute)
+                             *   255 = saturated (≥ 255 min since last fetch) */
+    uint8_t  seq;           /**< Per-node TX sequence counter, wraps at 255.
+                             *   Incremented on every STATUS broadcast.
+                             *   Gaps in the sniffer indicate dropped packets
+                             *   (air congestion) rather than a silent node.   */
+    uint16_t uptime_m;      /**< Minutes since last reboot, saturates at
+                             *   65535 (~45 days).                             */
+} espnow_status_msg_t;
 
 /* ========================================================================
  * PUBLIC API
