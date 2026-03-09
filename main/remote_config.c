@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
+#include "esp_timer.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "cJSON.h"
@@ -158,10 +159,10 @@ static const remote_config_t CONFIG_DEFAULTS = {
 
 static remote_config_t s_cfg;
 
-/* Set to xTaskGetTickCount()*portTICK_PERIOD_MS just before
+/* Set to esp_timer_get_time()/1000 (ms) just before
  * esp_http_client_perform() and cleared to 0 on return.
  * Monitored by wifi_keepalive_task to detect a hung connect(). */
-volatile uint32_t g_rcfg_http_attempt_start_ms = 0;
+volatile uint64_t g_rcfg_http_attempt_start_ms = 0;
 
 /* Mutex that protects s_cfg against concurrent read/write between the
  * remote_config_task (writer) and any application task calling
@@ -343,7 +344,7 @@ static void apply_json_to(cJSON *root, remote_config_t *dst)
         cJSON *_item = cJSON_GetObjectItemCaseSensitive(root, "_server_time");
         if (_item && cJSON_IsNumber(_item)) {
             dst->server_epoch_s = (int64_t)_item->valuedouble;
-            dst->fetch_tick_ms  = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+            dst->fetch_tick_ms  = (uint64_t)(esp_timer_get_time() / 1000ULL);
         }
     }
 }
@@ -403,8 +404,7 @@ esp_err_t remote_config_fetch(int failures)
         esp_http_client_set_header(client, "X-Heap-Free", buf);
 
         snprintf(buf, sizeof(buf), "%lu",
-                 (unsigned long)(xTaskGetTickCount() *
-                                 portTICK_PERIOD_MS / 1000));
+                 (unsigned long)(esp_timer_get_time() / 1000000ULL));
         esp_http_client_set_header(client, "X-Uptime-S", buf);
 
         snprintf(buf, sizeof(buf), "%d", failures);
@@ -421,8 +421,7 @@ esp_err_t remote_config_fetch(int failures)
 
     /* Mark the attempt start so wifi_keepalive_task can detect a hung
      * connect().  Cleared unconditionally before this function returns. */
-    g_rcfg_http_attempt_start_ms =
-        (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    g_rcfg_http_attempt_start_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
 
     esp_err_t err = esp_http_client_perform(client);
 
@@ -464,7 +463,7 @@ esp_err_t remote_config_fetch(int failures)
     cJSON_Delete(root);
 
     tmp.loaded        = true;
-    tmp.last_fetch_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    tmp.last_fetch_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
 
     /* Hold the mutex only for the struct swap — a fast memcpy.            */
     if (xSemaphoreTake(s_cfg_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
@@ -544,8 +543,7 @@ void remote_config_task(void *param)
                             (uint32_t)consecutive_failures,
                             esp_get_free_heap_size(),
                             rssi,
-                            (uint32_t)(xTaskGetTickCount() *
-                                       portTICK_PERIOD_MS / 1000));
+                            (uint32_t)(esp_timer_get_time() / 1000000ULL));
                     }
                     SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
                     while (1) { }   /* does not return — RTC reset fires */
@@ -619,8 +617,7 @@ void remote_config_task(void *param)
                         (uint32_t)consecutive_failures,
                         esp_get_free_heap_size(),
                         rssi,
-                        (uint32_t)(xTaskGetTickCount() *
-                                   portTICK_PERIOD_MS / 1000));
+                        (uint32_t)(esp_timer_get_time() / 1000000ULL));
                 }
 		// Better than esp_restart()
                 SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
@@ -680,7 +677,7 @@ bool remote_config_is_quiet_hours(void)
      * and fetch_tick_ms all come from the same config fetch cycle).        */
     bool     enabled;
     int64_t  epoch_s;
-    uint32_t tick_ms;
+    uint64_t tick_ms;
     uint8_t  qs, qe;
 
     /* Safety guard: mutex is created in remote_config_init().  If this
@@ -705,8 +702,8 @@ bool remote_config_is_quiet_hours(void)
     if (epoch_s == 0)  return false;   /* no time reference yet */
 
     /* Estimate elapsed seconds since last config fetch */
-    uint32_t now_ms   = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    uint32_t delta_ms = now_ms - tick_ms;   /* wraps safely at 32-bit */
+    uint64_t now_ms   = (uint64_t)(esp_timer_get_time() / 1000ULL);
+    uint64_t delta_ms = now_ms - tick_ms;   /* uint64_t, no wrap concern */
     int64_t  epoch_now = epoch_s + (int64_t)(delta_ms / 1000);
 
     /* Extract hour from epoch (UTC, or local if server sends local time) */

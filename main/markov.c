@@ -13,6 +13,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
+#include "esp_timer.h"
 #include "freertos/task.h"
 
 #include <string.h>
@@ -24,9 +25,9 @@ static const char *TAG = "MARKOV";
  * INTERNAL HELPERS
  * ======================================================================== */
 
-static uint32_t markov_millis(void)
+static uint64_t markov_millis(void)
 {
-    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    return (uint64_t)(esp_timer_get_time() / 1000ULL);
 }
 
 /* ========================================================================
@@ -359,7 +360,7 @@ void markov_init(markov_chain_t *mc, bird_call_mapper_t *mapper)
 
     mc->probs_dirty = true;   /* force recompute after load */
 
-    uint32_t now = markov_millis();
+    uint64_t now = markov_millis();
     mc->last_event_ms      = now;
     mc->last_autonomous_ms = now;
 
@@ -479,14 +480,14 @@ void markov_tick(markov_chain_t *mc)
         mc->nvs_save_pending = false;
     }
 
-    uint32_t now     = markov_millis();
-    uint32_t silence = now - mc->last_event_ms;
+    uint64_t now     = markov_millis();
+    uint64_t silence = now - mc->last_event_ms;
 
     const remote_config_t *cfg = remote_config_get();
 
     if (silence >= cfg->markov_idle_trigger_ms) {
         /* Check autonomous cooldown */
-        uint32_t since_last_auto = now - mc->last_autonomous_ms;
+        uint64_t since_last_auto = now - mc->last_autonomous_ms;
         if (since_last_auto >= cfg->markov_autonomous_cooldown_ms) {
 
             /* Recompute probs if needed */

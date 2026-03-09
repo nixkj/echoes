@@ -21,6 +21,7 @@
 #include "markov.h"
 #include "remote_config.h"
 #include "esp_task_wdt.h"
+#include "esp_timer.h"
 
 // ESP32-specific includes
 #include "driver/i2s_std.h"
@@ -87,7 +88,7 @@ static const char *TAG = "MAIN";
 
 static gptimer_handle_t          s_isr_wdt_timer     = NULL;
 static volatile uint32_t         s_isr_wdt_heartbeat  = 0;   /* fed by keepalive, checked by ISR */
-static volatile uint32_t         s_lux_alive_ms       = 0;   /* updated by lux_task each poll   */
+static volatile uint64_t         s_lux_alive_ms       = 0;   /* updated by lux_task each poll   */
 
 /* If lux_task has not updated s_lux_alive_ms within this window, keepalive
  * treats lux_task as dead and stops feeding the ISR WDT heartbeat.
@@ -120,8 +121,7 @@ static bool IRAM_ATTR isr_wdt_alarm_cb(gptimer_handle_t timer,
                 0,   /* consecutive_failures not accessible from ISR */
                 0,   /* heap not safely readable from ISR             */
                 0,   /* RSSI not safely readable from ISR             */
-                (uint32_t)(xTaskGetTickCountFromISR() *
-                           portTICK_PERIOD_MS / 1000));
+                (uint32_t)(esp_timer_get_time() / 1000000ULL));
             /* Direct RTC hardware reset — no software cooperation needed.
              * Safe from ISR context, safe with both CPUs stuck.           */
             SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
@@ -214,7 +214,7 @@ void isr_wdt_lux_feed(void)
     /* Simply stamp the current tick.  No gate here — the keepalive decides
      * whether to advance the heartbeat based on both this timestamp and the
      * network health timestamp.                                            */
-    s_lux_alive_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    s_lux_alive_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
 }
 
 /**
@@ -224,7 +224,7 @@ void isr_wdt_lux_feed(void)
  * messages.  Returns 0 until lux_task has completed its first poll cycle.
  * Declared extern in espnow_mesh.c to avoid a circular header dependency.
  */
-uint32_t main_get_lux_alive_ms(void)
+uint64_t main_get_lux_alive_ms(void)
 {
     return s_lux_alive_ms;
 }
@@ -320,17 +320,17 @@ static void wifi_keepalive_task(void *param)
          *   lux_task dead  → lux_ok=false     → WDT fires            ✓
          *   keepalive dead → heartbeat stalls → ISR fires directly   ✓  */
         {
-            uint32_t now_ms  = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+            uint64_t now_ms  = (uint64_t)(esp_timer_get_time() / 1000ULL);
             bool boot_grace  = (now_ms < NETWORK_GRACE_MS);
 
             if (boot_grace) {
                 s_isr_wdt_heartbeat++;
             } else {
-                uint32_t last_net = remote_config_get()->last_fetch_ms;
+                uint64_t last_net = remote_config_get()->last_fetch_ms;
                 bool network_ok   = (last_net != 0)
                                  && ((now_ms - last_net) < NETWORK_DEATH_MS);
 
-                uint32_t last_lux = s_lux_alive_ms;
+                uint64_t last_lux = s_lux_alive_ms;
                 bool lux_ok       = (last_lux != 0)
                                  && ((now_ms - last_lux) < LUX_DEAD_MS);
 
@@ -362,10 +362,10 @@ static void wifi_keepalive_task(void *param)
          * been non-zero for longer than HTTP_STUCK_TIMEOUT_MS we know
          * connect() is hung and will never time out on its own.           */
         {
-            uint32_t attempt_start = g_rcfg_http_attempt_start_ms;
+            uint64_t attempt_start = g_rcfg_http_attempt_start_ms;
             if (attempt_start != 0) {
-                uint32_t now_ms     = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-                uint32_t attempt_ms = now_ms - attempt_start;
+                uint64_t now_ms     = (uint64_t)(esp_timer_get_time() / 1000ULL);
+                uint64_t attempt_ms = now_ms - attempt_start;
                 if (attempt_ms > HTTP_STUCK_TIMEOUT_MS) {
                     /* Read diagnostics from task context (safe here). */
                     int8_t rssi = 0;

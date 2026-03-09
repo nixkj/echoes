@@ -115,10 +115,10 @@ typedef struct markov_chain_t {
     uint8_t current_state;
 
     /** Timestamp (ms) of the last event processed. */
-    uint32_t last_event_ms;
+    uint64_t last_event_ms;
 
     /** Timestamp (ms) of the last autonomous call. */
-    uint32_t last_autonomous_ms;
+    uint64_t last_autonomous_ms;
 
     /** Events processed since the last NVS save. */
     uint16_t events_since_save;

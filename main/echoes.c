@@ -18,6 +18,7 @@
 #include "esp_adc/adc_oneshot.h"
 #include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
+#include "esp_timer.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_check.h"
@@ -374,8 +375,8 @@ void set_led(float white_level, float blue_level) {
      * is not hit on every LED update (flock mode strobes at 60 ms intervals).
      * Re-evaluate every ~1 second — more than responsive enough for mode changes. */
     static bool     s_suppressed       = false;
-    static uint32_t s_suppress_check_ms = 0;
-    uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    static uint64_t s_suppress_check_ms = 0;
+    uint64_t now = (uint64_t)(esp_timer_get_time() / 1000ULL);
     if ((now - s_suppress_check_ms) >= 1000u) {
         s_suppress_check_ms = now;
         const remote_config_t *cfg = remote_config_get();

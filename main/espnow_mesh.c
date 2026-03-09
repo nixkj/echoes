@@ -26,6 +26,7 @@
 #include <string.h>
 #include <math.h>
 #include "esp_task_wdt.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 
 /* Both on-wire structs must stay at 8 bytes so the single len-check in
@@ -55,14 +56,14 @@ static float               s_last_tx_lux     = -1000.0f;
  * The actual trigger count is read at runtime from remote_config so it can
  * be tuned without reflashing.  Only the oldest FLOCK_MSG_COUNT slot is
  * ever compared against the window; the extra slots are simply unused.     */
-static uint32_t            s_rx_times[FLOCK_RING_MAX] = {0};
+static uint64_t            s_rx_times[FLOCK_RING_MAX] = {0};
 static uint8_t             s_rx_head     = 0;       /* next slot to write   */
 static bool                s_flock_active = false;
-static uint32_t            s_flock_last_ms = 0;     /* last trigger time    */
-static uint32_t            s_boot_ms = 0;           /* millis() at init — used for grace period */
+static uint64_t            s_flock_last_ms = 0;     /* last trigger time    */
+static uint64_t            s_boot_ms = 0;           /* millis() at init — used for grace period */
 
 /* Timestamp (ms) of the last remote event that influenced our bird set */
-static uint32_t            s_last_remote_event_ms = 0;
+static uint64_t            s_last_remote_event_ms = 0;
 
 /* Most recent remote lux we received — applied until TTL expires */
 static float               s_remote_lux      = -1.0f;
@@ -71,7 +72,7 @@ static float               s_remote_lux      = -1.0f;
 static float               s_local_lux       = -1.0f;
 
 /* Timestamp of last sound broadcast */
-static uint32_t s_last_sound_broadcast_ms = 0;
+static uint64_t s_last_sound_broadcast_ms = 0;
 
 /* ── STATUS heartbeat ──────────────────────────────────────────────────── */
 
@@ -82,7 +83,7 @@ static uint32_t s_last_sound_broadcast_ms = 0;
 /* Per-node TX sequence counter for STATUS messages.  Wraps at 255.
  * Gaps seen in the sniffer = air congestion / lost packets, not silent node. */
 static uint8_t  s_tx_seq             = 0;
-static uint32_t s_last_status_ms     = 0;   /* when we last sent a STATUS msg */
+static uint64_t s_last_status_ms     = 0;   /* when we last sent a STATUS msg */
 
 /* Guard against double-initialisation */
 static bool s_initialized = false;
@@ -91,9 +92,9 @@ static bool s_initialized = false;
  * INTERNAL HELPERS
  * ======================================================================== */
 
-static uint32_t millis(void)
+static uint64_t millis(void)
 {
-    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    return (uint64_t)(esp_timer_get_time() / 1000ULL);
 }
 
 /* ========================================================================
@@ -110,7 +111,7 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info,
 
     /* Record arrival timestamp for flock mode detection. */
     {
-        uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        uint64_t now = millis();
         s_rx_times[s_rx_head] = now;
         s_rx_head = (s_rx_head + 1) % FLOCK_RING_MAX;
     }
@@ -147,6 +148,8 @@ static float blend_lux(float local, float remote)
     if (remote < 0.0f) return local;
     return (local * 0.5f) + (remote * 0.5f);
 }
+
+static void send_status(void);  /* defined below — forward declaration */
 
 static void espnow_rx_task(void *param)
 {
@@ -296,7 +299,7 @@ default:
          * interval to avoid a synchronised burst when the whole fleet
          * reboots simultaneously.                                          */
         {
-            uint32_t now_ms = millis();
+            uint64_t now_ms = millis();
             uint32_t interval = ESPNOW_STATUS_INTERVAL_MS;
             if (s_last_status_ms == 0) {
                 /* First heartbeat: delay by [interval + random 0-10 s] */
@@ -323,11 +326,11 @@ default:
 
 /* Forward declaration — defined in main.c; not in any shared header because
  * it is only needed here.                                                   */
-extern uint32_t main_get_lux_alive_ms(void);
+extern uint64_t main_get_lux_alive_ms(void);
 
 static uint8_t build_status_flags(void)
 {
-    uint32_t now_ms = millis();
+    uint64_t now_ms = millis();
     uint8_t  flags  = 0;
 
     /* Node type */
@@ -346,13 +349,13 @@ static uint8_t build_status_flags(void)
     /* HTTP health — the only true end-to-end proof.
      * 150 s = 2.5 × the 60 s poll interval; a single missed poll does not
      * clear the flag, but two consecutive failures do.                     */
-    uint32_t last_fetch = remote_config_get()->last_fetch_ms;
+    uint64_t last_fetch = remote_config_get()->last_fetch_ms;
     if (last_fetch != 0 && (now_ms - last_fetch) < 150000u) {
         flags |= ESPNOW_FLAG_HTTP_RECENT;
     }
 
     /* lux_task liveness — same LUX_DEAD_MS window used by wifi_keepalive  */
-    uint32_t lux_stamp = main_get_lux_alive_ms();
+    uint64_t lux_stamp = main_get_lux_alive_ms();
     if (lux_stamp != 0 && (now_ms - lux_stamp) < 10000u /* LUX_DEAD_MS */) {
         flags |= ESPNOW_FLAG_LUX_ALIVE;
     }
@@ -389,20 +392,20 @@ static uint8_t build_status_flags(void)
  */
 static void send_status(void)
 {
-    uint32_t now_ms = millis();
+    uint64_t now_ms = millis();
 
     /* RSSI */
     wifi_ap_record_t ap;
     int8_t rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) ? (int8_t)ap.rssi : 0;
 
     /* HTTP staleness in minutes, capped at 255 */
-    uint32_t last_fetch  = remote_config_get()->last_fetch_ms;
-    uint32_t stale_ms    = (last_fetch != 0) ? (now_ms - last_fetch) : UINT32_MAX;
-    uint32_t stale_m_raw = stale_ms / 60000u;
+    uint64_t last_fetch  = remote_config_get()->last_fetch_ms;
+    uint64_t stale_ms    = (last_fetch != 0) ? (now_ms - last_fetch) : UINT64_MAX;
+    uint32_t stale_m_raw = (uint32_t)(stale_ms / 60000u);
     uint8_t  http_stale  = (stale_m_raw > 255u) ? 255u : (uint8_t)stale_m_raw;
 
     /* Uptime in minutes, saturated at 65535 */
-    uint64_t uptime_us  = (uint64_t)esp_timer_get_time();
+    uint64_t uptime_us    = (uint64_t)esp_timer_get_time();
     uint32_t uptime_m_raw = (uint32_t)(uptime_us / 60000000ULL);
     uint16_t uptime_m   = (uptime_m_raw > 65535u) ? 65535u : (uint16_t)uptime_m_raw;
 
@@ -524,7 +527,7 @@ bool espnow_mesh_init(bird_call_mapper_t *mapper, markov_chain_t *mc)
 
 void espnow_mesh_broadcast_sound(detection_type_t detection)
 {
-    uint32_t now = millis();
+    uint64_t now = millis();
     if (now - s_last_sound_broadcast_ms < remote_config_get()->espnow_sound_throttle_ms) {
         ESP_LOGD(TAG, "Sound broadcast throttled (detection %d) — too soon", detection);
         return;
@@ -595,7 +598,7 @@ bool espnow_mesh_is_flock_mode(void)
     if (flock_count > FLOCK_RING_MAX) flock_count = FLOCK_RING_MAX;
 
     uint32_t flock_window = cfg.flock_window_ms;
-    uint32_t now          = millis();
+    uint64_t now          = millis();
 
     /* Boot grace period — suppress flock mode for cfg.flock_grace_ms after init.
      *
@@ -613,7 +616,7 @@ bool espnow_mesh_is_flock_mode(void)
 
     uint8_t oldest_slot = (uint8_t)
         ((s_rx_head + FLOCK_RING_MAX - (uint8_t)flock_count) % FLOCK_RING_MAX);
-    uint32_t oldest = s_rx_times[oldest_slot];
+    uint64_t oldest = s_rx_times[oldest_slot];
 
     bool newly_triggered = (oldest != 0) && ((now - oldest) <= flock_window);
 
@@ -643,8 +646,8 @@ void espnow_mesh_tick(void)
 {
     if (s_remote_lux < 0.0f) return;   /* No remote influence active */
 
-    uint32_t now     = millis();
-    uint32_t elapsed = now - s_last_remote_event_ms;
+    uint64_t now     = millis();
+    uint64_t elapsed = now - s_last_remote_event_ms;
 
     if (elapsed >= remote_config_get()->espnow_event_ttl_ms) {
         ESP_LOGI(TAG, "Remote event TTL expired — reverting to local lux %.1f",

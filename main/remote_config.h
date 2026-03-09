@@ -68,7 +68,7 @@
  * Read only by wifi_keepalive_task (single reader).
  * volatile is sufficient — no mutex needed for this flag pattern.
  */
-extern volatile uint32_t g_rcfg_http_attempt_start_ms;
+extern volatile uint64_t g_rcfg_http_attempt_start_ms;
 
 /** If g_rcfg_http_attempt_start_ms is non-zero and older than this,
  *  wifi_keepalive_task triggers an immediate hardware reset (ms). */
@@ -172,13 +172,13 @@ typedef struct {
 
     /* ── Meta ──────────────────────────────────────────────────── */
     bool     loaded;            /**< true after at least one successful fetch */
-    uint32_t last_fetch_ms;     /**< Tick count of last successful fetch      */
+    uint64_t last_fetch_ms;     /**< ms since boot of last successful fetch (esp_timer) */
 
     /* Wall-clock offset derived from _server_time.
      * Stored as UTC epoch seconds of the most recent config fetch.
      * Combined with esp_timer_get_time() to infer current hour.    */
     int64_t  server_epoch_s;    /**< UTC epoch seconds at last fetch           */
-    uint32_t fetch_tick_ms;     /**< xTaskGetTickCount()*period at last fetch  */
+    uint64_t fetch_tick_ms;     /**< ms since boot at last fetch (esp_timer)  */
 } remote_config_t;
 
 /* =========================================================================
