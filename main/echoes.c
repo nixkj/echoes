@@ -221,7 +221,40 @@ void light_sensor_init(void)
                 g_system_state.bh1750_addr = BH1750_ADDR_LOW;
                 g_system_state.light_sensor_type = LIGHT_SENSOR_BH1750;
 
-                // Initialize BH1750 (continuous high-res mode = 0x10)
+                /* BH1750 initialisation sequence — two-step, per datasheet §5.
+                 *
+                 * Step 1: Power On (0x01).
+                 *   The chip starts in power-down state after reset.  Sending
+                 *   the measurement opcode directly (0x10) without first sending
+                 *   Power On has been observed to leave certain BH1750 / clone
+                 *   variants non-responsive: every subsequent i2c_master_receive()
+                 *   returns an error and get_lux_level() returns -1.0 for minutes
+                 *   until an external electrical event (e.g. a transient from the
+                 *   speaker amp) causes the chip to recover.  The explicit 0x01
+                 *   guarantees a clean power-on state on all variants.
+                 *
+                 * Step 2: Continuously H-Resolution Mode (0x10), followed by a
+                 *   180 ms wait (datasheet §2 — max measurement time for H-res
+                 *   mode).  lux_based_birds_task is started in a suspended state
+                 *   and not resumed until after OTA/remote-config, which takes
+                 *   tens of seconds, so this delay adds no observable latency in
+                 *   practice; it is here as a guarantee for any future code path
+                 *   that initialises the sensor closer to first use.            */
+                uint8_t cmd_power_on = 0x01;
+                ret = i2c_master_transmit(bh1750_handle,
+                                          &cmd_power_on,
+                                          1,
+                                          100);
+                if (ret != ESP_OK) {
+                    ESP_LOGW(TAG, "BH1750 Power On failed: %s — falling back to ADC",
+                             esp_err_to_name(ret));
+                    i2c_master_bus_rm_device(bh1750_handle);
+                    bh1750_handle = NULL;
+                    goto bh1750_fallback;
+                }
+
+                vTaskDelay(pdMS_TO_TICKS(10));   /* datasheet: ≥1 ms after power-on */
+
                 uint8_t cmd = 0x10;
 
                 ret = i2c_master_transmit(bh1750_handle,
@@ -230,17 +263,23 @@ void light_sensor_init(void)
                                           100);   /* 100 ms max — never block forever */
 
                 if (ret == ESP_OK) {
+                    /* Wait for the first measurement to complete before any read.
+                     * The BH1750 output register is the live ADC integrator — reads
+                     * issued before the first 120–180 ms measurement cycle completes
+                     * return 0 or 1 raw count regardless of ambient light.          */
+                    vTaskDelay(pdMS_TO_TICKS(180));
                     ESP_LOGI(TAG,
                              "BH1750 light sensor detected at 0x%02X",
                              BH1750_ADDR_LOW);
                     return;  // Done — no fallback needed
                 }
 
-                // If init failed, remove device
+                /* 0x10 transmit failed — remove device and fall to ADC */
                 i2c_master_bus_rm_device(bh1750_handle);
                 bh1750_handle = NULL;
             }
 
+bh1750_fallback:
             /* Device add or transmit failed — delete the bus so the handle
              * does not leak.  Fall through to the ADC path below.          */
             i2c_del_master_bus(bus_handle);
@@ -444,27 +483,75 @@ float get_lux_level(void)
             100 / portTICK_PERIOD_MS
         );
 
-        if (ret == ESP_OK) {
-            uint16_t raw = ((uint16_t)data[0] << 8) | data[1];
-            return raw / 1.2f;   // BH1750 lux conversion
+        if (ret != ESP_OK) return -1.0f;
+
+        uint16_t raw = ((uint16_t)data[0] << 8) | data[1];
+
+        /* BH1750 single-poll artifact guard.
+         *
+         * The BH1750 output register is the live ADC integrator in continuous
+         * H-resolution mode.  A read that coincidentally aligns with the first
+         * few milliseconds of a new 120 ms measurement cycle catches the
+         * integrator near-empty, returning 0–2 raw counts regardless of
+         * ambient light (0–1.67 lux).  This is not an I2C error — the call
+         * returns ESP_OK with valid framing, just a physically wrong value.
+         *
+         * Fix: if raw <= BH1750_SANITY_RAW, wait 10 ms (well past the ~2 ms
+         * transition window but a negligible fraction of the 500 ms poll cycle)
+         * and read again.  If the room really is that dark, both reads return a
+         * low value and we trust the retry result.  If it was an artifact, the
+         * retry lands mid-measurement and returns the correct accumulated count.
+         *
+         * BH1750_SANITY_RAW = 3 counts = 2.5 lux — safely above the 1–2 count
+         * artifact floor while below any plausible room-light reading.          */
+#define BH1750_SANITY_RAW  3u
+        if (raw <= BH1750_SANITY_RAW) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            ret = i2c_master_receive(
+                bh1750_handle,
+                data,
+                sizeof(data),
+                100 / portTICK_PERIOD_MS
+            );
+            if (ret != ESP_OK) return -1.0f;
+            raw = ((uint16_t)data[0] << 8) | data[1];
         }
 
-        return -1.0f;
+        return raw / 1.2f;   // BH1750 lux conversion
     }
     else if (g_system_state.light_sensor_type == LIGHT_SENSOR_ANALOG) {
 
         if (adc_handle == NULL) return -1.0f;
 
-        int adc_raw;
-        esp_err_t ret = adc_oneshot_read(adc_handle,
-                                         ADC_CHANNEL_6,
-                                         &adc_raw);
+        /* Multi-sample averaging with zero-rejection.
+         *
+         * A single adc_oneshot_read() on the ALS-PT19 can occasionally
+         * return 0 due to charge-injection from the ADC's internal sampling
+         * capacitor discharging through the sensor's high source impedance
+         * (~50 kΩ).  Taking ADC_OVERSAMPLE readings and averaging only the
+         * non-zero results suppresses these artefacts without masking genuine
+         * darkness — if ALL reads return 0 the room really is dark and we
+         * return 0.0 correctly.
+         *
+         * Four back-to-back oneshot reads add ~200 µs overhead total, which
+         * is immaterial at the 500 ms LUX_POLL_INTERVAL_MS call rate.      */
+#define ADC_OVERSAMPLE  4
+        int32_t adc_sum   = 0;
+        int     adc_valid = 0;
 
-        if (ret == ESP_OK) {
-            return adc_raw * 0.24f;   // Your rough lux estimate
+        for (int s = 0; s < ADC_OVERSAMPLE; s++) {
+            int raw = 0;
+            if (adc_oneshot_read(adc_handle, ADC_CHANNEL_6, &raw) == ESP_OK
+                    && raw > 0) {
+                adc_sum += raw;
+                adc_valid++;
+            }
         }
 
-        return -1.0f;
+        /* All reads returned 0 → room is genuinely dark, return 0.0.
+         * At least one non-zero read → average those only.           */
+        if (adc_valid == 0) return 0.0f;
+        return (float)(adc_sum / adc_valid) * 0.24f;
     }
 
     return -1.0f;
@@ -1023,11 +1110,38 @@ void lux_based_birds_task(void *param) {
                  esp_err_to_name(wdt_err));
     }
 
+    /* Forward declaration — defined in main.c.
+     * lux_based_birds_task is the second ISR WDT feeder on minimal nodes.
+     * See isr_wdt_lux_feed() in main.c for the full rationale.           */
+    extern void isr_wdt_lux_feed(void);
+
     float last_acted_lux = -1000.0f;  /* lux at the last mapper update */
     float prev_lux       = -1.0f;     /* reading from the previous tick */
 
+    /* s_zero_confirm: counts consecutive near-zero polls.
+     * Full logic is documented at the gate itself, below.                */
+#define LUX_NEAR_ZERO      2.0f   /* lux threshold for "effectively dark"  */
+#define LUX_ZERO_CONFIRM   6      /* consecutive polls required to confirm  */
+    int s_zero_confirm = 0;
+
     while (1) {
-        esp_task_wdt_reset();  /* fed each poll cycle — proves task is alive */
+        esp_task_wdt_reset();  /* fed each poll cycle -- proves task is alive */
+
+        /* Feed the ISR WDT heartbeat on minimal nodes.
+         *
+         * wifi_keepalive_task feeds the same counter, but if lux_task dies
+         * silently (removed from TWDT watchlist) keepalive alone would keep
+         * the counter advancing indefinitely — masking the failure.  By
+         * requiring lux_task to also feed the counter, the ISR WDT fires
+         * ISR_WDT_TIMEOUT_S after this task stops running, even if
+         * wifi_keepalive_task is still healthy.
+         *
+         * On full nodes isr_wdt_lux_feed() is a no-op increment of an
+         * unwatched counter (the GP timer is never started on full nodes),
+         * so the guard is belt-and-suspenders rather than strictly required. */
+        if (get_hardware_config() == HW_CONFIG_MINIMAL) {
+            isr_wdt_lux_feed();
+        }
 
         remote_config_t cfg_snap;
         if (!remote_config_snapshot(&cfg_snap)) {
@@ -1041,6 +1155,42 @@ void lux_based_birds_task(void *param) {
         if (lux < 0.0f) {
             vTaskDelay(pdMS_TO_TICKS(cfg->lux_poll_interval_ms));
             continue;
+        }
+
+        /* Near-zero confirmation gate.
+         *
+         * Bug in previous version: the condition was
+         *   lux <= LUX_NEAR_ZERO && prev_lux > LUX_NEAR_ZERO
+         * which only triggered on the FIRST transition into the near-zero
+         * range.  On the second consecutive zero poll prev_lux had already
+         * been set to the held near-zero value, so the condition was false
+         * and the zero broadcast through -- producing the consistent ~1.0 s
+         * (2-poll) artifact seen in the sniffer logs.
+         *
+         * Fix: gate on lux <= LUX_NEAR_ZERO unconditionally.  Every near-
+         * zero poll increments the counter; only once LUX_ZERO_CONFIRM
+         * consecutive polls have been accumulated does the code fall through
+         * to the flash/delta logic.  The counter resets on any poll that
+         * reads above LUX_NEAR_ZERO.
+         *
+         * LUX_ZERO_CONFIRM = 6: at 500 ms/poll this requires 3 s of
+         * sustained near-zero before broadcasting.  Live captures show
+         * the ALS-PT19 artifact lasts exactly 4 consecutive polls (~2 s);
+         * 6 polls gives 2 full polls of margin above that while adding
+         * only 3 s of latency to genuine sustained darkness events.        */
+        if (lux <= LUX_NEAR_ZERO) {
+            s_zero_confirm++;
+            if (s_zero_confirm < LUX_ZERO_CONFIRM) {
+                /* Still accumulating -- update prev_lux so raw_delta is
+                 * computed correctly when we eventually confirm, but skip
+                 * all flash/broadcast logic for this poll.                */
+                prev_lux = lux;
+                vTaskDelay(pdMS_TO_TICKS(cfg->lux_poll_interval_ms));
+                continue;
+            }
+            /* Confirmed -- fall through and let flash/delta logic handle it */
+        } else {
+            s_zero_confirm = 0;  /* reset on any lit reading               */
         }
 
         float delta     = lux - last_acted_lux;

@@ -132,8 +132,9 @@ static bool IRAM_ATTR isr_wdt_alarm_cb(gptimer_handle_t timer,
  * @brief Initialise the ISR-based hardware watchdog.
  *
  * Call once from app_main after all tasks are running.  The timer fires
- * a 1-second alarm in ISR context.  Any task can feed the watchdog by
- * incrementing s_isr_wdt_heartbeat.
+ * a 1-second alarm in ISR context.  Two tasks feed the heartbeat counter:
+ * wifi_keepalive_task (directly) and lux_based_birds_task (via
+ * isr_wdt_lux_feed()).  See isr_wdt_lux_feed() for the rationale.
  */
 static void isr_wdt_init(void)
 {
@@ -164,13 +165,52 @@ static void isr_wdt_init(void)
     ESP_LOGI(TAG, "ISR WDT: armed (%d s timeout, RTC reset)", ISR_WDT_TIMEOUT_S);
 }
 
+/**
+ * @brief Feed the ISR WDT heartbeat from lux_based_birds_task.
+ *
+ * The ISR WDT has two independent feeders on minimal nodes:
+ *
+ *   1. wifi_keepalive_task — detects: keepalive blocked (e.g. WiFi driver
+ *      deadlock, esp_now_send TX-buffer full).
+ *
+ *   2. lux_based_birds_task (via this function) — detects: lux task silently
+ *      dead.  When lux_task crashes it is removed from the TWDT watchlist, so
+ *      the TWDT never fires for it.  wifi_keepalive_task continues running and
+ *      feeds the ISR WDT indefinitely, masking the failure.  By requiring
+ *      lux_task to also increment the heartbeat, the ISR WDT fires
+ *      ISR_WDT_TIMEOUT_S after lux_task stops calling this — regardless of
+ *      keepalive health.
+ *
+ * This does NOT break keepalive detection: if keepalive_task stalls, lux_task
+ * alone incrementing the counter once per 500 ms keeps it advancing, so the
+ * ISR WDT will NOT fire for a stalled keepalive when lux_task is healthy.
+ * The sole-feeder guarantee is preserved for the keepalive failure mode
+ * because ISR_WDT_TIMEOUT_S (120 s) >> lux_poll_interval_ms (500 ms).
+ *
+ * Called only on minimal nodes from lux_based_birds_task.  Safe from any
+ * task context; not safe from ISR context (not IRAM_ATTR).
+ */
+void isr_wdt_lux_feed(void)
+{
+    s_isr_wdt_heartbeat++;
+}
+
 /* ========================================================================
  * WIFI KEEPALIVE (minimal nodes only)
  * ========================================================================
  *
- * This task is the SOLE feeder of the ISR hardware watchdog.  If this
- * task blocks for any reason, the ISR WDT fires after ISR_WDT_TIMEOUT_S
- * and triggers a hardware reset.  No other task feeds the ISR WDT.
+ * This task is one of TWO feeders of the ISR hardware watchdog.  The other
+ * is lux_based_birds_task, via isr_wdt_lux_feed() — see that function for
+ * the full rationale.
+ *
+ * This task's role: detect keepalive blocked (e.g. WiFi driver deadlock,
+ * esp_now_send TX-buffer full).  If this task stalls for ISR_WDT_TIMEOUT_S
+ * seconds without lux_task compensating, the ISR WDT fires.
+ *
+ * Because lux_task feeds the counter at 500 ms intervals, a stalled
+ * keepalive alone will NOT trigger the ISR WDT while lux_task is healthy.
+ * The ISR WDT fires only when BOTH tasks stop feeding — i.e. when the node
+ * is genuinely unresponsive, not merely when keepalive stalls briefly.
  *
  * KEEPALIVE MECHANISM: a 1-byte UDP datagram to the gateway's discard
  * port (RFC 863), sent via a socket with SO_SNDTIMEO = 1 s.  This
@@ -725,9 +765,10 @@ void app_main(void)
     xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);
     ESP_LOGI(TAG, "Remote config polling task started");
 
-    /* wifi_keepalive_task is the SOLE feeder of the ISR hardware watchdog.
-     * If it stalls, the ISR fires and resets the SoC.
-     * See wifi_keepalive_task() for the full explanation.                   */
+    /* wifi_keepalive_task is one of two ISR WDT feeders (the other is
+     * lux_based_birds_task via isr_wdt_lux_feed()).  If keepalive stalls
+     * while lux_task is also dead, the ISR fires and resets the SoC.
+     * See isr_wdt_lux_feed() in this file for the full rationale.          */
     if (hw_config == HW_CONFIG_MINIMAL) {
         xTaskCreate(wifi_keepalive_task, "wifi_ka", 4096, NULL, 4, NULL);
         ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
