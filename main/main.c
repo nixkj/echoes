@@ -86,7 +86,13 @@ static const char *TAG = "MAIN";
 #define NETWORK_DEATH_MS   ( 4u * 60u * 1000u)   /* 4 min stale → stop    */
 
 static gptimer_handle_t          s_isr_wdt_timer     = NULL;
-static volatile uint32_t         s_isr_wdt_heartbeat  = 0;   /* fed by tasks, checked by ISR */
+static volatile uint32_t         s_isr_wdt_heartbeat  = 0;   /* fed by keepalive, checked by ISR */
+static volatile uint32_t         s_lux_alive_ms       = 0;   /* updated by lux_task each poll   */
+
+/* If lux_task has not updated s_lux_alive_ms within this window, keepalive
+ * treats lux_task as dead and stops feeding the ISR WDT heartbeat.
+ * Must be >> lux_poll_interval_ms (500 ms).  10 s = 20× the base rate.   */
+#define LUX_DEAD_MS  10000u
 
 /**
  * @brief GP Timer alarm callback — runs in ISR context every 1 second.
@@ -166,51 +172,49 @@ static void isr_wdt_init(void)
 }
 
 /**
- * @brief Feed the ISR WDT heartbeat from lux_based_birds_task.
+ * @brief Record lux_based_birds_task liveness for the ISR WDT gate.
  *
- * The ISR WDT has two independent feeders on minimal nodes:
+ * Architecture — why keepalive alone is not enough:
  *
- *   1. wifi_keepalive_task — detects: keepalive blocked (e.g. WiFi driver
- *      deadlock, esp_now_send TX-buffer full).
+ *   wifi_keepalive_task feeds s_isr_wdt_heartbeat while end-to-end network
+ *   connectivity is confirmed (last_fetch_ms fresh).  If lux_task dies
+ *   silently it is removed from the TWDT watchlist, so the TWDT never fires.
+ *   wifi_keepalive_task keeps running, HTTP keeps succeeding, and the ISR WDT
+ *   heartbeat keeps advancing — the failure is completely masked.
  *
- *   2. lux_based_birds_task (via this function) — detects: lux task silently
- *      dead.  When lux_task crashes it is removed from the TWDT watchlist, so
- *      the TWDT never fires for it.  wifi_keepalive_task continues running and
- *      feeds the ISR WDT indefinitely, masking the failure.  By requiring
- *      lux_task to also increment the heartbeat, the ISR WDT fires
- *      ISR_WDT_TIMEOUT_S after lux_task stops calling this — regardless of
- *      keepalive health.
+ * Two-signal gate in wifi_keepalive_task:
  *
- * NETWORK-HEALTH GATE (mirrors wifi_keepalive_task exactly):
- *   The heartbeat is only incremented when end-to-end network connectivity
- *   is confirmed.  During the boot grace period, always feed (the first HTTP
- *   fetch has not yet occurred).  After grace, only feed if the last
- *   successful remote_config fetch is within NETWORK_DEATH_MS.  When the
- *   network is presumed dead, this function is a no-op — both feeders stop,
- *   the heartbeat stalls, and the ISR WDT fires ISR_WDT_TIMEOUT_S later.
+ *   The keepalive feeds the heartbeat ONLY when BOTH of the following hold:
+ *     1. network_ok  — last HTTP fetch was within NETWORK_DEATH_MS
+ *     2. lux_ok      — this function was called within LUX_DEAD_MS
  *
- *   Without this gate, lux_task's unconditional 500 ms increment keeps the
- *   heartbeat advancing even when WiFi is dead, bypassing the keepalive's
- *   NETWORK_DEATH_MS gate and preventing the ISR WDT from ever firing.
+ *   This function's sole job is to update s_lux_alive_ms unconditionally on
+ *   every lux_task poll cycle (~500 ms).  It does NOT touch the heartbeat.
+ *   The keepalive is the single writer of the heartbeat; it reads both signals
+ *   and decides whether to advance it.
  *
- * Called only on minimal nodes from lux_based_birds_task.  Safe from any
- * task context; not safe from ISR context (not IRAM_ATTR).
+ * Failure modes caught:
+ *   WiFi dead        → network_ok=false  → keepalive stops feeding → WDT fires
+ *   lux_task dead    → lux_ok=false      → keepalive stops feeding → WDT fires
+ *   keepalive stalls → heartbeat stalls  → ISR WDT fires directly
+ *   All healthy      → both true         → heartbeat advances      → no WDT
+ *
+ * Previous approach (7.2.0): lux_task incremented the heartbeat directly with
+ *   a network-health gate mirroring the keepalive.  Flaw: if lux_task is alive
+ *   but the network is dead, lux_task correctly stops feeding — but if lux_task
+ *   is dead and the network is alive, keepalive alone keeps advancing the
+ *   heartbeat, and the WDT never fires.  The gate belongs in keepalive, where
+ *   both signals can be evaluated together.
+ *
+ * Called unconditionally from lux_based_birds_task on each iteration.
+ * Safe from any task context; not safe from ISR context (not IRAM_ATTR).
  */
 void isr_wdt_lux_feed(void)
 {
-    uint32_t now_ms   = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    bool boot_grace   = (now_ms < NETWORK_GRACE_MS);
-
-    if (boot_grace) {
-        s_isr_wdt_heartbeat++;
-        return;
-    }
-
-    uint32_t last_ok = remote_config_get()->last_fetch_ms;
-    if (last_ok != 0 && (now_ms - last_ok) < NETWORK_DEATH_MS) {
-        s_isr_wdt_heartbeat++;
-    }
-    /* else: network presumed dead — starve the ISR WDT (same as keepalive) */
+    /* Simply stamp the current tick.  No gate here — the keepalive decides
+     * whether to advance the heartbeat based on both this timestamp and the
+     * network health timestamp.                                            */
+    s_lux_alive_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
 
 /* ========================================================================
@@ -272,18 +276,37 @@ static void wifi_keepalive_task(void *param)
     while (1) {
         esp_task_wdt_reset();
 
-        /* ── Conditional ISR WDT feed ────────────────────────────────────
+        /* ── ISR WDT feed gate ───────────────────────────────────────────
          *
-         * Feed the hardware watchdog ONLY when we have proof the network
-         * is alive.  The remote_config_task's last successful HTTP fetch
-         * timestamp (last_fetch_ms) is the sole indicator.
+         * Feed the hardware watchdog ONLY when we have proof that BOTH
+         * end-to-end network connectivity AND lux_task are healthy.
          *
-         * During the boot grace period, always feed — the first config
-         * fetch hasn't happened yet and that's expected.
+         * Two signals, evaluated here (and only here):
          *
-         * After grace: if last_fetch_ms is stale (older than
-         * NETWORK_DEATH_MS), STOP feeding.  The ISR fires
-         * ISR_WDT_TIMEOUT_S later and triggers a hardware reset.          */
+         *   network_ok — last successful HTTP config fetch was within
+         *                NETWORK_DEATH_MS.  remote_config_task updates
+         *                last_fetch_ms on every successful HTTP poll (~60 s).
+         *                This is the only operation that proves bidirectional
+         *                connectivity; all local WiFi driver state is cached
+         *                and can appear healthy even when the AP has silently
+         *                dropped this node.
+         *
+         *   lux_ok     — isr_wdt_lux_feed() was called within LUX_DEAD_MS.
+         *                lux_based_birds_task calls it unconditionally on
+         *                every ~500 ms poll.  If lux_task crashes silently
+         *                it is removed from the TWDT watchlist; TWDT never
+         *                fires for it.  This signal detects that gap.
+         *
+         * During the boot grace period always feed — the first HTTP fetch
+         * and lux_task's first poll haven't happened yet.
+         *
+         * After grace: feed only if network_ok AND lux_ok.  Either failure
+         * starves the heartbeat → ISR WDT fires ISR_WDT_TIMEOUT_S later.
+         *
+         * Failure modes caught:
+         *   WiFi dead      → network_ok=false → WDT fires            ✓
+         *   lux_task dead  → lux_ok=false     → WDT fires            ✓
+         *   keepalive dead → heartbeat stalls → ISR fires directly   ✓  */
         {
             uint32_t now_ms  = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
             bool boot_grace  = (now_ms < NETWORK_GRACE_MS);
@@ -291,11 +314,18 @@ static void wifi_keepalive_task(void *param)
             if (boot_grace) {
                 s_isr_wdt_heartbeat++;
             } else {
-                uint32_t last_ok = remote_config_get()->last_fetch_ms;
-                if (last_ok != 0 && (now_ms - last_ok) < NETWORK_DEATH_MS) {
+                uint32_t last_net = remote_config_get()->last_fetch_ms;
+                bool network_ok   = (last_net != 0)
+                                 && ((now_ms - last_net) < NETWORK_DEATH_MS);
+
+                uint32_t last_lux = s_lux_alive_ms;
+                bool lux_ok       = (last_lux != 0)
+                                 && ((now_ms - last_lux) < LUX_DEAD_MS);
+
+                if (network_ok && lux_ok) {
                     s_isr_wdt_heartbeat++;
                 }
-                /* else: network presumed dead — starve the ISR WDT */
+                /* else: network or lux_task dead — starve the ISR WDT */
             }
         }
 

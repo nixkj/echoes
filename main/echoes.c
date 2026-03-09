@@ -1127,14 +1127,15 @@ void lux_based_birds_task(void *param) {
     while (1) {
         esp_task_wdt_reset();  /* fed each poll cycle -- proves task is alive */
 
-        /* Feed the ISR WDT heartbeat on minimal nodes.
+        /* Record lux_task liveness for the ISR WDT gate in keepalive.
          *
-         * wifi_keepalive_task feeds the same counter but only while the
-         * network is alive (gated on last_fetch_ms < NETWORK_DEATH_MS).
-         * isr_wdt_lux_feed() applies the identical gate, so when WiFi
-         * dies BOTH feeders stop and the ISR WDT fires ISR_WDT_TIMEOUT_S
-         * later — whether the failure is a dead lux_task or a dead network.
+         * isr_wdt_lux_feed() stamps s_lux_alive_ms = now_ms.  The
+         * wifi_keepalive_task reads this timestamp alongside last_fetch_ms
+         * and feeds the ISR WDT heartbeat ONLY when both signals are fresh:
+         *   network_ok  (last HTTP fetch within NETWORK_DEATH_MS)  AND
+         *   lux_ok      (this function called within LUX_DEAD_MS)
          *
+         * Either failure starves the heartbeat → ISR WDT fires → reboot.
          * See isr_wdt_lux_feed() in main.c for the full rationale.        */
         if (get_hardware_config() == HW_CONFIG_MINIMAL) {
             isr_wdt_lux_feed();

@@ -298,8 +298,129 @@ bump_version() {
         print_info "Check for non-ASCII characters: grep -Pn '[^\\x00-\\x7F]' \"${OTA_H}\""
         return 1
     fi
-    
+
     print_success "Version updated: $CURRENT_VERSION → $NEW_VERSION"
+
+    # ── README.md ──────────────────────────────────────────────────────────
+    # Update two locations:
+    #   1. Version History — remove "Current version" from the old entry,
+    #      prepend a new entry for NEW_VERSION marked "Current version".
+    #      Release notes are left as a placeholder for manual completion.
+    #   2. Expected Boot Output — update the Firmware Version line.
+    local README="${PROJECT_DIR}/README.md"
+    if [ ! -f "$README" ]; then
+        print_warning "README.md not found at $README — skipping README update"
+        return 0
+    fi
+
+    print_info "Updating README.md..."
+
+    # 1a. Remove " Current version" suffix from the old entry's header line
+    #     Matches:  **7.2.0** Current version
+    #     Becomes:  **7.2.0**
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        LC_ALL=C sed -i '' \
+            "s/\*\*${CURRENT_VERSION}\*\* Current version/**${CURRENT_VERSION}**/" \
+            "$README"
+    else
+        LC_ALL=C sed -i \
+            "s/\*\*${CURRENT_VERSION}\*\* Current version/**${CURRENT_VERSION}**/" \
+            "$README"
+    fi
+
+    # 1b. Prepend the new version entry immediately after the ## Version History
+    #     heading line so the new entry appears at the top of the list.
+    #
+    #     awk is used instead of sed -i 'a' because GNU sed does not expand \n
+    #     in appended text — it emits a literal 'n', producing mangled lines
+    #     like "**7.2.2** Current versionn- n".  awk prints real newlines
+    #     reliably on both macOS (BSD awk / gawk) and Linux (gawk / mawk).
+    awk -v ver="$NEW_VERSION" '
+        /^## Version History$/ {
+            print
+            print ""
+            print "**" ver "** Current version"
+            print "- "
+            print ""
+            next
+        }
+        { print }
+    ' "$README" > "${README}.tmp" && mv "${README}.tmp" "$README"
+
+    # 2. Update Firmware Version line in the Expected Boot Output block
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        LC_ALL=C sed -i '' \
+            "s/Firmware Version: ${CURRENT_VERSION}/Firmware Version: ${NEW_VERSION}/" \
+            "$README"
+    else
+        LC_ALL=C sed -i \
+            "s/Firmware Version: ${CURRENT_VERSION}/Firmware Version: ${NEW_VERSION}/" \
+            "$README"
+    fi
+
+    # ── Example documentation ──────────────────────────────────────────────
+    # Update every hardcoded version number used in examples, commands, and
+    # tables — anything that isn't the Version History narrative entries.
+    #
+    # Six locations across four patterns:
+    #
+    #  A) echo "X.Y.Z" > /opt/echoes/firmware/version.txt  (lines 150 + 220)
+    #     Both show what to type after a manual deploy; both should track the
+    #     current version regardless of what old value they hold.
+    #
+    #  B) # CURRENT → OLD_NEXT_PATCH  comment on the version workflow line
+    #     Shows what a patch bump does.  Both sides need updating.
+    #
+    #  C) build.sh reference table — three rows (patch / minor / major)
+    #     Each shows (e.g. CURRENT → NEXT_*).  Compute next-patch, next-minor,
+    #     and next-major from NEW_VERSION so the examples stay self-consistent.
+
+    # Pre-compute all "next" versions from CURRENT (old) and NEW (just bumped).
+    IFS='.' read -r -a CV <<< "$CURRENT_VERSION"
+    local OLD_NEXT_PATCH="${CV[0]}.${CV[1]}.$((CV[2] + 1))"
+    local OLD_NEXT_MINOR="${CV[0]}.$((CV[1] + 1)).0"
+    local OLD_NEXT_MAJOR="$((CV[0] + 1)).0.0"
+
+    IFS='.' read -r -a NV <<< "$NEW_VERSION"
+    local NEXT_PATCH="${NV[0]}.${NV[1]}.$((NV[2] + 1))"
+    local NEXT_MINOR="${NV[0]}.$((NV[1] + 1)).0"
+    local NEXT_MAJOR="$((NV[0] + 1)).0.0"
+
+    # Helper — run a sed -i that works on both macOS (BSD) and Linux (GNU).
+    # Usage: readme_sed 's/old/new/'
+    readme_sed() {
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            LC_ALL=C sed -i '' "$1" "$README"
+        else
+            LC_ALL=C sed -i "$1" "$README"
+        fi
+    }
+
+    # A) Manual version.txt examples — match any semver in the phrase,
+    #    replace with NEW_VERSION.  Catches both the stale 7.0.8 line and
+    #    the current-version line in one pass.
+    readme_sed "s|echo \"[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\" > /opt/echoes/firmware/version.txt|echo \"${NEW_VERSION}\" > /opt/echoes/firmware/version.txt|g"
+
+    # B) Workflow comment: # CURRENT → OLD_NEXT_PATCH
+    #    The → glyph (UTF-8 E2 86 92) is treated as raw bytes under LC_ALL=C.
+    readme_sed "s|# ${CURRENT_VERSION} → ${OLD_NEXT_PATCH}|# ${NEW_VERSION} → ${NEXT_PATCH}|g"
+
+    # C) Reference table rows — each has a distinct "next" version.
+    readme_sed "s|(e.g. ${CURRENT_VERSION} → ${OLD_NEXT_PATCH})|(e.g. ${NEW_VERSION} → ${NEXT_PATCH})|g"
+    readme_sed "s|(e.g. ${CURRENT_VERSION} → ${OLD_NEXT_MINOR})|(e.g. ${NEW_VERSION} → ${NEXT_MINOR})|g"
+    readme_sed "s|(e.g. ${CURRENT_VERSION} → ${OLD_NEXT_MAJOR})|(e.g. ${NEW_VERSION} → ${NEXT_MAJOR})|g"
+
+    # ── Verify all substitutions landed ────────────────────────────────────
+    local README_VER_HIST README_BOOT_OUT README_EXAMPLES
+    README_VER_HIST=$(grep -c "\*\*${NEW_VERSION}\*\* Current version" "$README" 2>/dev/null || true)
+    README_BOOT_OUT=$(grep -c "Firmware Version: ${NEW_VERSION}" "$README" 2>/dev/null || true)
+    README_EXAMPLES=$(grep -c "echo \"${NEW_VERSION}\" > /opt/echoes/firmware/version.txt" "$README" 2>/dev/null || true)
+
+    if [ "$README_VER_HIST" -ge 1 ] && [ "$README_BOOT_OUT" -ge 1 ] && [ "$README_EXAMPLES" -ge 1 ]; then
+        print_success "README.md updated — add release notes for ${NEW_VERSION} in ## Version History"
+    else
+        print_warning "README.md may not have updated cleanly — check ## Version History, Expected Boot Output, and example commands manually"
+    fi
 }
 
 # Erase flash completely
