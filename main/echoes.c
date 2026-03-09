@@ -1129,16 +1129,13 @@ void lux_based_birds_task(void *param) {
 
         /* Feed the ISR WDT heartbeat on minimal nodes.
          *
-         * wifi_keepalive_task feeds the same counter, but if lux_task dies
-         * silently (removed from TWDT watchlist) keepalive alone would keep
-         * the counter advancing indefinitely — masking the failure.  By
-         * requiring lux_task to also feed the counter, the ISR WDT fires
-         * ISR_WDT_TIMEOUT_S after this task stops running, even if
-         * wifi_keepalive_task is still healthy.
+         * wifi_keepalive_task feeds the same counter but only while the
+         * network is alive (gated on last_fetch_ms < NETWORK_DEATH_MS).
+         * isr_wdt_lux_feed() applies the identical gate, so when WiFi
+         * dies BOTH feeders stop and the ISR WDT fires ISR_WDT_TIMEOUT_S
+         * later — whether the failure is a dead lux_task or a dead network.
          *
-         * On full nodes isr_wdt_lux_feed() is a no-op increment of an
-         * unwatched counter (the GP timer is never started on full nodes),
-         * so the guard is belt-and-suspenders rather than strictly required. */
+         * See isr_wdt_lux_feed() in main.c for the full rationale.        */
         if (get_hardware_config() == HW_CONFIG_MINIMAL) {
             isr_wdt_lux_feed();
         }
