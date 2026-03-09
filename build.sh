@@ -48,14 +48,51 @@ print_info() {
     echo -e "${BLUE}→ $1${NC}"
 }
 
-# Check if ESP-IDF is sourced
+# Ensure ESP-IDF environment is available, sourcing it automatically if needed
 check_idf() {
-    if [ -z "$IDF_PATH" ]; then
-        print_error "ESP-IDF environment not set up!"
-        print_info "Run: . \$HOME/esp/esp-idf-v5.5.2/export.sh"
+    if [ -n "$IDF_PATH" ] && command -v idf.py >/dev/null 2>&1; then
+        print_success "ESP-IDF environment ready ($IDF_PATH)"
+        return 0
+    fi
+
+    # Search for export.sh in common locations
+    local export_sh=""
+    local search_dirs=(
+        "$HOME/esp/esp-idf-v5.5.2"
+        "$HOME/esp/esp-idf"
+        "$HOME/esp-idf"
+        "/opt/esp-idf"
+        "/usr/local/esp-idf"
+    )
+
+    # Also check IDF_PATH if set but idf.py not on PATH (partial env)
+    if [ -n "$IDF_PATH" ] && [ -f "$IDF_PATH/export.sh" ]; then
+        export_sh="$IDF_PATH/export.sh"
+    else
+        for dir in "${search_dirs[@]}"; do
+            if [ -f "$dir/export.sh" ]; then
+                export_sh="$dir/export.sh"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$export_sh" ]; then
+        print_error "ESP-IDF not found. Searched: ${search_dirs[*]}"
+        print_info "Install ESP-IDF v5.5.2 or set IDF_PATH manually, then re-run."
         exit 1
     fi
-    print_success "ESP-IDF environment ready"
+
+    print_info "Sourcing ESP-IDF from $export_sh ..."
+    # export.sh must be sourced (not executed) to affect the current shell
+    # shellcheck disable=SC1090
+    . "$export_sh" || { print_error "Failed to source $export_sh"; exit 1; }
+
+    if ! command -v idf.py >/dev/null 2>&1; then
+        print_error "idf.py still not found after sourcing $export_sh"
+        exit 1
+    fi
+    print_success "ESP-IDF environment ready ($IDF_PATH)"
 }
 
 # Extract version from header file

@@ -22,6 +22,8 @@
 #include "esp_attr.h"
 #include "esp_wifi.h"
 #include "esp_random.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "soc/rtc_cntl_reg.h"
 #include "startup.h"
 #include "ota.h"
@@ -75,6 +77,242 @@ static const char *TAG = "RCFG";
 /* =========================================================================
  * DEFAULT VALUES  (mirrors echoes.h / espnow_mesh.h / markov.h #defines)
  * ========================================================================= */
+
+/* =========================================================================
+ * NVS PERSISTENCE
+ * =========================================================================
+ *
+ * The last successfully fetched config is saved to NVS as a raw blob so that
+ * a reboot without WiFi (no AP, server down) resumes with tuned values rather
+ * than compiled-in defaults.
+ *
+ * Only the tunable fields are persisted — runtime-only state (last_fetch_ms,
+ * server_epoch_s, fetch_tick_ms, restart_requested, restart_token, loaded)
+ * is excluded.  A schema version key guards against loading stale blobs after
+ * a firmware update that changes the struct layout.
+ *
+ * NVS namespace: "rcfg"  key: "cfg_blob"  version key: "cfg_ver"
+ *
+ * On load:
+ *   1. Read cfg_ver.  If absent or != RCFG_NVS_VERSION → skip, use defaults.
+ *   2. Read cfg_blob.  If size != sizeof(rcfg_nvs_t) → skip, use defaults.
+ *   3. Copy fields into s_cfg.  s_cfg.loaded remains false until a live fetch
+ *      succeeds, but all tunable values are now from the last known-good state.
+ *
+ * On save (called after every successful HTTP fetch):
+ *   Write cfg_ver then cfg_blob atomically via nvs_commit().              */
+
+#define RCFG_NVS_NAMESPACE  "rcfg"
+#define RCFG_NVS_BLOB_KEY   "cfg_blob"
+#define RCFG_NVS_VER_KEY    "cfg_ver"
+#define RCFG_NVS_VERSION    2   /* increment when rcfg_nvs_t layout changes */
+
+/* Persisted subset of remote_config_t — only tunable fields, no runtime state.
+ * Laid out explicitly (no padding holes between float/uint32 fields) to keep
+ * the blob stable across compilers.  Add new fields at the END only, then
+ * bump RCFG_NVS_VERSION so old blobs are discarded rather than misread.    */
+typedef struct __attribute__((packed)) {
+    /* Audio detection */
+    float    gain;
+    uint32_t whistle_freq;
+    uint32_t voice_freq;
+    float    whistle_multiplier;
+    float    voice_multiplier;
+    float    clap_multiplier;
+    uint32_t whistle_confirm;
+    uint32_t voice_confirm;
+    uint32_t clap_confirm;
+    uint32_t debounce_buffers;
+    uint32_t birdsong_freq;
+    float    birdsong_multiplier;
+    float    birdsong_hf_ratio;
+    float    birdsong_mf_min;
+    uint32_t birdsong_confirm;
+    float    noise_floor_whistle;
+    float    noise_floor_voice;
+    float    noise_floor_birdsong;
+    /* Playback volume */
+    float    volume;
+    float    volume_lux_min;
+    float    volume_lux_max;
+    float    volume_scale_min;
+    float    volume_scale_max;
+    float    quelea_gain;
+    /* Light sensor */
+    uint32_t lux_poll_interval_ms;
+    float    lux_change_threshold;
+    float    lux_flash_threshold;
+    float    lux_flash_percent;
+    float    lux_flash_min_abs;
+    /* LED */
+    float    vu_max_brightness;
+    /* ESP-NOW */
+    float    espnow_lux_threshold;
+    uint32_t espnow_event_ttl_ms;
+    uint32_t espnow_sound_throttle_ms;
+    /* Flock mode */
+    uint32_t flock_grace_ms;
+    uint32_t flock_msg_count;
+    uint32_t flock_window_ms;
+    uint32_t flock_hold_ms;
+    uint32_t flock_call_gap_ms;
+    /* Markov chain */
+    uint32_t markov_idle_trigger_ms;
+    uint32_t markov_autonomous_cooldown_ms;
+    /* Demo mode */
+    uint8_t  demo_mode;
+    uint32_t demo_interval_ms;
+    /* Quiet hours */
+    uint8_t  quiet_hours_enabled;
+    uint8_t  quiet_hour_start;
+    uint8_t  quiet_hour_end;
+} rcfg_nvs_t;
+
+static void rcfg_nvs_save(const remote_config_t *src)
+{
+    nvs_handle_t h;
+    if (nvs_open(RCFG_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGW(TAG, "NVS save: could not open namespace");
+        return;
+    }
+
+    rcfg_nvs_t blob = {
+        .gain                          = src->gain,
+        .whistle_freq                  = src->whistle_freq,
+        .voice_freq                    = src->voice_freq,
+        .whistle_multiplier            = src->whistle_multiplier,
+        .voice_multiplier              = src->voice_multiplier,
+        .clap_multiplier               = src->clap_multiplier,
+        .whistle_confirm               = src->whistle_confirm,
+        .voice_confirm                 = src->voice_confirm,
+        .clap_confirm                  = src->clap_confirm,
+        .debounce_buffers              = src->debounce_buffers,
+        .birdsong_freq                 = src->birdsong_freq,
+        .birdsong_multiplier           = src->birdsong_multiplier,
+        .birdsong_hf_ratio             = src->birdsong_hf_ratio,
+        .birdsong_mf_min               = src->birdsong_mf_min,
+        .birdsong_confirm              = src->birdsong_confirm,
+        .noise_floor_whistle           = src->noise_floor_whistle,
+        .noise_floor_voice             = src->noise_floor_voice,
+        .noise_floor_birdsong          = src->noise_floor_birdsong,
+        .volume                        = src->volume,
+        .volume_lux_min                = src->volume_lux_min,
+        .volume_lux_max                = src->volume_lux_max,
+        .volume_scale_min              = src->volume_scale_min,
+        .volume_scale_max              = src->volume_scale_max,
+        .quelea_gain                   = src->quelea_gain,
+        .lux_poll_interval_ms          = src->lux_poll_interval_ms,
+        .lux_change_threshold          = src->lux_change_threshold,
+        .lux_flash_threshold           = src->lux_flash_threshold,
+        .lux_flash_percent             = src->lux_flash_percent,
+        .lux_flash_min_abs             = src->lux_flash_min_abs,
+        .vu_max_brightness             = src->vu_max_brightness,
+        .espnow_lux_threshold          = src->espnow_lux_threshold,
+        .espnow_event_ttl_ms           = src->espnow_event_ttl_ms,
+        .espnow_sound_throttle_ms      = src->espnow_sound_throttle_ms,
+        .flock_grace_ms                = src->flock_grace_ms,
+        .flock_msg_count               = src->flock_msg_count,
+        .flock_window_ms               = src->flock_window_ms,
+        .flock_hold_ms                 = src->flock_hold_ms,
+        .flock_call_gap_ms             = src->flock_call_gap_ms,
+        .markov_idle_trigger_ms        = src->markov_idle_trigger_ms,
+        .markov_autonomous_cooldown_ms = src->markov_autonomous_cooldown_ms,
+        .demo_mode                     = src->demo_mode ? 1u : 0u,
+        .demo_interval_ms              = src->demo_interval_ms,
+        .quiet_hours_enabled           = src->quiet_hours_enabled ? 1u : 0u,
+        .quiet_hour_start              = src->quiet_hour_start,
+        .quiet_hour_end                = src->quiet_hour_end,
+    };
+
+    uint8_t ver = RCFG_NVS_VERSION;
+    nvs_set_u8(h, RCFG_NVS_VER_KEY, ver);
+    nvs_set_blob(h, RCFG_NVS_BLOB_KEY, &blob, sizeof(blob));
+    esp_err_t err = nvs_commit(h);
+    nvs_close(h);
+
+    if (err == ESP_OK) {
+        ESP_LOGD(TAG, "Config saved to NVS (%u bytes)", (unsigned)sizeof(blob));
+    } else {
+        ESP_LOGW(TAG, "NVS commit failed: %s", esp_err_to_name(err));
+    }
+}
+
+static bool rcfg_nvs_load(remote_config_t *dst)
+{
+    nvs_handle_t h;
+    if (nvs_open(RCFG_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return false;   /* namespace never written — first boot */
+    }
+
+    uint8_t ver = 0;
+    if (nvs_get_u8(h, RCFG_NVS_VER_KEY, &ver) != ESP_OK || ver != RCFG_NVS_VERSION) {
+        nvs_close(h);
+        ESP_LOGI(TAG, "NVS config version mismatch (stored=%u want=%u) — using defaults",
+                 ver, RCFG_NVS_VERSION);
+        return false;
+    }
+
+    rcfg_nvs_t blob;
+    size_t sz = sizeof(blob);
+    esp_err_t err = nvs_get_blob(h, RCFG_NVS_BLOB_KEY, &blob, &sz);
+    nvs_close(h);
+
+    if (err != ESP_OK || sz != sizeof(blob)) {
+        ESP_LOGW(TAG, "NVS config blob invalid (%s, size=%u) — using defaults",
+                 esp_err_to_name(err), (unsigned)sz);
+        return false;
+    }
+
+    /* Copy tunable fields into dst, leaving runtime-only fields untouched */
+    dst->gain                          = blob.gain;
+    dst->whistle_freq                  = blob.whistle_freq;
+    dst->voice_freq                    = blob.voice_freq;
+    dst->whistle_multiplier            = blob.whistle_multiplier;
+    dst->voice_multiplier              = blob.voice_multiplier;
+    dst->clap_multiplier               = blob.clap_multiplier;
+    dst->whistle_confirm               = blob.whistle_confirm;
+    dst->voice_confirm                 = blob.voice_confirm;
+    dst->clap_confirm                  = blob.clap_confirm;
+    dst->debounce_buffers              = blob.debounce_buffers;
+    dst->birdsong_freq                 = blob.birdsong_freq;
+    dst->birdsong_multiplier           = blob.birdsong_multiplier;
+    dst->birdsong_hf_ratio             = blob.birdsong_hf_ratio;
+    dst->birdsong_mf_min               = blob.birdsong_mf_min;
+    dst->birdsong_confirm              = blob.birdsong_confirm;
+    dst->noise_floor_whistle           = blob.noise_floor_whistle;
+    dst->noise_floor_voice             = blob.noise_floor_voice;
+    dst->noise_floor_birdsong          = blob.noise_floor_birdsong;
+    dst->volume                        = blob.volume;
+    dst->volume_lux_min                = blob.volume_lux_min;
+    dst->volume_lux_max                = blob.volume_lux_max;
+    dst->volume_scale_min              = blob.volume_scale_min;
+    dst->volume_scale_max              = blob.volume_scale_max;
+    dst->quelea_gain                   = blob.quelea_gain;
+    dst->lux_poll_interval_ms          = blob.lux_poll_interval_ms;
+    dst->lux_change_threshold          = blob.lux_change_threshold;
+    dst->lux_flash_threshold           = blob.lux_flash_threshold;
+    dst->lux_flash_percent             = blob.lux_flash_percent;
+    dst->lux_flash_min_abs             = blob.lux_flash_min_abs;
+    dst->vu_max_brightness             = blob.vu_max_brightness;
+    dst->espnow_lux_threshold          = blob.espnow_lux_threshold;
+    dst->espnow_event_ttl_ms           = blob.espnow_event_ttl_ms;
+    dst->espnow_sound_throttle_ms      = blob.espnow_sound_throttle_ms;
+    dst->flock_grace_ms                = blob.flock_grace_ms;
+    dst->flock_msg_count               = blob.flock_msg_count;
+    dst->flock_window_ms               = blob.flock_window_ms;
+    dst->flock_hold_ms                 = blob.flock_hold_ms;
+    dst->flock_call_gap_ms             = blob.flock_call_gap_ms;
+    dst->markov_idle_trigger_ms        = blob.markov_idle_trigger_ms;
+    dst->markov_autonomous_cooldown_ms = blob.markov_autonomous_cooldown_ms;
+    dst->demo_mode                     = (blob.demo_mode != 0);
+    dst->demo_interval_ms              = blob.demo_interval_ms;
+    dst->quiet_hours_enabled           = (blob.quiet_hours_enabled != 0);
+    dst->quiet_hour_start              = blob.quiet_hour_start;
+    dst->quiet_hour_end                = blob.quiet_hour_end;
+
+    ESP_LOGI(TAG, "Config loaded from NVS (last known-good values)");
+    return true;
+}
 
 static const remote_config_t CONFIG_DEFAULTS = {
     /* Audio detection */
@@ -364,7 +602,15 @@ void remote_config_init(void)
         configASSERT(s_cfg_mutex != NULL);
     }
 
-    ESP_LOGI(TAG, "Remote config initialised with defaults");
+    /* Try to restore the last known-good config from NVS.  If no valid blob
+     * is present (first boot, version mismatch after OTA) the struct stays
+     * at CONFIG_DEFAULTS.  Either way s_cfg.loaded remains false — the server
+     * is still the authoritative source; NVS is only the warm-start fallback. */
+    if (rcfg_nvs_load(&s_cfg)) {
+        ESP_LOGI(TAG, "Remote config initialised from NVS (last known-good)");
+    } else {
+        ESP_LOGI(TAG, "Remote config initialised with compiled-in defaults");
+    }
 }
 
 esp_err_t remote_config_fetch(int failures)
@@ -485,6 +731,11 @@ esp_err_t remote_config_fetch(int failures)
                  tmp.quiet_hour_start, tmp.quiet_hour_end,
                  (long long)tmp.server_epoch_s);
     }
+
+    /* Persist to NVS so a future no-WiFi reboot resumes with these values
+     * rather than compiled-in defaults.  Done outside the mutex — tmp is a
+     * local copy and NVS writes can block for several milliseconds.         */
+    rcfg_nvs_save(&tmp);
 
     return ESP_OK;
 }

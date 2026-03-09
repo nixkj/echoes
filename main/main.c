@@ -835,10 +835,27 @@ void app_main(void)
                  WIFI_KEEPALIVE_INTERVAL_MS / 1000);
     }
 
-    /* Arm ISR hardware watchdog — minimal nodes only.
-     * Must be AFTER keepalive task is created (it feeds the heartbeat). */
-    if (hw_config == HW_CONFIG_MINIMAL) {
+    /* Arm ISR hardware watchdog — minimal nodes only, AND only when WiFi
+     * connected at boot.
+     *
+     * The ISR WDT's purpose is to catch WiFi-driver deadlocks: scenarios
+     * where the radio stack is wedged and remote_config_task can no longer
+     * complete an HTTP fetch.  Without a successful fetch, last_fetch_ms
+     * never advances and the heartbeat starves → hardware reset.
+     *
+     * When the AP is absent at boot there is no WiFi stack in use, so the
+     * deadlock scenario cannot occur and last_fetch_ms will never be
+     * populated — arming the WDT would cause a permanent reset loop every
+     * NETWORK_GRACE_MS + ISR_WDT_TIMEOUT_S seconds.
+     *
+     * Without the ISR WDT, the TWDT (30 s) still catches task stalls.
+     * The only unguarded gap is a WiFi-driver deadlock that stalls the
+     * keepalive task — which cannot happen without an active WiFi session.*/
+    if (hw_config == HW_CONFIG_MINIMAL && wifi_connected) {
         isr_wdt_init();
+        ESP_LOGI(TAG, "ISR WDT armed (WiFi connected)");
+    } else if (hw_config == HW_CONFIG_MINIMAL) {
+        ESP_LOGI(TAG, "ISR WDT skipped (no WiFi — TWDT only)");
     }
 
     /* Log final startup summary */
