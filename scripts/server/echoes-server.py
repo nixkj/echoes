@@ -257,6 +257,11 @@ DEFAULT_CONFIG = {
         "description": "Minimum time between consecutive sound-event broadcasts from this node. Prevents flooding the mesh during rapid repeated detections.",
         "unit": "ms"
     },
+    "DEBUG_ESPNOW_STATUS": {
+        "value": False, "type": "bool",
+        "description": "When ON, every node broadcasts a STATUS heartbeat every 30 s carrying RSSI, HTTP staleness, uptime, and health flags. Intended for sniffer-based diagnostics during development or fault investigation. Has no effect on normal audio/light behaviour. Turn OFF during performances to avoid unnecessary air traffic.",
+        "unit": "on / off"
+    },
     "FLOCK_GRACE_MS": {
         "value": 12000, "min": 0, "max": 60000, "step": 1000, "type": "int",
         "description": "Boot grace period (ms) — flock mode is suppressed for this long after each node starts up. Prevents all nodes from triggering flock simultaneously during a mass restart, which can cause I2S stalls and stuck LEDs. Set to 0 to disable (not recommended).",
@@ -1393,7 +1398,7 @@ const SECTIONS = {
   "Playback Volume":  ["VOLUME","VOLUME_LUX_MIN","VOLUME_LUX_MAX","VOLUME_SCALE_MIN","VOLUME_SCALE_MAX","QUELEA_GAIN"],
   "Light Sensor":     ["LUX_POLL_INTERVAL_MS","LUX_CHANGE_THRESHOLD","LUX_FLASH_THRESHOLD","LUX_FLASH_PERCENT","LUX_FLASH_MIN_ABS"],
   "LED Behaviour":    ["VU_MAX_BRIGHTNESS"],
-  "ESP-NOW Mesh":     ["ESPNOW_LUX_THRESHOLD","ESPNOW_EVENT_TTL_MS","ESPNOW_SOUND_THROTTLE_MS"],
+  "ESP-NOW Mesh":     ["ESPNOW_LUX_THRESHOLD","ESPNOW_EVENT_TTL_MS","ESPNOW_SOUND_THROTTLE_MS","DEBUG_ESPNOW_STATUS"],
   "Markov Chain":     ["MARKOV_IDLE_TRIGGER_MS","MARKOV_AUTONOMOUS_COOLDOWN_MS"],
   "Flock Mode":       ["FLOCK_GRACE_MS","FLOCK_MSG_COUNT","FLOCK_WINDOW_MS","FLOCK_HOLD_MS","FLOCK_CALL_GAP_MS"],
 };
