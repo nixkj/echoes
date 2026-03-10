@@ -736,6 +736,8 @@ def startup_report():
         has_errors   = data.get("has_errors",    False)
         error_msg    = data.get("error_message", "")
         prev_diag    = data.get("prev_diag",     None)   # dict or None
+        prev_boot_reason  = data.get("prev_boot_reset_reason", "")   # firmware 7.3.2+
+        prev_boot_uptime  = data.get("prev_boot_uptime_s",     None) # firmware 7.3.2+
         ip           = request.remote_addr or "unknown"
 
         # Warn in the main server log for abnormal resets and hard errors
@@ -760,6 +762,23 @@ def startup_report():
                 f"  heap={heap}  rssi={rssi}  uptime={uptime}s"
             )
 
+        # Log prev_boot_reset_reason — fires on EVERY reset including
+        # uncontrolled crashes (PANIC, TASK_WDT, INT_WDT) that bypass
+        # startup_write_rtc_diag() and would otherwise leave no trace.
+        # Only log at WARNING when it indicates a crash — POWERON / SW_RESET
+        # are expected and logged at INFO to avoid noise.
+        if prev_boot_reason and prev_boot_reason not in ("", "POWERON"):
+            uptime_str = f"  prev_uptime={prev_boot_uptime}s" if prev_boot_uptime is not None else ""
+            if prev_boot_reason in ("PANIC", "TASK_WDT", "INT_WDT", "WDT", "BROWNOUT"):
+                log.warning(
+                    f"PREV_BOOT  {mac}  prev_reset={prev_boot_reason}{uptime_str}"
+                    f"  ← uncontrolled crash on previous boot"
+                )
+            else:
+                log.info(
+                    f"PREV_BOOT  {mac}  prev_reset={prev_boot_reason}{uptime_str}"
+                )
+
         if mac:
             _node_startup(mac, node_type, firmware, ip)
 
@@ -767,9 +786,12 @@ def startup_report():
         timestamp  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         errors_str = error_msg if (has_errors and error_msg) else ("unknown error" if has_errors else "NO")
         diag_str   = ""
+        if prev_boot_reason and prev_boot_reason not in ("", "POWERON"):
+            uptime_str = f" uptime={prev_boot_uptime}s" if prev_boot_uptime is not None else ""
+            diag_str += f" | PrevBoot: {prev_boot_reason}{uptime_str}"
         if prev_diag:
             cause_raw = prev_diag.get("cause", "?")
-            diag_str = (f" | PrevDiag: cause={_CAUSE_LABELS.get(cause_raw, 'UNKNOWN(' + str(cause_raw) + ')')}"
+            diag_str += (f" | PrevDiag: cause={_CAUSE_LABELS.get(cause_raw, 'UNKNOWN(' + str(cause_raw) + ')')}"
                         f" failures={prev_diag.get('failures','?')}"
                         f" heap={prev_diag.get('heap','?')}"
                         f" rssi={prev_diag.get('rssi','?')}"
@@ -885,9 +907,9 @@ def get_config():
             if int(failures) > 0:
                 log.warning(diag)
             else:
-                log.debug(diag)
+                log.info(diag)   # Changed from debug: heap/uptime/RSSI visible in production log
         except (ValueError, TypeError):
-            log.debug(diag)
+            log.info(diag)       # Changed from debug: heap/uptime/RSSI visible in production log
 
     flat = {k: v["value"] for k, v in _config.items()}
     flat["_server_time"]        = time.time()

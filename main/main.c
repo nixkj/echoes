@@ -12,6 +12,7 @@
 #include "esp_wifi.h"
 #include "esp_ota_ops.h"
 #include <math.h>
+#include <stdatomic.h>
 
 #include "echoes.h"
 #include "synthesis.h"
@@ -64,7 +65,14 @@ static const char *TAG = "MAIN";
  *   that requires no software cooperation from either CPU.
  */
 
-#define ISR_WDT_TIMEOUT_S  120  /* seconds without heartbeat → hardware reset */
+#define ISR_WDT_TIMEOUT_S        120  /* seconds without heartbeat → hardware reset */
+#define ISR_WDT_ALARM_INTERVAL_S   5  /* ISR fires every N seconds, not every 1 s.
+                                       * keepalive increments heartbeat every 1 s, so
+                                       * the counter advances 4-5× between ISR ticks.
+                                       * This eliminates the 1s race between keepalive
+                                       * and the ISR, and gives the CPU caches ample
+                                       * time to flush the write before the next read.
+                                       * Miss threshold = TIMEOUT / INTERVAL = 24.    */
 
 /* Network health thresholds for the ISR WDT feeder logic.
  *
@@ -82,12 +90,17 @@ static const char *TAG = "MAIN";
  *   stop feeding the ISR WDT.  The ISR fires ISR_WDT_TIMEOUT_S later.
  *
  * Total worst-case recovery: NETWORK_DEATH_MS + ISR_WDT_TIMEOUT_S
- *   = 4 min + 2 min = 6 minutes from AP drop to hardware reset.          */
+ *   = 4 min + 2 min = 6 minutes from AP drop to hardware reset.
+ *
+ * ISR fires every ISR_WDT_ALARM_INTERVAL_S (5 s), not every 1 s.
+ * keepalive increments every 1 s, so heartbeat advances ~5× between
+ * checks.  This eliminates the 1 s race and cross-core cache issue.
+ * Miss threshold = 120 / 5 = 24 ticks, same 120 s wall-clock timeout. */
 #define NETWORK_GRACE_MS   ( 2u * 60u * 1000u)   /*  2 min boot grace     */
 #define NETWORK_DEATH_MS   ( 4u * 60u * 1000u)   /* 4 min stale → stop    */
 
 static gptimer_handle_t          s_isr_wdt_timer     = NULL;
-static volatile uint32_t         s_isr_wdt_heartbeat  = 0;   /* fed by keepalive, checked by ISR */
+static _Atomic uint32_t          s_isr_wdt_heartbeat  = 0;   /* fed by keepalive, checked by ISR */
 static volatile uint64_t         s_lux_alive_ms       = 0;   /* updated by lux_task each poll   */
 
 /* If lux_task has not updated s_lux_alive_ms within this window, keepalive
@@ -109,19 +122,22 @@ static bool IRAM_ATTR isr_wdt_alarm_cb(gptimer_handle_t timer,
     static uint32_t s_last_hb    = 0;
     static uint32_t s_miss_count = 0;
 
-    uint32_t hb = s_isr_wdt_heartbeat;
+    uint32_t hb = atomic_load_explicit(&s_isr_wdt_heartbeat, memory_order_relaxed);
     if (hb == s_last_hb) {
         s_miss_count++;
-        if (s_miss_count >= ISR_WDT_TIMEOUT_S) {
+        if (s_miss_count >= (ISR_WDT_TIMEOUT_S / ISR_WDT_ALARM_INTERVAL_S)) {
             /* Write diagnostic state before resetting.  We are in ISR context
              * so heap size and RSSI cannot be safely read — pass 0 for both.
-             * startup_write_rtc_diag() is IRAM_ATTR (pure memory writes).   */
+             * startup_write_rtc_diag() and startup_record_boot_reason() are
+             * both IRAM_ATTR (pure memory writes, safe from ISR).           */
+            uint32_t uptime_now = (uint32_t)(esp_timer_get_time() / 1000000ULL);
             startup_write_rtc_diag(
                 RTC_DIAG_CAUSE_ISR_WDT,
-                0,   /* consecutive_failures not accessible from ISR */
-                0,   /* heap not safely readable from ISR             */
-                0,   /* RSSI not safely readable from ISR             */
-                (uint32_t)(esp_timer_get_time() / 1000000ULL));
+                0,           /* consecutive_failures not accessible from ISR */
+                0,           /* heap not safely readable from ISR             */
+                0,           /* RSSI not safely readable from ISR             */
+                uptime_now);
+            startup_record_boot_reason(ESP_RST_SW, uptime_now);
             /* Direct RTC hardware reset — no software cooperation needed.
              * Safe from ISR context, safe with both CPUs stuck.           */
             SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
@@ -156,7 +172,7 @@ static void isr_wdt_init(void)
     }
 
     gptimer_alarm_config_t alarm_cfg = {
-        .alarm_count               = 1000000,   /* 1 second (1 MHz clock) */
+        .alarm_count               = ISR_WDT_ALARM_INTERVAL_S * 1000000ULL,  /* N seconds at 1 MHz */
         .reload_count              = 0,
         .flags.auto_reload_on_alarm = true,
     };
@@ -324,7 +340,7 @@ static void wifi_keepalive_task(void *param)
             bool boot_grace  = (now_ms < NETWORK_GRACE_MS);
 
             if (boot_grace) {
-                s_isr_wdt_heartbeat++;
+                atomic_fetch_add_explicit(&s_isr_wdt_heartbeat, 1u, memory_order_relaxed);
             } else {
                 uint64_t last_net = remote_config_get()->last_fetch_ms;
                 bool network_ok   = (last_net != 0)
@@ -335,7 +351,7 @@ static void wifi_keepalive_task(void *param)
                                  && ((now_ms - last_lux) < LUX_DEAD_MS);
 
                 if (network_ok && lux_ok) {
-                    s_isr_wdt_heartbeat++;
+                    atomic_fetch_add_explicit(&s_isr_wdt_heartbeat, 1u, memory_order_relaxed);
                 }
                 /* else: network or lux_task dead — starve the ISR WDT */
             }
@@ -377,12 +393,14 @@ static void wifi_keepalive_task(void *param)
                              "HTTP stuck for %lums — AP silently dropped node."
                              "  Triggering hardware reset.",
                              (unsigned long)attempt_ms);
+                    uint32_t uptime_s_now = (uint32_t)(now_ms / 1000);
                     startup_write_rtc_diag(
                         RTC_DIAG_CAUSE_HTTP_STUCK,
                         0,                          /* consecutive_failures N/A */
                         (uint32_t)esp_get_free_heap_size(),
                         (int32_t)rssi,
-                        (uint32_t)(now_ms / 1000));
+                        uptime_s_now);
+                    startup_record_boot_reason(ESP_RST_SW, uptime_s_now);
                     SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
                     while (1) { }   /* never reached */
                 }
@@ -445,6 +463,21 @@ static void wifi_keepalive_task(void *param)
 void app_main(void)
 {
     led_init();   /* Default initialisation is full on */
+
+    /* ── Boot-reason stamp ───────────────────────────────────────────────────
+     * Read and record the reset reason for THIS boot as early as possible —
+     * before WiFi, before any tasks, before anything that could crash.
+     *
+     * If this boot ends in an uncontrolled crash (PANIC, TASK_WDT, etc.) the
+     * stamp survives in RTC_NOINIT and the NEXT boot's startup report will
+     * carry prev_boot_reset_reason = "PANIC" (or whatever), giving us the
+     * crash type even when WiFi never reconnects.
+     *
+     * uptime_s = 0 here; it gets overwritten with the real uptime immediately
+     * before every deliberate reset (startup_record_boot_reason call sites in
+     * remote_config.c and the ISR WDT/HTTP-stuck paths in main.c).          */
+    esp_reset_reason_t boot_reason = esp_reset_reason();
+    startup_record_boot_reason(boot_reason, 0);
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Echoes of the Machine");
@@ -591,9 +624,10 @@ void app_main(void)
 
         /* Stack note: audio_detection_task does floating-point DSP (Goertzel,
          * adaptive thresholds) and calls into synthesis from the same stack.
-         * 4096 bytes is sufficient on Xtensa with the hardware FPU, but if
-         * intermittent watchdog resets appear in the field this task's stack
-         * should be the first thing to increase (try 8192).               */
+         * Increased from 4096 → 8192 (2026-03-10, v7.3.2) after cascade node
+         * crashes in the 2026-03-09 session indicated heap/stack exhaustion.
+         * All tasks bumped to 8192 for headroom; measure high-water marks
+         * with uxTaskGetStackHighWaterMark() before reducing.               */
 
         /* Suspend the scheduler while creating tasks so that a newly created
          * higher-priority task (audio=5, lux/flock=4 vs app_main=1) cannot
@@ -606,13 +640,13 @@ void app_main(void)
          * suspended state so the scheduler will not switch to any of them.  */
         vTaskSuspendAll();
 
-        xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, &h_audio);
+        xTaskCreate(audio_detection_task, "audio_detection", 8192, NULL, 5, &h_audio);
         if (h_audio)  vTaskSuspend(h_audio);
 
-        xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, &h_lux);
+        xTaskCreate(lux_based_birds_task, "lux_birds", 8192, NULL, 4, &h_lux);
         if (h_lux)  vTaskSuspend(h_lux);
 
-        xTaskCreate(flock_task, "flock", 4096, NULL, 4, &h_flock);
+        xTaskCreate(flock_task, "flock", 8192, NULL, 4, &h_flock);
         if (h_flock)  vTaskSuspend(h_flock);
 
         /* Demo task: idles (polls remote config) until DEMO_MODE is enabled.
@@ -620,7 +654,7 @@ void app_main(void)
          * detection.  Not registered with OTA: it sleeps in 500 ms chunks,
          * holds no I2S or DMA resources, and will self-suspend on the next
          * remote_config_get() call which returns demo_mode=false during OTA. */
-        xTaskCreate(demo_task, "demo", 4096, NULL, 3, NULL);
+        xTaskCreate(demo_task, "demo", 8192, NULL, 3, NULL);
 
         xTaskResumeAll();
 
@@ -796,14 +830,14 @@ void app_main(void)
         set_led(0, 0);
 
         /* Stack: see WiFi path above for sizing rationale. */
-        xTaskCreate(audio_detection_task, "audio_detection", 4096, NULL, 5, NULL);
+        xTaskCreate(audio_detection_task, "audio_detection", 8192, NULL, 5, NULL);
 
-        xTaskCreate(lux_based_birds_task, "lux_birds", 4096, NULL, 4, NULL);
+        xTaskCreate(lux_based_birds_task, "lux_birds", 8192, NULL, 4, NULL);
 
-        xTaskCreate(flock_task, "flock", 4096, NULL, 4, NULL);
+        xTaskCreate(flock_task, "flock", 8192, NULL, 4, NULL);
         ESP_LOGI(TAG, "Flock task started");
 
-        xTaskCreate(demo_task, "demo", 4096, NULL, 3, NULL);
+        xTaskCreate(demo_task, "demo", 8192, NULL, 3, NULL);
         ESP_LOGI(TAG, "Demo task started");
     } else {
         ESP_LOGI(TAG, "Echoes of the Machine running (tasks already started)");
@@ -822,7 +856,7 @@ void app_main(void)
      * is established, remote_config_task will succeed on its next 60 s poll and
      * keepalive_task will start feeding the ISR WDT heartbeat.  The 10-minute
      * boot grace period in wifi_keepalive_task gives ample time for this.    */
-    xTaskCreate(remote_config_task, "rcfg", 4096, NULL, 3, NULL);
+    xTaskCreate(remote_config_task, "rcfg", 8192, NULL, 3, NULL);
     ESP_LOGI(TAG, "Remote config polling task started");
 
     /* wifi_keepalive_task is one of two ISR WDT feeders (the other is
@@ -830,7 +864,7 @@ void app_main(void)
      * while lux_task is also dead, the ISR fires and resets the SoC.
      * See isr_wdt_lux_feed() in this file for the full rationale.          */
     if (hw_config == HW_CONFIG_MINIMAL) {
-        xTaskCreate(wifi_keepalive_task, "wifi_ka", 4096, NULL, 4, NULL);
+        xTaskCreate(wifi_keepalive_task, "wifi_ka", 8192, NULL, 4, NULL);
         ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
                  WIFI_KEEPALIVE_INTERVAL_MS / 1000);
     }

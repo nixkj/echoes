@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "esp_system.h"
 #include "echoes.h"
 
 /* ========================================================================
@@ -47,6 +48,10 @@
 
 #define RTC_DIAG_MAGIC          0xD1A90001u
 
+/* Separate magic for the boot-reason record — different value to avoid
+ * any accidental aliasing with s_rtc_diag on first power-on.           */
+#define RTC_BOOT_MAGIC          0xB007CA11u
+
 /* reset cause codes stored in echoes_rtc_diag_t.cause */
 #define RTC_DIAG_CAUSE_NONE      0u  /* no prior diagnostic (power-on or first boot)    */
 #define RTC_DIAG_CAUSE_RCFG      1u  /* remote_config_task: RCFG_FAILURES_HARD_REBOOT   */
@@ -62,6 +67,35 @@ typedef struct {
     int32_t  rssi;               /* AP signal strength at reset (0 if unavailable)    */
     uint32_t uptime_s;           /* seconds since boot at reset                       */
 } echoes_rtc_diag_t;
+
+/* Boot-reason record — written on EVERY boot before WiFi starts,
+ * and read back on the following boot.
+ *
+ * Unlike echoes_rtc_diag_t (written only by our own deliberate reset paths),
+ * this captures esp_reset_reason() unconditionally, including uncontrolled
+ * crashes: ESP_RST_PANIC, ESP_RST_TASK_WDT, ESP_RST_INT_WDT, ESP_RST_BROWNOUT.
+ * These all bypass startup_write_rtc_diag(), so s_rtc_diag.magic is never set
+ * and PREV_DIAG is never logged — making the crash completely invisible.
+ *
+ * s_boot_diag survives software reset (RTC_NOINIT) but is re-written on every
+ * boot, so after a crash + boot-loop the most recent entry is the loop reset,
+ * not the original crash.  However, the FIRST subsequent successful boot (when
+ * WiFi reconnects and a startup report reaches the server) will carry whatever
+ * reset_reason ESP-IDF reports for that particular reset — and the server log
+ * will show "PANIC" or "TASK_WDT" in the Reset field, giving us the crash type.
+ *
+ * More importantly: even if WiFi never reconnects, the magic + reason survive
+ * in RTC until the next physical power-cycle.  On that power-on the magic is
+ * invalid so we won't falsely report an old crash, but the reset_reason field
+ * from the panic boot is still carried in the startup report for that cycle.
+ *
+ * Fields are minimal — this struct must be as small as possible to minimise
+ * RTC_NOINIT fragmentation alongside s_rtc_diag.                             */
+typedef struct {
+    uint32_t magic;         /* RTC_BOOT_MAGIC when struct is valid                  */
+    uint32_t reason;        /* raw esp_reset_reason_t from the PREVIOUS boot        */
+    uint32_t uptime_s;      /* uptime_s at end of previous boot (0 if unknown)      */
+} echoes_rtc_boot_t;
 
 /* ========================================================================
  * TYPE DEFINITIONS
@@ -82,6 +116,14 @@ typedef struct {
     uint32_t prev_diag_heap;        // free heap bytes before reset
     int32_t  prev_diag_rssi;        // AP RSSI before reset (dBm)
     uint32_t prev_diag_uptime_s;    // uptime in seconds before reset
+
+    /* Previous-boot raw reset reason — populated from echoes_rtc_boot_t.
+     * Unlike has_prev_diag (which only fires on our own deliberate resets),
+     * this fires on EVERY reset including uncontrolled crashes: PANIC,
+     * TASK_WDT, INT_WDT, BROWNOUT.  Empty string when not available
+     * (first power-on or RTC region corrupted).                             */
+    char     prev_boot_reset_reason[20];  // e.g. "PANIC", "TASK_WDT", "POWERON"
+    uint32_t prev_boot_uptime_s;          // uptime of previous boot at exit (0 if unknown)
 } startup_report_t;
 
 /* ========================================================================
@@ -143,5 +185,21 @@ const char *startup_reset_reason_str(int reason);
  */
 void startup_write_rtc_diag(uint32_t cause, uint32_t failures,
                              uint32_t heap, int32_t rssi, uint32_t uptime_s);
+
+/**
+ * @brief Stamp the current boot's reset reason into RTC_NOINIT before it is
+ *        overwritten on the next boot.
+ *
+ * Must be called as early as possible in app_main — before wifi_init, before
+ * any task creation — so that even a very early crash on the NEXT boot is
+ * preceded by a valid stamp from this boot.
+ *
+ * Also called immediately before every deliberate reset so the next boot can
+ * see how long this boot ran.
+ *
+ * @param reason    esp_reset_reason() for THIS boot (already read by caller)
+ * @param uptime_s  current uptime in seconds (0 when called at boot start)
+ */
+void startup_record_boot_reason(esp_reset_reason_t reason, uint32_t uptime_s);
 
 #endif /* STARTUP_REPORT_H */

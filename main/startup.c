@@ -26,6 +26,11 @@ static const char *TAG = "STARTUP";
 
 RTC_NOINIT_ATTR static echoes_rtc_diag_t s_rtc_diag;
 
+/* Boot-reason record — written unconditionally on every boot.
+ * Captures uncontrolled crashes (PANIC, TASK_WDT, INT_WDT, BROWNOUT) that
+ * bypass startup_write_rtc_diag() and would otherwise leave no trace.    */
+RTC_NOINIT_ATTR static echoes_rtc_boot_t s_boot_diag;
+
 /**
  * @brief Write pre-reset diagnostic state to RTC_NOINIT memory.
  * IRAM_ATTR: safe to call from ISR context (pure memory writes, no alloc).
@@ -42,14 +47,38 @@ void IRAM_ATTR startup_write_rtc_diag(uint32_t cause, uint32_t failures,
     s_rtc_diag.magic                = RTC_DIAG_MAGIC;  /* write magic last */
 }
 
+/**
+ * @brief Stamp THIS boot's reset reason into RTC_NOINIT so the NEXT boot can
+ *        read it back, regardless of how this boot ends.
+ *
+ * Two call sites:
+ *   1. Early in app_main (uptime_s = 0): records what kind of reset brought
+ *      us here, so if we crash before WiFi connects the following boot can
+ *      still report "prev_boot_reset_reason = PANIC" (or TASK_WDT, etc.).
+ *   2. Immediately before every deliberate reset (uptime_s = current uptime):
+ *      overwrites the early stamp with the final uptime so the next boot
+ *      knows how long we ran.
+ *
+ * On true power-on the RTC_NOINIT region is random — s_boot_diag.magic will
+ * almost certainly not equal RTC_BOOT_MAGIC, so startup_capture_identity()
+ * will correctly skip it.
+ */
+void startup_record_boot_reason(esp_reset_reason_t reason, uint32_t uptime_s)
+{
+    s_boot_diag.reason   = (uint32_t)reason;
+    s_boot_diag.uptime_s = uptime_s;
+    s_boot_diag.magic    = RTC_BOOT_MAGIC;   /* write magic last — same pattern as s_rtc_diag */
+}
+
 /* Human-readable label for RTC_DIAG_CAUSE_* constants */
 static const char *rtc_diag_cause_str(uint32_t cause)
 {
     switch (cause) {
-    case RTC_DIAG_CAUSE_RCFG:    return "RCFG_REBOOT";
-    case RTC_DIAG_CAUSE_REMOTE:  return "REMOTE_RESTART";
-    case RTC_DIAG_CAUSE_ISR_WDT: return "ISR_WDT";
-    default:                     return "UNKNOWN";
+    case RTC_DIAG_CAUSE_RCFG:       return "RCFG_REBOOT";
+    case RTC_DIAG_CAUSE_REMOTE:     return "REMOTE_RESTART";
+    case RTC_DIAG_CAUSE_ISR_WDT:    return "ISR_WDT";
+    case RTC_DIAG_CAUSE_HTTP_STUCK: return "HTTP_STUCK";
+    default:                        return "UNKNOWN";
     }
 }
 
@@ -167,6 +196,31 @@ esp_err_t startup_capture_identity(startup_report_t *report, hardware_config_t h
                  (unsigned long)report->prev_diag_uptime_s);
     }
 
+    /* Read previous-boot raw reset reason — fires on EVERY reset including
+     * uncontrolled crashes (PANIC, TASK_WDT, INT_WDT, BROWNOUT) that never
+     * reach startup_write_rtc_diag().  This is the only way to learn the
+     * crash type when WiFi doesn't connect after a bad reset.
+     *
+     * startup_record_boot_reason() must be called early in app_main (before
+     * wifi_init) so that THIS boot's reason is stamped for the following boot
+     * before we have any chance of crashing again.                          */
+    report->prev_boot_reset_reason[0] = '\0';
+    report->prev_boot_uptime_s        = 0;
+    if (s_boot_diag.magic == RTC_BOOT_MAGIC) {
+        strncpy(report->prev_boot_reset_reason,
+                startup_reset_reason_str((int)s_boot_diag.reason),
+                sizeof(report->prev_boot_reset_reason) - 1);
+        report->prev_boot_reset_reason[sizeof(report->prev_boot_reset_reason) - 1] = '\0';
+        report->prev_boot_uptime_s = s_boot_diag.uptime_s;
+        /* Do NOT invalidate s_boot_diag here — startup_record_boot_reason()
+         * will overwrite it at the start of this boot, which is the correct
+         * time.  Clearing it here would lose the reason if capture_identity
+         * is called before record_boot_reason on some future code path.    */
+        ESP_LOGI(TAG, "Prev-boot reset reason: %s (uptime %lus)",
+                 report->prev_boot_reset_reason,
+                 (unsigned long)report->prev_boot_uptime_s);
+    }
+
     return ESP_OK;
 }
 
@@ -222,6 +276,8 @@ esp_err_t startup_send_report(const startup_report_t *report)
             "\"reset_reason\":\"%s\","
             "\"has_errors\":%s,"
             "\"error_message\":\"%s\","
+            "\"prev_boot_reset_reason\":\"%s\","
+            "\"prev_boot_uptime_s\":%lu,"
             "\"prev_diag\":{"
                 "\"cause\":\"%s\","
                 "\"failures\":%lu,"
@@ -236,6 +292,8 @@ esp_err_t startup_send_report(const startup_report_t *report)
             report->reset_reason,
             report->has_errors ? "true" : "false",
             report->error_message,
+            report->prev_boot_reset_reason,
+            (unsigned long)report->prev_boot_uptime_s,
             report->prev_diag_cause,
             (unsigned long)report->prev_diag_failures,
             (unsigned long)report->prev_diag_heap,
@@ -250,14 +308,18 @@ esp_err_t startup_send_report(const startup_report_t *report)
             "\"node_type\":\"%s\","
             "\"reset_reason\":\"%s\","
             "\"has_errors\":%s,"
-            "\"error_message\":\"%s\""
+            "\"error_message\":\"%s\","
+            "\"prev_boot_reset_reason\":\"%s\","
+            "\"prev_boot_uptime_s\":%lu"
             "}",
             report->mac_address,
             FIRMWARE_VERSION,
             report->node_type,
             report->reset_reason,
             report->has_errors ? "true" : "false",
-            report->error_message
+            report->error_message,
+            report->prev_boot_reset_reason,
+            (unsigned long)report->prev_boot_uptime_s
         );
     }
     

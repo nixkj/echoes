@@ -21,4 +21,5 @@ idf_component_register(
         app_update
 	json
 	esp_timer
+	esp_system
 )

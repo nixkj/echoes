@@ -426,6 +426,29 @@ static SemaphoreHandle_t s_cfg_mutex = NULL;
 static char   s_http_body[REMOTE_CONFIG_MAX_BODY_SIZE];
 static size_t s_http_body_len = 0;
 
+/* Persistent HTTP client handle.
+ *
+ * Previously, remote_config_fetch() called esp_http_client_init() and
+ * esp_http_client_cleanup() on every 60-second poll.  Each cycle allocated
+ * and freed TCP socket buffers, lwIP pcb structures, and HTTP header memory.
+ * The heap allocator cannot always fully coalesce freed blocks, so over
+ * hundreds of cycles fragmentation accumulated until a malloc() deep in the
+ * WiFi stack or FreeRTOS internals failed → abort/panic with no PREV_DIAG.
+ * This was the root cause of the cascade failures in the 2026-03-09 session
+ * (24/50 nodes dead, 16 min–583 min, permanent boot loop afterward).
+ *
+ * Fix: create the client once and reuse it across polls.  The ESP-IDF HTTP
+ * client reconnects transparently if the server closes the connection between
+ * polls.  On any genuine error we call cleanup() and NULL this pointer so the
+ * next poll starts fresh.  This amortises all TCP/lwIP allocation over the
+ * lifetime of the task rather than per 60-second poll cycle.
+ *
+ * keep_alive_enable = true: reuses the underlying TCP connection across polls
+ * when the server supports it, eliminating connect/disconnect overhead.
+ *
+ * SINGLE-CALLER ASSUMPTION: same as s_http_body above.                      */
+static esp_http_client_handle_t s_http_client = NULL;
+
 /* =========================================================================
  * HTTP EVENT HANDLER
  * ========================================================================= */
@@ -619,24 +642,29 @@ esp_err_t remote_config_fetch(int failures)
     s_http_body_len  = 0;
     s_http_body[0]   = '\0';
 
-    esp_http_client_config_t http_cfg = {
-        .url            = REMOTE_CONFIG_URL,
-        .method         = HTTP_METHOD_GET,
-        .event_handler  = http_event_handler,
-        .timeout_ms     = REMOTE_CONFIG_HTTP_TIMEOUT_MS,
-        .keep_alive_enable = false,
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
-    if (!client) {
-        ESP_LOGE(TAG, "Failed to initialise HTTP client");
-        return ESP_FAIL;
+    /* ── Persistent HTTP client ──────────────────────────────────────────────
+     * Create the client once; reuse it across polls.  See the comment above
+     * s_http_client for the full rationale.  On any error the client is
+     * destroyed and NULL'd so the next call starts fresh.                    */
+    if (!s_http_client) {
+        esp_http_client_config_t http_cfg = {
+            .url               = REMOTE_CONFIG_URL,
+            .method            = HTTP_METHOD_GET,
+            .event_handler     = http_event_handler,
+            .timeout_ms        = REMOTE_CONFIG_HTTP_TIMEOUT_MS,
+            .keep_alive_enable = true,   /* reuse TCP connection across polls */
+        };
+        s_http_client = esp_http_client_init(&http_cfg);
+        if (!s_http_client) {
+            ESP_LOGE(TAG, "Failed to initialise HTTP client");
+            return ESP_FAIL;
+        }
     }
 
     /* Send MAC address so the server can update node liveness on every poll */
     char mac_str[18] = {0};
     if (startup_get_mac_address(mac_str) == ESP_OK) {
-        esp_http_client_set_header(client, "X-Device-MAC", mac_str);
+        esp_http_client_set_header(s_http_client, "X-Device-MAC", mac_str);
     }
 
     /* Diagnostic telemetry headers — logged by the server on every poll.
@@ -647,14 +675,14 @@ esp_err_t remote_config_fetch(int failures)
 
         snprintf(buf, sizeof(buf), "%lu",
                  (unsigned long)esp_get_free_heap_size());
-        esp_http_client_set_header(client, "X-Heap-Free", buf);
+        esp_http_client_set_header(s_http_client, "X-Heap-Free", buf);
 
         snprintf(buf, sizeof(buf), "%lu",
                  (unsigned long)(esp_timer_get_time() / 1000000ULL));
-        esp_http_client_set_header(client, "X-Uptime-S", buf);
+        esp_http_client_set_header(s_http_client, "X-Uptime-S", buf);
 
         snprintf(buf, sizeof(buf), "%d", failures);
-        esp_http_client_set_header(client, "X-Poll-Failures", buf);
+        esp_http_client_set_header(s_http_client, "X-Poll-Failures", buf);
 
         wifi_ap_record_t ap;
         if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
@@ -662,27 +690,32 @@ esp_err_t remote_config_fetch(int failures)
         } else {
             snprintf(buf, sizeof(buf), "0");
         }
-        esp_http_client_set_header(client, "X-RSSI", buf);
+        esp_http_client_set_header(s_http_client, "X-RSSI", buf);
     }
 
     /* Mark the attempt start so wifi_keepalive_task can detect a hung
      * connect().  Cleared unconditionally before this function returns. */
     g_rcfg_http_attempt_start_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
 
-    esp_err_t err = esp_http_client_perform(client);
+    esp_err_t err = esp_http_client_perform(s_http_client);
 
     /* Clear immediately — the hung-connect window is over either way. */
     g_rcfg_http_attempt_start_ms = 0;
 
-    int status    = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
+    int status = esp_http_client_get_status_code(s_http_client);
 
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "HTTP fetch failed: %s", esp_err_to_name(err));
+        /* Destroy and NULL the client — do not reuse after a transport error. */
+        esp_http_client_cleanup(s_http_client);
+        s_http_client = NULL;
+        ESP_LOGW(TAG, "HTTP fetch failed: %s (client reset)", esp_err_to_name(err));
         return err;
     }
     if (status != 200) {
-        ESP_LOGW(TAG, "HTTP status %d — skipping config update", status);
+        /* Destroy and NULL on protocol error — server may be in unexpected state. */
+        esp_http_client_cleanup(s_http_client);
+        s_http_client = NULL;
+        ESP_LOGW(TAG, "HTTP status %d — skipping config update (client reset)", status);
         return ESP_FAIL;
     }
     if (s_http_body_len == 0) {
@@ -732,10 +765,41 @@ esp_err_t remote_config_fetch(int failures)
                  (long long)tmp.server_epoch_s);
     }
 
-    /* Persist to NVS so a future no-WiFi reboot resumes with these values
-     * rather than compiled-in defaults.  Done outside the mutex — tmp is a
-     * local copy and NVS writes can block for several milliseconds.         */
-    rcfg_nvs_save(&tmp);
+    /* Persist to NVS only when the config values actually changed.
+     *
+     * Previously rcfg_nvs_save() was called on every successful poll (once
+     * per minute).  nvs_commit() acquires a flash write mutex, erases a
+     * sector when the log fills, and may take several milliseconds.  Worse:
+     * a crash during commit can corrupt the NVS partition, wiping WiFi
+     * credentials and making subsequent WiFi connections impossible — the
+     * "permanent boot loop" symptom seen after node crashes.
+     *
+     * Fix: compare against the last-saved snapshot.  Only write when a value
+     * genuinely changed (server pushed a new setting).  In steady-state
+     * (server returning identical JSON every minute) this reduces NVS writes
+     * from ~1/min to zero.                                                   */
+    {
+        static remote_config_t s_last_saved;
+        static bool            s_last_saved_valid = false;
+
+        /* Exclude last_fetch_ms and loaded from the comparison — they change
+         * on every poll but do not represent a setting change from the server. */
+        remote_config_t cmp_new = tmp;
+        remote_config_t cmp_old = s_last_saved;
+        cmp_new.last_fetch_ms = 0;
+        cmp_old.last_fetch_ms = 0;
+        cmp_new.loaded        = false;
+        cmp_old.loaded        = false;
+
+        bool config_changed = !s_last_saved_valid
+                           || memcmp(&cmp_new, &cmp_old, sizeof(cmp_new)) != 0;
+        if (config_changed) {
+            rcfg_nvs_save(&tmp);
+            s_last_saved       = tmp;
+            s_last_saved_valid = true;
+            ESP_LOGI(TAG, "Config persisted to NVS (values changed)");
+        }
+    }
 
     return ESP_OK;
 }
@@ -789,12 +853,14 @@ void remote_config_task(void *param)
                         wifi_ap_record_t ap;
                         int32_t rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
                                        ? ap.rssi : 0;
+                        uint32_t uptime_s_now = (uint32_t)(esp_timer_get_time() / 1000000ULL);
                         startup_write_rtc_diag(
                             RTC_DIAG_CAUSE_RCFG,
                             (uint32_t)consecutive_failures,
                             esp_get_free_heap_size(),
                             rssi,
-                            (uint32_t)(esp_timer_get_time() / 1000000ULL));
+                            uptime_s_now);
+                        startup_record_boot_reason(ESP_RST_SW, uptime_s_now);
                     }
                     SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
                     while (1) { }   /* does not return — RTC reset fires */
@@ -863,12 +929,14 @@ void remote_config_task(void *param)
                     wifi_ap_record_t ap;
                     int32_t rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
                                    ? ap.rssi : 0;
+                    uint32_t uptime_s_now = (uint32_t)(esp_timer_get_time() / 1000000ULL);
                     startup_write_rtc_diag(
                         RTC_DIAG_CAUSE_REMOTE,
                         (uint32_t)consecutive_failures,
                         esp_get_free_heap_size(),
                         rssi,
-                        (uint32_t)(esp_timer_get_time() / 1000000ULL));
+                        uptime_s_now);
+                    startup_record_boot_reason(ESP_RST_SW, uptime_s_now);
                 }
 		// Better than esp_restart()
                 SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
