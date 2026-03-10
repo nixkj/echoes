@@ -1240,9 +1240,18 @@ void lux_based_birds_task(void *param) {
                                             flash_bird->display_name);
             }
 
-            /* Force broadcast regardless of ESPNOW_LUX_THRESHOLD */
-            espnow_mesh_broadcast_light(lux);
-            last_acted_lux = lux;
+            /* Broadcast the flash, bypassing ESPNOW_LUX_THRESHOLD — unless
+             * both the current and previous acted readings are near-zero.
+             * A dark→dark "flash" carries no meaningful light information
+             * (it is just ALS-PT19 noise re-confirming darkness) and would
+             * produce a continuous stream of lux=0.0 broadcasts from every
+             * minimal node in a venue with pulsing theatrical lighting.
+             * The delta path already handles this correctly via
+             * lux_change_threshold; we mirror that behaviour here.        */
+            if (lux > LUX_NEAR_ZERO || last_acted_lux > LUX_NEAR_ZERO) {
+                espnow_mesh_broadcast_light(lux);
+                last_acted_lux = lux;
+            }
 
         } else if (fabsf(delta) >= cfg->lux_change_threshold) {
             /* Gradual change: update mapper + Markov + broadcast. */
