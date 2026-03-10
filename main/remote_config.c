@@ -105,7 +105,7 @@ static const char *TAG = "RCFG";
 #define RCFG_NVS_NAMESPACE  "rcfg"
 #define RCFG_NVS_BLOB_KEY   "cfg_blob"
 #define RCFG_NVS_VER_KEY    "cfg_ver"
-#define RCFG_NVS_VERSION    2   /* increment when rcfg_nvs_t layout changes */
+#define RCFG_NVS_VERSION    3   /* increment when rcfg_nvs_t layout changes */
 
 /* Persisted subset of remote_config_t — only tunable fields, no runtime state.
  * Laid out explicitly (no padding holes between float/uint32 fields) to keep
@@ -166,6 +166,8 @@ typedef struct __attribute__((packed)) {
     uint8_t  quiet_hours_enabled;
     uint8_t  quiet_hour_start;
     uint8_t  quiet_hour_end;
+    /* Debug */
+    uint8_t  debug_espnow_status;
 } rcfg_nvs_t;
 
 static void rcfg_nvs_save(const remote_config_t *src)
@@ -222,6 +224,7 @@ static void rcfg_nvs_save(const remote_config_t *src)
         .quiet_hours_enabled           = src->quiet_hours_enabled ? 1u : 0u,
         .quiet_hour_start              = src->quiet_hour_start,
         .quiet_hour_end                = src->quiet_hour_end,
+        .debug_espnow_status           = src->debug_espnow_status ? 1u : 0u,
     };
 
     uint8_t ver = RCFG_NVS_VERSION;
@@ -309,6 +312,7 @@ static bool rcfg_nvs_load(remote_config_t *dst)
     dst->quiet_hours_enabled           = (blob.quiet_hours_enabled != 0);
     dst->quiet_hour_start              = blob.quiet_hour_start;
     dst->quiet_hour_end                = blob.quiet_hour_end;
+    dst->debug_espnow_status           = (blob.debug_espnow_status != 0);
 
     ESP_LOGI(TAG, "Config loaded from NVS (last known-good values)");
     return true;
@@ -382,6 +386,7 @@ static const remote_config_t CONFIG_DEFAULTS = {
      * activate silence until server_epoch_s is populated by a successful
      * config fetch (server_epoch_s == 0 at boot → function returns false). */
     .quiet_hours_enabled         = true,
+    .debug_espnow_status         = false,
     .quiet_hour_start            = 17,
     .quiet_hour_end              = 8,
 
@@ -599,6 +604,9 @@ static void apply_json_to(cJSON *root, remote_config_t *dst)
     CFG_BOOL  (root, dst->quiet_hours_enabled, "QUIET_HOURS_ENABLED");
     CFG_UINT8 (root, dst->quiet_hour_start,    "QUIET_HOUR_START");
     CFG_UINT8 (root, dst->quiet_hour_end,      "QUIET_HOUR_END");
+
+    /* Debug */
+    CFG_BOOL  (root, dst->debug_espnow_status, "DEBUG_ESPNOW_STATUS");
 
     /* Server wall-clock time — used for quiet-hours calculation */
     {

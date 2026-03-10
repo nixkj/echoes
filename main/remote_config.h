@@ -167,6 +167,13 @@ typedef struct {
      * 0–23, local server time as supplied via _server_time in the
      * config response).  Default: 17:00 → 08:00.                   */
     bool     quiet_hours_enabled; /**< Master switch for scheduled quiet       */
+
+    /** When true, nodes broadcast a STATUS heartbeat every
+     *  ESPNOW_STATUS_INTERVAL_MS (30 s) carrying RSSI, HTTP staleness,
+     *  uptime, and health flags.  Intended for sniffer-based diagnostics
+     *  during development or fault investigation; off by default to avoid
+     *  unnecessary air traffic during normal operation.                   */
+    bool     debug_espnow_status;
     uint8_t  quiet_hour_start;    /**< Hour at which silence begins (0-23)     */
     uint8_t  quiet_hour_end;      /**< Hour at which sound resumes (0-23)      */
 

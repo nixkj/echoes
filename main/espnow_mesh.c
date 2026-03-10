@@ -290,15 +290,11 @@ default:
 
         /* ── STATUS heartbeat ────────────────────────────────────────────
          *
-         * Send a health snapshot every ESPNOW_STATUS_INTERVAL_MS.  This
-         * task runs independently of lux_task and remote_config_task, so
-         * the heartbeat continues even when those tasks have stalled —
-         * making the failure visible on the sniffer without physical access.
-         *
-         * Stagger first transmission by up to 10 s on top of the normal
-         * interval to avoid a synchronised burst when the whole fleet
-         * reboots simultaneously.                                          */
-        {
+         * Send a health snapshot every ESPNOW_STATUS_INTERVAL_MS when
+         * DEBUG_ESPNOW_STATUS is enabled in remote config.  Off by default
+         * to avoid unnecessary air traffic during normal operation.
+         * Enable via the server dashboard for sniffer-based diagnostics.   */
+        if (remote_config_get()->debug_espnow_status) {
             uint64_t now_ms = millis();
             uint32_t interval = ESPNOW_STATUS_INTERVAL_MS;
             if (s_last_status_ms == 0) {
