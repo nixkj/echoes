@@ -1,0 +1,13 @@
+idf_component_register(
+    SRCS
+        "sniffer_main.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        driver
+        nvs_flash
+        esp_wifi
+        esp_event
+        esp_netif
+        lwip
+)

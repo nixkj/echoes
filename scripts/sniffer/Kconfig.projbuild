@@ -1,0 +1,27 @@
+menu "WiFi Configuration"
+
+config WIFI_SSID
+    string "WiFi SSID"
+    default "myssid"
+    help
+        SSID of the WiFi network — must match the AP used by the Echoes fleet.
+
+config WIFI_PASSWORD
+    string "WiFi Password"
+    default "mypassword"
+    help
+        Password of the WiFi network.
+
+endmenu
+
+menu "Sniffer Configuration"
+
+config SNIFFER_BAUD_RATE
+    int "UART baud rate for RPi output"
+    default 115200
+    help
+        Baud rate for the UART0 serial output that the Raspberry Pi reads.
+        115200 is fine for the message rates this mesh produces. Increase to
+        921600 if you add extra verbose output.
+
+endmenu

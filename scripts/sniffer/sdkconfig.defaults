@@ -1,0 +1,46 @@
+# sdkconfig.defaults — echoes-sniffer
+#
+# Minimal settings needed for a stable WiFi + ESP-NOW receive-only node.
+# The sniffer has no OTA, no NVS persistence, no audio hardware, and no
+# watchdog subscribers beyond the idle task — keep it as simple as possible.
+
+CONFIG_IDF_TARGET="esp32"
+
+# 4 MB flash (same hardware as the fleet nodes)
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# 240 MHz CPU — same as fleet; keeps WiFi/ESP-NOW stack timing consistent
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+
+# 1 kHz tick rate — same as fleet; millis() accuracy
+CONFIG_FREERTOS_HZ=1000
+
+# Single-OTA partition table is fine — the sniffer is flashed manually,
+# not via OTA.  Use the default "two OTA slots" table inherited from the
+# toolchain; no custom partitions.csv needed.
+CONFIG_PARTITION_TABLE_TWO_OTA=y
+
+# Task Watchdog — enable but don't panic: the sniffer has no task that
+# strictly must not stall, and a panic reboot mid-capture is annoying.
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=n
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# Interrupt WDT — keep enabled as a safety net
+CONFIG_ESP_INT_WDT=y
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=300
+
+# UART0 log output — this is what the Raspberry Pi reads
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# Disable Bluetooth — not needed, saves ~60 kB RAM
+CONFIG_BT_ENABLED=n
+
+# WiFi — NVS is required by the WiFi driver even when we don't use it ourselves
+CONFIG_NVS_FLASH_MAX_ENTRIES=64

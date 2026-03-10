@@ -6,9 +6,12 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
 CONFIG_FREERTOS_HZ=1000
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
-# Enable OTA rollback protection
+
+# ── OTA rollback protection ───────────────────────────────────────────────────
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK=n
+
+# ── Watchdogs ─────────────────────────────────────────────────────────────────
 # Task Watchdog Timer — initialise at boot so esp_task_wdt_add() is always
 # available regardless of whether esp_task_wdt_reconfigure/init succeeds at
 # runtime.  Timeout matches WDT_TIMEOUT_S in echoes.h (30 s).  trigger_panic
@@ -24,8 +27,78 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 # interrupt that cannot be masked — last line of defence before the RTC WDT.
 CONFIG_ESP_INT_WDT=y
 CONFIG_ESP_INT_WDT_TIMEOUT_MS=300
-# Stack overflow detection — enables canary-based detection for all tasks.
-# A corrupted stack could silently hang the scheduler without triggering
-# any watchdog, because the TCB or WDT data structures are in heap adjacent
-# to the stack.  This catches overflows before they cause silent corruption.
+
+# ── Stack overflow detection ──────────────────────────────────────────────────
+# Canary-based detection for all tasks.  A corrupted stack could silently
+# hang the scheduler without triggering any watchdog, because the TCB or
+# WDT data structures may be in heap adjacent to the stack.
 CONFIG_COMPILER_STACK_CHECK_MODE_STRONG=y
+
+# ── Bluetooth — DISABLED ──────────────────────────────────────────────────────
+# The firmware uses WiFi + ESP-NOW exclusively.  Bluetooth (Classic and BLE)
+# is never initialised.  Disabling it frees the BT controller from IRAM
+# (~60 KB) and removes the host stack from flash (~100 KB).  This is the
+# single largest resource saving available.
+CONFIG_BT_ENABLED=n
+
+# ── TLS / mbedTLS — DISABLED ─────────────────────────────────────────────────
+# All HTTP endpoints use plain http:// to a local IP address (see ota.h,
+# remote_config.h, startup.h).  No certificate verification, no TLS handshake.
+# Disabling HTTPS support in the HTTP client prevents mbedTLS from being
+# linked, saving ~50–80 KB of RAM at runtime and ~200 KB of flash.
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=n
+
+# ── WiFi — STA-only, minimal feature set ─────────────────────────────────────
+# The firmware connects as a station (STA) using WPA2-PSK.  SoftAP mode,
+# WPA Enterprise (EAP), and WPS are never used.
+#
+# SoftAP: ~10–15 KB RAM saving; the node is never an access point.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+#
+# WPA Enterprise / EAP: ~5–10 KB RAM saving; authentication is WPA2-PSK only.
+CONFIG_ESP_WIFI_EAP_SUPPORT=n
+#
+# WPS: not used — credentials are baked in via Kconfig (WIFI_SSID / WIFI_PASSWORD).
+CONFIG_ESP_WIFI_WPS_ENABLED=n
+#
+# NAN (Neighbour Awareness Networking): not used.
+CONFIG_ESP_WIFI_NAN_ENABLE=n
+#
+# OPTIONAL — WPA3 SAE: the network is WPA2-PSK; WPA3 is not needed.
+# Disabling it prevents mbedTLS from being pulled back in via the SAE
+# handshake, and saves a further ~20 KB RAM.  Only safe if your AP does
+# NOT use WPA3-SAE or WPA3-Transition mode.  Uncomment if you control the AP.
+# CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
+# CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA=n
+
+# ── lwIP — trim unused protocol support ──────────────────────────────────────
+# All remote communication targets a hardcoded IPv4 address on the local
+# network.  IPv6, IGMP (multicast), PPP, and SLIP are unused.
+#
+# IPv6: ~10–15 KB RAM + flash.  The server URL is always a bare IPv4 address;
+# no hostname resolution is ever performed.
+CONFIG_LWIP_IPV6=n
+#
+# IGMP (multicast group management): not used — ESP-NOW uses its own
+# broadcast mechanism; there is no IP multicast in the mesh.
+CONFIG_LWIP_IGMP=n
+#
+# PPP / SLIP serial link protocols: not present on this hardware.
+CONFIG_LWIP_PPP_SUPPORT=n
+CONFIG_LWIP_SLIP_SUPPORT=n
+
+# ── Power management — DISABLED ──────────────────────────────────────────────
+# The firmware runs at 240 MHz continuously (audio DSP + I2S DMA require
+# deterministic timing).  The PM subsystem adds overhead for a feature
+# that is explicitly never invoked — ADC_ULP_MODE_DISABLE is set in code
+# and no sleep modes are entered.
+CONFIG_PM_ENABLE=n
+
+# ── Core dump — DISABLED ─────────────────────────────────────────────────────
+# The RTC diagnostic written by startup_write_rtc_diag() and the startup
+# report sent to the server already capture the information needed for
+# post-mortem analysis (reset cause, heap free, RSSI, uptime).  A full core
+# dump requires a dedicated flash partition and is not retrieved from a
+# deployed gallery installation.  Disabling it reclaims that partition space
+# for the application binary.
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
