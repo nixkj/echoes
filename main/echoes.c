@@ -1138,9 +1138,16 @@ void lux_based_birds_task(void *param) {
          *
          * Either failure starves the heartbeat → ISR WDT fires → reboot.
          * See isr_wdt_lux_feed() in main.c for the full rationale.        */
-        if (get_hardware_config() == HW_CONFIG_MINIMAL) {
-            isr_wdt_lux_feed();
-        }
+        /* Call unconditionally on both node types.
+         *
+         * On minimal nodes: feeds s_lux_alive_ms for the ISR WDT gate in
+         * wifi_keepalive_task AND populates ESPNOW_FLAG_LUX_ALIVE correctly.
+         *
+         * On full nodes: the ISR WDT is never armed so the WDT-feeding half
+         * is a no-op, but s_lux_alive_ms still needs to be updated so that
+         * ESPNOW_FLAG_LUX_ALIVE reflects actual lux_task health rather than
+         * always reporting false (s_lux_alive_ms == 0).                     */
+        isr_wdt_lux_feed();
 
         remote_config_t cfg_snap;
         if (!remote_config_snapshot(&cfg_snap)) {

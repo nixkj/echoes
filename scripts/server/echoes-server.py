@@ -907,9 +907,9 @@ def get_config():
             if int(failures) > 0:
                 log.warning(diag)
             else:
-                log.info(diag)   # Changed from debug: heap/uptime/RSSI visible in production log
+                log.debug(diag)   # Changed from debug: heap/uptime/RSSI visible in production log
         except (ValueError, TypeError):
-            log.info(diag)       # Changed from debug: heap/uptime/RSSI visible in production log
+            log.debug(diag)       # Changed from debug: heap/uptime/RSSI visible in production log
 
     flat = {k: v["value"] for k, v in _config.items()}
     flat["_server_time"]        = time.time()
