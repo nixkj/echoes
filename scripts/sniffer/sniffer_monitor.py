@@ -117,7 +117,7 @@ def format_flags(record: dict) -> str:
         f"  {node_col}{node}{RESET}",
         f"  wifi={wifi_col}{'Y' if wifi else 'N'}{RESET}",
         f"  http={http_col}{'Y' if http else 'N'}{RESET}",
-        f"  lux={'N/A' if node == 'FULL' else f'{lux_col}{chr(89) if lux else chr(78)}{RESET}'}",
+        f"  lux={lux_col}{'Y' if lux else 'N'}{RESET}",
     ]
     if flock:
         parts.append(f"  {flock_col}FLOCK{RESET}")
@@ -134,7 +134,7 @@ def format_status_line(record: dict) -> str:
 
     Highlights:
       http_recent=N  → node has lost end-to-end HTTP connectivity
-      lux_alive=N    → lux_task has stalled (minimal nodes only)
+      lux_alive=N    → lux_task has stalled (all node types from 7.3.3+)
       http_stale_m   → minutes since last good fetch; rising = degrading
       rssi_node      → node's own AP RSSI; compare to rssi_sniffer for asymmetry
       seq            → TX counter; gaps = air loss, NOT a silent node
@@ -370,7 +370,8 @@ def main():
                     continue
 
                 # Add wall-clock timestamp
-                wall = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+                #wall = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+                wall = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
 
                 try:
                     record = json.loads(line)
