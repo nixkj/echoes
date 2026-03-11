@@ -1474,8 +1474,13 @@ void demo_task(void *param)
     while (1) {
         esp_task_wdt_reset();
 
-        /* Take a consistent snapshot for this call cycle.
-         * If demo_mode is off, sleep cheaply for 1 s before checking again. */
+        /* Poll cheaply while demo mode is off — check every second. */
+        if (!remote_config_get()->demo_mode) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        /* Take a consistent snapshot for this call cycle. */
         remote_config_t cfg;
         if (!remote_config_snapshot(&cfg)) {
             vTaskDelay(pdMS_TO_TICKS(500));
