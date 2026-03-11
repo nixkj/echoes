@@ -45,7 +45,7 @@ graph TD
         F[Speaker + LED VU meter]
     end
 
-    subgraph "Central Server (Raspberry Pi)"
+    subgraph "Central Server (RaspberryPi)"
         G[OTA Firmware Server]
         H[Live Config UI + Fleet Dashboard]
         I[Config JSON API]
