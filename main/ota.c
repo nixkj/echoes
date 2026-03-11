@@ -659,40 +659,43 @@ bool ota_check_and_update(void)
     for (int attempt = 1; attempt <= OTA_MAX_ATTEMPTS; attempt++) {
 
         s_ota_state.ota_status = OTA_STATUS_CHECKING;
+        bool do_retry = false;
 
         /* ── Step 1: fetch version ──────────────────────────────────── */
         char available_version[32];
         if (!fetch_version_string(available_version, sizeof(available_version))) {
             ESP_LOGW(TAG, "Attempt %d/%d: failed to fetch version string",
                      attempt, OTA_MAX_ATTEMPTS);
-            goto retry;
+            do_retry = true;
         }
 
-        strncpy(s_ota_state.available_version, available_version,
-                sizeof(s_ota_state.available_version) - 1);
-        ESP_LOGI(TAG, "Attempt %d/%d: available version = %s",
-                 attempt, OTA_MAX_ATTEMPTS, available_version);
+        if (!do_retry) {
+            strncpy(s_ota_state.available_version, available_version,
+                    sizeof(s_ota_state.available_version) - 1);
+            ESP_LOGI(TAG, "Attempt %d/%d: available version = %s",
+                     attempt, OTA_MAX_ATTEMPTS, available_version);
 
-        /* ── Step 2: compare ────────────────────────────────────────── */
-        if (compare_versions(available_version, s_ota_state.current_version) <= 0) {
-            ESP_LOGI(TAG, "Firmware is up to date (%s)", s_ota_state.current_version);
-            s_ota_state.ota_status = OTA_STATUS_NO_UPDATE;
-            return false;
+            /* ── Step 2: compare ────────────────────────────────────────── */
+            if (compare_versions(available_version, s_ota_state.current_version) <= 0) {
+                ESP_LOGI(TAG, "Firmware is up to date (%s)", s_ota_state.current_version);
+                s_ota_state.ota_status = OTA_STATUS_NO_UPDATE;
+                return false;
+            }
+
+            ESP_LOGI(TAG, "New firmware available: %s → %s",
+                     s_ota_state.current_version, available_version);
+
+            /* ── Step 3: download + flash ───────────────────────────────── */
+            if (ota_perform_update(OTA_URL)) {
+                return true;   /* esp_restart() is called inside; won't return */
+            }
+
+            ESP_LOGW(TAG, "Attempt %d/%d: OTA download/flash failed",
+                     attempt, OTA_MAX_ATTEMPTS);
+            do_retry = true;
         }
 
-        ESP_LOGI(TAG, "New firmware available: %s → %s",
-                 s_ota_state.current_version, available_version);
-
-        /* ── Step 3: download + flash ───────────────────────────────── */
-        if (ota_perform_update(OTA_URL)) {
-            return true;   /* esp_restart() is called inside; won't return */
-        }
-
-        ESP_LOGW(TAG, "Attempt %d/%d: OTA download/flash failed",
-                 attempt, OTA_MAX_ATTEMPTS);
-
-retry:
-        if (attempt < OTA_MAX_ATTEMPTS) {
+        if (do_retry && attempt < OTA_MAX_ATTEMPTS) {
             uint32_t delay_ms = (uint32_t)attempt * OTA_RETRY_BASE_DELAY_MS;
             ESP_LOGI(TAG, "Retrying in %lu s…", (unsigned long)(delay_ms / 1000));
             s_ota_state.ota_status = OTA_STATUS_FAILED;

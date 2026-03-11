@@ -201,16 +201,32 @@ void light_sensor_init(void)
     ret = i2c_new_master_bus(&bus_config, &bus_handle);
 
     if (ret == ESP_OK) {
-        // Try BH1750
+        /* Try BH1750 at default address (ADDR pin tied low → 0x23).
+         * If not found, retry at the high address (ADDR pin tied high → 0x5C)
+         * before concluding there is no I2C sensor.  A BH1750 with ADDR high
+         * was previously silently classified as a minimal node, causing full
+         * hardware to run without its digital light sensor.                  */
+        uint8_t bh1750_addr = 0;
         ret = i2c_master_probe(bus_handle,
                                BH1750_ADDR_LOW,
                                100 / portTICK_PERIOD_MS);
+        if (ret == ESP_OK) {
+            bh1750_addr = BH1750_ADDR_LOW;
+        } else {
+            ret = i2c_master_probe(bus_handle,
+                                   BH1750_ADDR_HIGH,
+                                   100 / portTICK_PERIOD_MS);
+            if (ret == ESP_OK) {
+                bh1750_addr = BH1750_ADDR_HIGH;
+                ESP_LOGI(TAG, "BH1750 found at high address (0x%02X)", BH1750_ADDR_HIGH);
+            }
+        }
 
         if (ret == ESP_OK) {
             // Add device
             i2c_device_config_t dev_config = {
                 .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-                .device_address = BH1750_ADDR_LOW,
+                .device_address = bh1750_addr,
                 .scl_speed_hz = 100000,
             };
 
@@ -219,7 +235,7 @@ void light_sensor_init(void)
                                             &bh1750_handle);
 
             if (ret == ESP_OK) {
-                g_system_state.bh1750_addr = BH1750_ADDR_LOW;
+                g_system_state.bh1750_addr = bh1750_addr;
                 g_system_state.light_sensor_type = LIGHT_SENSOR_BH1750;
 
                 /* BH1750 initialisation sequence — two-step, per datasheet §5.
@@ -271,7 +287,7 @@ void light_sensor_init(void)
                     vTaskDelay(pdMS_TO_TICKS(180));
                     ESP_LOGI(TAG,
                              "BH1750 light sensor detected at 0x%02X",
-                             BH1750_ADDR_LOW);
+                             bh1750_addr);
                     return;  // Done — no fallback needed
                 }
 
@@ -286,12 +302,13 @@ bh1750_fallback:
             i2c_del_master_bus(bus_handle);
             bus_handle = NULL;
         } else {
-            /* BH1750 not present — this is a minimal node.  Free the bus
-             * immediately so the handle does not leak.  On minimal nodes this
-             * branch is taken on every boot; without this free the heap loses
-             * ~100 bytes per reset cycle until adc_oneshot_new_unit() eventually
-             * panics and triggers an infinite reboot loop.                   */
-            ESP_LOGI(TAG, "BH1750 not found — releasing I2C bus (minimal node)");
+            /* BH1750 not present at either address — this is a minimal node.
+             * Free the bus immediately so the handle does not leak.  On
+             * minimal nodes this branch is taken on every boot; without this
+             * free the heap loses ~100 bytes per reset cycle until
+             * adc_oneshot_new_unit() eventually panics and triggers an
+             * infinite reboot loop.                                          */
+            ESP_LOGI(TAG, "BH1750 not found at 0x23 or 0x5C — releasing I2C bus (minimal node)");
             i2c_del_master_bus(bus_handle);
             bus_handle = NULL;
         }
@@ -505,7 +522,6 @@ float get_lux_level(void)
          *
          * BH1750_SANITY_RAW = 3 counts = 2.5 lux — safely above the 1–2 count
          * artifact floor while below any plausible room-light reading.          */
-#define BH1750_SANITY_RAW  3u
         if (raw <= BH1750_SANITY_RAW) {
             vTaskDelay(pdMS_TO_TICKS(10));
             ret = i2c_master_receive(
@@ -536,7 +552,6 @@ float get_lux_level(void)
          *
          * Four back-to-back oneshot reads add ~200 µs overhead total, which
          * is immaterial at the 500 ms LUX_POLL_INTERVAL_MS call rate.      */
-#define ADC_OVERSAMPLE  4
         int32_t adc_sum   = 0;
         int     adc_valid = 0;
 
@@ -674,13 +689,12 @@ static void _play_locked(const char *bird_name, const audio_buffer_t *audio_buff
     }
 
     float vol_scale = get_volume_for_lux(get_lux_level());
-    const remote_config_t *_pcfg = remote_config_get();
     /* Apply the remote VOLUME parameter.  synthesis.c bakes the compile-time
      * VOLUME macro (0.20f) into each buffer; we scale relative to that default
      * so the dashboard slider takes effect without touching the synthesised
      * samples directly.  At cfg->volume == 0.20 the ratio is 1.0 (unity). */
-    vol_scale *= (_pcfg->volume / 0.20f);
-    set_led(_pcfg->vu_max_brightness * vol_scale, BRIGHT_OFF);
+    vol_scale *= (_cfg->volume / 0.20f);
+    set_led(_cfg->vu_max_brightness * vol_scale, BRIGHT_OFF);
 
     size_t total_bytes = audio_buffer->num_samples * sizeof(int16_t);
     size_t bytes_sent  = 0;
@@ -704,7 +718,7 @@ static void _play_locked(const char *bird_name, const audio_buffer_t *audio_buff
             int16_t av = scaled < 0 ? (int16_t)-scaled : (int16_t)scaled;
             if (av > peak) peak = av;
         }
-        set_led(((float)peak / (float)global_peak) * _pcfg->vu_max_brightness * vol_scale, BRIGHT_OFF);
+        set_led(((float)peak / (float)global_peak) * _cfg->vu_max_brightness * vol_scale, BRIGHT_OFF);
 
         size_t bytes_written = 0;
         esp_err_t ret = i2s_channel_write(spk_chan,
@@ -833,8 +847,6 @@ void audio_detection_task(void *param) {
         ESP_LOGW(TAG, "Could not subscribe audio task to watchdog: %s",
                  esp_err_to_name(wdt_err));
     }
-
-#define I2S_READ_TIMEOUT_MS  5000   /* 5 s — vastly more than the ~32 ms per buffer */
 
     while (1) {
         size_t bytes_read = 0;
@@ -1092,6 +1104,12 @@ float get_volume_for_lux(float lux)
 static const bird_info_t k_all_birds[];
 #define NUM_ALL_BIRDS  11u
 
+/* Forward declaration — defined in main.c.
+ * lux_based_birds_task calls this on every poll to stamp s_lux_alive_ms so
+ * the wifi_keepalive_task ISR WDT gate can verify lux_task is still running.
+ * Declared here at file scope rather than inside the function body.        */
+extern void isr_wdt_lux_feed(void);
+
 void lux_based_birds_task(void *param) {
     if (g_system_state.light_sensor_type == LIGHT_SENSOR_NONE) {
         ESP_LOGW(TAG, "Lux-based bird selection disabled (no sensor)");
@@ -1110,11 +1128,6 @@ void lux_based_birds_task(void *param) {
         ESP_LOGW(TAG, "lux_task: could not subscribe to watchdog: %s",
                  esp_err_to_name(wdt_err));
     }
-
-    /* Forward declaration — defined in main.c.
-     * lux_based_birds_task is the second ISR WDT feeder on minimal nodes.
-     * See isr_wdt_lux_feed() in main.c for the full rationale.           */
-    extern void isr_wdt_lux_feed(void);
 
     float last_acted_lux = -1000.0f;  /* lux at the last mapper update */
     float prev_lux       = -1.0f;     /* reading from the previous tick */
@@ -1274,6 +1287,8 @@ void lux_based_birds_task(void *param) {
 
     vTaskDelete(NULL);
 }
+#undef LUX_NEAR_ZERO
+#undef LUX_ZERO_CONFIRM
 
 
 /* ========================================================================
@@ -1459,13 +1474,8 @@ void demo_task(void *param)
     while (1) {
         esp_task_wdt_reset();
 
-        /* Poll cheaply while demo mode is off — check every second. */
-        if (!remote_config_get()->demo_mode) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            continue;
-        }
-
-        /* Take a consistent snapshot for this call cycle. */
+        /* Take a consistent snapshot for this call cycle.
+         * If demo_mode is off, sleep cheaply for 1 s before checking again. */
         remote_config_t cfg;
         if (!remote_config_snapshot(&cfg)) {
             vTaskDelay(pdMS_TO_TICKS(500));
@@ -1519,8 +1529,8 @@ void demo_task(void *param)
             flash_polarity = !flash_polarity;
 
             detection_type_t flash_det = flash_polarity   /* polarity already flipped above */
-                                         ? DETECTION_VOICE    /* falling → mellow */
-                                         : DETECTION_WHISTLE; /* rising  → active */
+                                         ? DETECTION_WHISTLE  /* now true → was false → sim was dip → rising recovery → active */
+                                         : DETECTION_VOICE;   /* now false → was true → sim was spike → falling → mellow */
 
             markov_on_event(&g_markov, flash_det, sim_lux);
 

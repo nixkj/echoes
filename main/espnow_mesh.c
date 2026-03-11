@@ -109,8 +109,18 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info,
     const espnow_msg_t *msg = (const espnow_msg_t *)data;
     if (msg->magic != ESPNOW_MAGIC) return;
 
-    /* Record arrival timestamp for flock mode detection. */
-    {
+    /* Record arrival timestamp for flock mode detection.
+     *
+     * Only SOUND and LIGHT messages count toward the flock threshold.
+     * STATUS heartbeats (ESPNOW_MSG_STATUS) must be excluded — with 50 nodes
+     * each sending one every 30 seconds, the background STATUS rate is ~10
+     * arrivals in a 6-second window, just under the default FLOCK_MSG_COUNT
+     * of 12.  Any real sound event on top of that would trigger flock mode
+     * regardless of whether genuine crowd activity is occurring.  STATUS
+     * messages carry no information about physical events and should never
+     * influence the flock counter.                                          */
+    if (msg->msg_type == ESPNOW_MSG_SOUND ||
+        msg->msg_type == ESPNOW_MSG_LIGHT) {
         uint64_t now = millis();
         s_rx_times[s_rx_head] = now;
         s_rx_head = (s_rx_head + 1) % FLOCK_RING_MAX;

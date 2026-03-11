@@ -182,6 +182,26 @@
 #define BH1750_ADDR_LOW     0x23
 #define BH1750_ADDR_HIGH    0x5C
 
+/* BH1750 single-poll artifact guard.
+ * Reads issued during the first ~2 ms of a new 120 ms measurement cycle
+ * return 0–2 raw counts regardless of ambient light.  If raw falls at or
+ * below this value the driver retries once after 10 ms.
+ * 3 counts = 2.5 lux — above the artifact floor, below any real room light. */
+#define BH1750_SANITY_RAW   3u
+
+/* ADC oversampling count for the ALS-PT19 analog light sensor.
+ * A single oneshot read can occasionally return 0 due to charge injection.
+ * Taking this many readings and averaging only the non-zero ones suppresses
+ * those artefacts.  Four reads add ~200 µs at the 500 ms poll rate.        */
+#define ADC_OVERSAMPLE      4
+
+/* I2S microphone read timeout.
+ * A healthy ICS-43434 delivers a 512-sample buffer every ~32 ms.  5 s is
+ * many orders of magnitude more than any legitimate delay; a timeout here
+ * indicates a stalled peripheral, which the detection task handles by
+ * cycling the channel (disable → re-enable) rather than rebooting.         */
+#define I2S_READ_TIMEOUT_MS 5000
+
 /* ========================================================================
  * TYPE DEFINITIONS
  * ======================================================================== */

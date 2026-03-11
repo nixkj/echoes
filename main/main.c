@@ -83,7 +83,7 @@ static const char *TAG = "MAIN";
  * when the AP has silently dropped the node.
  *
  * NETWORK_GRACE_MS: after boot, always feed the ISR WDT regardless of
- *   fetch status.  Covers OTA validation (60 s), random jitter (45 s),
+ *   fetch status.  Covers OTA validation (30 s), random jitter (10 s),
  *   first poll interval (60 s), and HTTP timeout (8 s).
  *
  * NETWORK_DEATH_MS: after grace, if no successful fetch for this long,
@@ -101,7 +101,13 @@ static const char *TAG = "MAIN";
 
 static gptimer_handle_t          s_isr_wdt_timer     = NULL;
 static _Atomic uint32_t          s_isr_wdt_heartbeat  = 0;   /* fed by keepalive, checked by ISR */
-static volatile uint64_t         s_lux_alive_ms       = 0;   /* updated by lux_task each poll   */
+/* _Atomic uint64_t: the Xtensa LX6 (ESP32) is 32-bit; a plain 64-bit read
+ * or write compiles to two instructions.  Two tasks on different cores can
+ * observe a torn value (high word from one write, low word from another).
+ * Using _Atomic gives the compiler permission to emit an atomic sequence or
+ * insert the necessary memory barriers.  The keepalive only checks staleness
+ * at second granularity so correctness here is worth the minimal overhead.  */
+static _Atomic uint64_t          s_lux_alive_ms       = 0;   /* updated by lux_task each poll   */
 
 /* If lux_task has not updated s_lux_alive_ms within this window, keepalive
  * treats lux_task as dead and stops feeding the ISR WDT heartbeat.
@@ -154,9 +160,19 @@ static bool IRAM_ATTR isr_wdt_alarm_cb(gptimer_handle_t timer,
  * @brief Initialise the ISR-based hardware watchdog.
  *
  * Call once from app_main after all tasks are running.  The timer fires
- * a 1-second alarm in ISR context.  Two tasks feed the heartbeat counter:
- * wifi_keepalive_task (directly) and lux_based_birds_task (via
- * isr_wdt_lux_feed()).  See isr_wdt_lux_feed() for the rationale.
+ * every ISR_WDT_ALARM_INTERVAL_S seconds in ISR context and checks whether
+ * s_isr_wdt_heartbeat has advanced since the previous tick.
+ *
+ * s_isr_wdt_heartbeat has exactly ONE writer: wifi_keepalive_task.  It
+ * increments the counter only when BOTH of the following hold:
+ *   1. network_ok  — last successful HTTP fetch within NETWORK_DEATH_MS.
+ *   2. lux_ok      — isr_wdt_lux_feed() was called within LUX_DEAD_MS.
+ *
+ * lux_based_birds_task does NOT write the heartbeat directly.  Its role is
+ * to keep s_lux_alive_ms fresh via isr_wdt_lux_feed().  The keepalive task
+ * reads s_lux_alive_ms as a gate condition.  This two-signal design means
+ * the WDT fires if either the network OR lux_task fails, even if the other
+ * is healthy — see isr_wdt_lux_feed() for the full rationale.
  */
 static void isr_wdt_init(void)
 {
@@ -230,7 +246,9 @@ void isr_wdt_lux_feed(void)
     /* Simply stamp the current tick.  No gate here — the keepalive decides
      * whether to advance the heartbeat based on both this timestamp and the
      * network health timestamp.                                            */
-    s_lux_alive_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
+    atomic_store_explicit(&s_lux_alive_ms,
+                          (uint64_t)(esp_timer_get_time() / 1000ULL),
+                          memory_order_relaxed);
 }
 
 /**
@@ -242,7 +260,7 @@ void isr_wdt_lux_feed(void)
  */
 uint64_t main_get_lux_alive_ms(void)
 {
-    return s_lux_alive_ms;
+    return atomic_load_explicit(&s_lux_alive_ms, memory_order_relaxed);
 }
 
 /* ========================================================================
@@ -346,7 +364,7 @@ static void wifi_keepalive_task(void *param)
                 bool network_ok   = (last_net != 0)
                                  && ((now_ms - last_net) < NETWORK_DEATH_MS);
 
-                uint64_t last_lux = s_lux_alive_ms;
+                uint64_t last_lux = atomic_load_explicit(&s_lux_alive_ms, memory_order_relaxed);
                 bool lux_ok       = (last_lux != 0)
                                  && ((now_ms - last_lux) < LUX_DEAD_MS);
 
@@ -624,10 +642,10 @@ void app_main(void)
 
         /* Stack note: audio_detection_task does floating-point DSP (Goertzel,
          * adaptive thresholds) and calls into synthesis from the same stack.
-         * Increased from 4096 → 8192 (2026-03-10, v7.3.2) after cascade node
-         * crashes in the 2026-03-09 session indicated heap/stack exhaustion.
-         * All tasks bumped to 8192 for headroom; measure high-water marks
-         * with uxTaskGetStackHighWaterMark() before reducing.               */
+         * Increased from 4096 → 8192 (v7.4.0) after cascade node crashes
+         * indicated heap/stack exhaustion.  All tasks bumped to 8192 for
+         * headroom; measure high-water marks with uxTaskGetStackHighWaterMark()
+         * before reducing.                                                   */
 
         /* Suspend the scheduler while creating tasks so that a newly created
          * higher-priority task (audio=5, lux/flock=4 vs app_main=1) cannot
@@ -678,7 +696,7 @@ void app_main(void)
             if (esp_ota_get_state_partition(running, &img_state) == ESP_OK &&
                 img_state == ESP_OTA_IMG_PENDING_VERIFY) {
 
-                ESP_LOGI(TAG, "OTA validation: new firmware detected — waiting 1 min to confirm stability...");
+                ESP_LOGI(TAG, "OTA validation: new firmware detected — waiting 30 s to confirm stability...");
 
                 /* Slow blue pulse while waiting — signals "validating" without appearing dead. */
                 const int pulse_ms     = 2000;   /* one full breath cycle */
@@ -882,9 +900,17 @@ void app_main(void)
      * populated — arming the WDT would cause a permanent reset loop every
      * NETWORK_GRACE_MS + ISR_WDT_TIMEOUT_S seconds.
      *
-     * Without the ISR WDT, the TWDT (30 s) still catches task stalls.
-     * The only unguarded gap is a WiFi-driver deadlock that stalls the
-     * keepalive task — which cannot happen without an active WiFi session.*/
+     * Full nodes are intentionally excluded.  Their continuous 500 ms lux
+     * broadcasts keep the radio continuously active, making the specific
+     * silent-drop/deadlock scenario significantly less likely than on
+     * minimal nodes.  In the event of a WiFi-driver deadlock on a full node,
+     * the software TWDT (30 s) remains active and will panic → reboot.
+     * The only unguarded gap is a deadlock that simultaneously stalls BOTH
+     * the wedged WiFi driver AND the TWDT's own FreeRTOS tick — a scenario
+     * that would require both CPU cores to be stuck, at which point no
+     * software-cooperative mechanism can recover anyway.  The RTC watchdog
+     * (configured via sdkconfig.defaults) provides the final hardware-level
+     * backstop for that extreme case.                                       */
     if (hw_config == HW_CONFIG_MINIMAL && wifi_connected) {
         isr_wdt_init();
         ESP_LOGI(TAG, "ISR WDT armed (WiFi connected)");

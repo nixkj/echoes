@@ -14,7 +14,6 @@ A cross-disciplinary interactive art exhibition exploring cybernetics and feedba
 - 🧠 Markov chain — learns event sequences and fires autonomous calls during silence
 - 🌐 WiFi connectivity with OTA firmware updates
 - ⚙️  Remote configuration — all parameters tunable from a server UI (60 sec poll/update interval) without reflashing
-- 🔋 Power-efficient operation with WiFi sleep and 
 - 🎛️ LED indicators for status and audio VU metering
 
 ## Hardware Requirements (refer to docs for more details)
@@ -147,7 +146,7 @@ After the server is running, copy your firmware binary and set the version:
 
 ```bash
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.4.2" > /opt/echoes/firmware/version.txt
+echo "7.5.0" > /opt/echoes/firmware/version.txt
 ```
 
 Or use `./build.sh deploy` after a successful build to do both steps at once.
@@ -163,9 +162,7 @@ echoes/
 ├── docs/
 │   ├── 00-Notes.md                   # Developer notes and internal references
 │   ├── README_STARTUP_REPORTING.md
-│   ├── STARTUP_REFERENCE.md
-│   ├── VU_METER_CONFIG.md
-│   └── ESP32-DEV-032.jpg             # (+ other hardware reference images)
+│   └── VU_METER_CONFIG.md
 ├── scripts/
 │   └── server/
 │       ├── echoes-server.py          # Consolidated server — OTA, startup reports, config UI (port 8002)
@@ -200,7 +197,7 @@ All logs are written to `/var/log/echoes/`:
 ### Using build.sh (recommended)
 
 ```bash
-./build.sh version patch     # 7.4.2 → 7.4.3 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh version patch     # 7.5.0 → 7.5.1 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
 ./build.sh deploy            # Copy binary + version.txt to /opt/echoes/firmware/; archive copy saved to firmware/archive/<version>/
 ```
@@ -217,7 +214,7 @@ Or in one step:
 # Edit FIRMWARE_VERSION in main/ota.h, then:
 idf.py build
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.4.2" > /opt/echoes/firmware/version.txt
+echo "7.5.0" > /opt/echoes/firmware/version.txt
 ```
 
 Each deploy also saves a copy of the binary to `/opt/echoes/firmware/archive/<version>/` alongside a `manifest.txt` recording the version, timestamp, deploying user, MD5, and file size. If the same version is deployed again the archive entry is suffixed with a datestamp rather than overwritten.
@@ -236,9 +233,9 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.4.2 → 7.4.3) |
-| `./build.sh version minor` | Increment minor version (e.g. 7.4.2 → 7.5.0) |
-| `./build.sh version major` | Increment major version (e.g. 7.4.2 → 8.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.5.0 → 7.5.1) |
+| `./build.sh version minor` | Increment minor version (e.g. 7.5.0 → 7.6.0) |
+| `./build.sh version major` | Increment major version (e.g. 7.5.0 → 8.0.0) |
 | `./build.sh deploy` | Copy binary and `version.txt` to `/opt/echoes/firmware/`; archive a versioned copy with manifest to `/opt/echoes/firmware/archive/<version>/` |
 | `./build.sh services` | Install the consolidated `echoes-server` as a systemd service (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -259,7 +256,7 @@ The server also supports:
 | Phase | White | Blue |
 |---|---|---|
 | Power on / booting | off | on (solid) |
-| OTA validation (post-update) | off | slow pulse, ~1 min |
+| OTA validation (post-update) | off | slow pulse, ~30 s |
 | WiFi connection failed | off | 3× blink |
 | OTA download in progress | off | on (solid) |
 | OTA update successful (restarting) | 500 ms pulse | off |
@@ -335,7 +332,7 @@ The safety mechanism for an unattended installation is instead **OTA rollback**,
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 ```
 
-How this protects the installation: when a new firmware image is flashed via OTA, it boots in `PENDING_VERIFY` state. The firmware waits two minutes to confirm stability (see `main.c`), then calls `esp_ota_mark_app_valid_cancel_rollback()`. If the device crashes or reboots before that call, the bootloader automatically reverts to the previous OTA slot on the next boot. The previous slot always contains the last known-good image.
+How this protects the installation: when a new firmware image is flashed via OTA, it boots in `PENDING_VERIFY` state. The firmware waits 30 seconds to confirm stability (see `main.c`), then calls `esp_ota_mark_app_valid_cancel_rollback()`. If the device crashes or reboots before that call, the bootloader automatically reverts to the previous OTA slot on the next boot. The previous slot always contains the last known-good image.
 
 The only unrecoverable scenario is if both OTA slots are simultaneously corrupted (e.g. power loss mid-flash on both partitions), which requires physical reflashing via USB. For a gallery installation this is an acceptable risk given the impracticality of the factory partition alternative.
 
@@ -387,7 +384,7 @@ I (567) main_task: Calling app_main()
 I (570) ECHOES: LEDs initialized
 I (572) MAIN: ========================================
 I (577) MAIN: Echoes of the Machine
-I (580) MAIN: Firmware Version: 7.4.2
+I (580) MAIN: Firmware Version: 7.5.0
 I (584) MAIN: ========================================
 I (606) RCFG: Remote config initialised with defaults
 I (606) MAIN: Initializing system...
@@ -400,8 +397,8 @@ I (629) MARKOV:   #1  IDLE+DAWN             21.3%
 I (633) MARKOV:   #2  IDLE+OVERCAST         12.8%
 I (637) MARKOV:   #3  VOICE+DAWN            6.4%
 I (642) ECHOES: System initialized
-I (645) MAIN: Startup jitter: 2000 ms (MAC tail: A0)
-I (2650) MAIN: Connecting to WiFi...
+I (645) MAIN: Startup jitter: 3421 ms (hardware RNG)
+I (4071) MAIN: Connecting to WiFi...
 I (2650) OTA: Initializing WiFi...
 I (2815) OTA: WiFi initialization finished. Connecting to SSID: Echoes
 I (6847) OTA: Got IP: x.x.x.x
@@ -430,49 +427,35 @@ I (7733) ECHOES: 🎤 Listening for whistles, voice, claps, and birdsong...
 - KiCad/ Fritzing for completeness
 - Include explanation of Tasmota running on Sonoff BASIC R-4 controlling each set of nodes, and control via dashboard
  - Remove the hard-coded ip addresses for these units and place in a configuration file similar to the nodes.csv
-- Still experiencing occasional disappearing or getting stuck with LED on full for minimal nodes when running (possibly linked to flock mode?)
 
 ## Version History
 
-**7.4.2** Current version
-- Include "DEBUG" option in the dashboard
+**7.5.0** Current version
+- General tidy up of code and documentation
 
-**7.4.1**
-- Add a "DEBUG" option for broadcasting status information via ESP-NOW
-
-**7.4.0**
+**7.4.2**
 - Minimal nodes correctly use their microphone input
 - Include the special ESP-NOW sniffer node code and server
 - Optimised sdkconfig.defaults
+- Add a "DEBUG" option for broadcasting status information via ESP-NOW
+- Include "DEBUG" option in the dashboard
 
 **7.3.4**
-- Fix the over broadcast of 0.0 lux
-
-**7.3.3**
-- Return poll information to debug messages
-- Fix lux\_alive for full nodes
-
-**7.3.2**
-- Further diagnostics
-
-**7.3.1**
+- Fix the use of timers - move to esp\_timer throughout
 - Improve build.sh
 - Establish a no Wi-Fi path: even if the access point is not present the exhibit can still run
 - Stored values in NVS to persist under no Wi-Fi path
-
-**7.3.0**
-- Fix the use of timers - move to esp\_timer throughout
+- Further diagnostics
+- Return poll information to debug messages
+- Fix lux\_alive for full nodes
+- Fix the over broadcast of 0.0 lux
 
 **7.2.3**
-- Add additional diagnostic information to ESP-NOW messages to help troubleshoot
-
-**7.2.2**
-- Improved build.sh that automates updating the README.md
-- Improve WDT logic further based on observing the ESP-NOW logs over more than 1 hour
-
-**7.2.1**
 - Still trying to identify issue with minimal nodes - introduce dual path WDT on minimal nodes
 - Fix initialisation logic with BH1750 based on watching ESP-NOW broadcast logs
+- Improved build.sh that automates updating the README.md
+- Improve WDT logic further based on observing the ESP-NOW logs over more than 1 hour
+- Add additional diagnostic information to ESP-NOW messages to help troubleshoot
 
 **7.1.10**
 - Tidy up the code that was not making any difference to Wi-Fi on the minimal nodes

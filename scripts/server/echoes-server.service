@@ -15,8 +15,8 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=echoes-server
 
-# The server writes config.json to /opt/echoes and reads
-# ~/firmware_server/firmware/ for OTA binaries.
+# The server writes config.json and node_registry.json to /opt/echoes and
+# reads /opt/echoes/firmware/ for OTA binaries (populated by build.sh deploy).
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/opt/echoes /var/log/echoes

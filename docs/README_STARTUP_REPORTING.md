@@ -1,278 +1,135 @@
-# Echoes of the Machine - Startup Reporting
+# Echoes of the Machine — Startup Reporting
 
-This extension adds startup reporting functionality to the Echoes of the Machine project. Each ESP32 device will:
+Each ESP32 node sends a startup report to the server immediately after
+establishing a WiFi connection.  The report is used to populate the fleet
+dashboard and the `startup_reports.log` file.
 
-1. Sleep for a random 0-5 seconds on boot
-2. Sample the light sensor during the sleep period
-3. Send a concise HTTP POST message with device information
-4. Include any startup errors in the report
+> **Note:** Startup reporting is handled by the consolidated `echoes-server`
+> process (port 8002), introduced in v6.0.0.  Earlier versions of this document
+> described a separate `echoes-startup-server` on port 8001.  That service no
+> longer exists; all traffic goes to port 8002.
 
-## Features
-
-- **Device Identification**: Reports MAC address, firmware version, and node type
-- **Hardware Config Reporting**: Automatically detects and reports `echoes-full` or `echoes-minimal`
-- **Error Tracking**: Captures and reports any startup errors
-- **Retry with Exponential Backoff**: Up to 4 attempts; delays of 2 s, 4 s, 8 s between retries
-- **Reliable Server**: Python HTTP server with rotating log files
-- **Systemd Integration**: Run as a system service with automatic restart
-
-## ESP32 Integration
-
-### Files
-
-- **`main/startup.h`** — Configuration and function declarations
-- **`main/startup.c`** — Implementation
-
-### Configuration
-
-Edit `main/startup.h`:
-
-```c
-#define STARTUP_REPORT_URL      "http://192.168.101.2:8001/startup"
-#define STARTUP_HTTP_TIMEOUT_MS 10000   // 10 s per attempt
-#define STARTUP_MAX_RETRIES     4
-#define STARTUP_RETRY_BASE_MS   2000
-```
-
-Node type is set automatically based on hardware detected at boot: `"echoes-full"` (BH1750 present) or `"echoes-minimal"` (analog sensor only).
-
-### Integration
-
-The startup reporting module is already integrated into `main/main.c`. The CMakeLists.txt should include `startup.c`:
-
-```cmake
-idf_component_register(SRCS "main.c"
-                             "echoes.c"
-                             "synthesis.c"
-                             "ota.c"
-                             "espnow_mesh.c"
-                             "markov.c"
-                             "remote_config.c"
-                             "startup.c"
-                        INCLUDE_DIRS ".")
-```
-
-## Python Server Setup
-
-### Quick Installation
-
-1. **Copy server files to your server machine:**
-   ```bash
-   scp scripts/startup_server/startup_server.py \
-       scripts/startup_server/echoes-startup-server.service \
-       scripts/startup_server/install_server.sh \
-       user@server:~/
-   ```
-
-2. **Run the installation script:**
-   ```bash
-   ssh user@server
-   chmod +x install_server.sh
-   sudo ./install_server.sh
-   ```
-
-   This will:
-   - Create a dedicated `echoes` user
-   - Install the server to `/opt/echoes/`
-   - Set up log directory at `/var/log/echoes/`
-   - Install and start the systemd service
-   - Configure automatic startup on boot
-
-### Manual Installation
-
-If you prefer manual setup:
-
-```bash
-# Create directories
-sudo mkdir -p /opt/echoes
-sudo mkdir -p /var/log/echoes
-
-# Create user
-sudo useradd -r -s /bin/false -d /opt/echoes echoes
-
-# Copy files
-sudo cp startup_server.py /opt/echoes/
-sudo chmod +x /opt/echoes/startup_server.py
-
-# Set permissions
-sudo chown -R echoes:echoes /opt/echoes
-sudo chown -R echoes:echoes /var/log/echoes
-
-# Install systemd service
-sudo cp echoes-startup-server.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable echoes-startup-server
-sudo systemctl start echoes-startup-server
-```
-
-### Verifying Installation
-
-```bash
-# Check service status
-sudo systemctl status echoes-startup-server
-
-# View real-time logs
-sudo journalctl -u echoes-startup-server -f
-
-# View startup reports
-sudo tail -f /var/log/echoes/startup_reports.log
-```
-
-## Usage
-
-### Server Commands
-
-```bash
-# Start server
-sudo systemctl start echoes-startup-server
-
-# Stop server
-sudo systemctl stop echoes-startup-server
-
-# Restart server
-sudo systemctl restart echoes-startup-server
-
-# View status
-sudo systemctl status echoes-startup-server
-
-# View logs
-sudo journalctl -u echoes-startup-server -f
-
-# View startup reports only
-sudo tail -f /var/log/echoes/startup_reports.log
-```
-
-### Running Manually (for testing)
-
-```bash
-# Run directly with default settings
-python3 startup_server.py
-
-# Run on custom port
-python3 startup_server.py --port 8080
-
-# Run with custom log directory
-python3 startup_server.py --logdir /tmp/echoes-logs
-
-# Run with verbose logging
-python3 startup_server.py --verbose
-```
-
-## Log Format
-
-### Startup Report Log Entry
-
-```
-[2026-02-17 10:23:45] Startup Report | MAC: A4:CF:12:34:56:78 | Type: echoes-full | Firmware: 5.1.3 | Errors: NO
-```
-
-With errors:
-```
-[2026-02-17 10:24:12] Startup Report | MAC: A4:CF:12:34:56:79 | Type: echoes-minimal | Firmware: 5.1.3 | Errors: YES | Error: MAC read failed: ESP_ERR_INVALID_ARG
-```
-
-### JSON Payload
-
-ESP32 devices send JSON data:
+## What the Report Contains
 
 ```json
 {
-  "mac": "A4:CF:12:34:56:78",
-  "firmware": "5.1.3",
-  "node_type": "echoes-full",
-  "has_errors": false,
+  "mac":           "A4:CF:12:34:56:78",
+  "firmware":      "7.4.2",
+  "node_type":     "echoes-full",
+  "reset_reason":  "POWERON",
+  "has_errors":    false,
   "error_message": ""
 }
 ```
 
-`node_type` is one of `"echoes-full"` (BH1750 detected), `"echoes-minimal"` (analog sensor only), or `"echoes-unknown"` (detection failed).
+`node_type` is set automatically based on hardware detected at boot:
 
-## Log Rotation
+| Value | Meaning |
+|---|---|
+| `echoes-full` | BH1750 I2C sensor found → Full mode (audio + light) |
+| `echoes-minimal` | BH1750 not found → Minimal mode (LED VU meter only) |
+| `echoes-unknown` | Hardware detection failed |
 
-The server uses rotating log files:
+`reset_reason` captures the ESP-IDF reset reason string (e.g. `POWERON`,
+`SW`, `TASK_WDT`, `PANIC`).  If a previous boot ended in an uncontrolled
+crash, the next boot's report carries the crash type via the RTC diagnostic
+region even if WiFi never connected during the crashed session.
 
-- **startup_reports.log**: Main log file (10MB max, keeps 10 rotated files)
-- **http_server.log**: HTTP server debug log (5MB max, keeps 3 rotated files)
+## Retry Behaviour
 
-Old log files are automatically compressed and rotated.
+The startup report is sent with exponential backoff:
+
+| Attempt | Delay before |
+|---|---|
+| 1 | none |
+| 2 | 2 s |
+| 3 | 4 s |
+| 4 | 8 s |
+
+`STARTUP_MAX_RETRIES` and `STARTUP_RETRY_BASE_MS` are defined in
+`main/startup.h`.  After all retries are exhausted the node continues
+operating normally; the report is simply not sent for that boot.
+
+## Server Endpoint
+
+```
+POST http://<SERVER_IP>:8002/startup
+Content-Type: application/json
+```
+
+The server IP and port are configured at build time via `idf.py menuconfig`
+under **Server Configuration → Server IP Address / Server Port**.  They are
+stored as Kconfig symbols (`CONFIG_SERVER_IP`, `CONFIG_SERVER_PORT`) and must
+not be hardcoded in source files.
+
+Successful response:
+
+```json
+{"status": "ok", "message": "Startup report received", "timestamp": "2026-02-27 16:58:57"}
+```
+
+## Relevant Source Files
+
+| File | Purpose |
+|---|---|
+| `main/startup.h` | URL macro, retry constants, RTC diagnostic structures |
+| `main/startup.c` | `startup_capture_identity()`, `startup_send_report()`, RTC helpers |
+| `scripts/server/echoes-server.py` | `POST /startup` handler, node registry update |
+
+## Server Setup
+
+The consolidated server is installed once and handles OTA, startup reports,
+and remote configuration on port 8002.  See the main README for full
+installation instructions.
+
+```bash
+# Install as a systemd service (run on the host/Raspberry Pi)
+sudo bash scripts/server/install.sh
+
+# Check service status
+sudo systemctl status echoes-server
+
+# View startup reports in real time
+sudo tail -f /var/log/echoes/startup_reports.log
+```
+
+## Log Format
+
+One line per boot event in `startup_reports.log`:
+
+```
+[2026-02-27 16:58:57] MAC: A4:CF:12:34:56:78 | Type: echoes-full | FW: 7.4.2 | Reset: POWERON | Errors: NO
+```
+
+With errors:
+
+```
+[2026-02-27 16:59:10] MAC: A4:CF:12:34:56:79 | Type: echoes-minimal | FW: 7.4.2 | Reset: TASK_WDT | Errors: YES | WiFi reconnect timer alloc failed
+```
+
+## Verifying a Report Was Received
+
+```bash
+# Check the log directly
+sudo tail -5 /var/log/echoes/startup_reports.log
+
+# Test the endpoint manually
+curl -s -X POST http://localhost:8002/startup \
+  -H "Content-Type: application/json" \
+  -d '{"mac":"AA:BB:CC:DD:EE:FF","firmware":"7.4.2","node_type":"echoes-full",
+       "reset_reason":"POWERON","has_errors":false,"error_message":""}'
+```
+
+Expected response: `{"status": "ok", ...}`
 
 ## Troubleshooting
 
-### ESP32 Not Sending Reports
+**Node not sending report:**
+- Check WiFi credentials via `idf.py menuconfig` → WiFi Configuration
+- Verify server IP in menuconfig → Server Configuration
+- Check serial output: `idf.py monitor`
 
-1. Check WiFi credentials in `main/ota.h`
-2. Verify server IP address in `main/startup.h`
-3. Check ESP32 serial output: `idf.py monitor`
-4. Ensure server is running: `sudo systemctl status echoes-startup-server`
-
-### Server Not Receiving Reports
-
-1. Check firewall rules:
-   ```bash
-   sudo ufw allow 8001/tcp
-   ```
-
-2. Verify server is listening:
-   ```bash
-   sudo netstat -tlnp | grep 8001
-   ```
-
-3. Test with curl:
-   ```bash
-   curl -X POST http://localhost:8001/startup \
-     -H "Content-Type: application/json" \
-     -d '{"mac":"AA:BB:CC:DD:EE:FF","firmware":"5.1.3","node_type":"echoes-full","has_errors":false,"error_message":""}'
-   ```
-
-### Viewing Logs
-
-```bash
-# Systemd journal
-sudo journalctl -u echoes-startup-server -f
-
-# Startup reports
-sudo tail -f /var/log/echoes/startup_reports.log
-
-# HTTP server debug log
-sudo tail -f /var/log/echoes/http_server.log
-
-# All logs with filter
-sudo tail -f /var/log/echoes/*.log
-```
-
-## Security Considerations
-
-- The server runs as a non-privileged user (`echoes`)
-- Systemd service includes security hardening options
-- Consider using HTTPS for production deployments
-- Implement firewall rules to restrict access
-- Review log files regularly for suspicious activity
-
-## Performance
-
-- Lightweight server using Python's built-in http.server
-- Handles concurrent connections
-- Minimal memory footprint (~10-20MB)
-- Log rotation prevents disk space issues
-- Automatic restart on failure
-
-## Future Enhancements
-
-Potential improvements:
-- Database storage for historical analysis
-- Web dashboard for viewing device status
-- Alerts for devices with repeated errors
-- HTTPS support with certificates
-- Authentication for POST endpoints
-- Grafana integration for visualization
-
-## License
-
-Same as the main Echoes of the Machine project.
-
-## Support
-
-For issues or questions, check:
-1. ESP32 serial monitor output
-2. Server logs: `sudo journalctl -u echoes-startup-server -f`
-3. Startup reports log: `/var/log/echoes/startup_reports.log`
+**Server not receiving reports:**
+- Confirm service is running: `sudo systemctl status echoes-server`
+- Check firewall: `sudo ufw allow 8002/tcp`
+- Verify port: `sudo ss -tlnp | grep 8002`
