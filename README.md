@@ -4,6 +4,76 @@
 
 A cross-disciplinary interactive art exhibition exploring cybernetics and feedback, as well as machine-assisted code generation.
 
+## Experience the Installation
+
+**Echoes of the Machine: A Cybernetic Song** (2025–2026) was exhibited at the Origins Centre, University of the Witwatersrand, Johannesburg in February/March 2026.
+
+A volatile aviary of signals where human whistles, claps and voices meet synthesised South African bird calls in a living, self-organising cybernetic flock.
+
+### Watch the installation in action (3 minutes)
+
+<iframe 
+  src="https://player.vimeo.com/video/1172401343" 
+  width="640" 
+  height="360" 
+  frameborder="0" 
+  allow="autoplay; fullscreen; picture-in-picture" 
+  allowfullscreen 
+  style="max-width: 100%; height: auto; display: block; margin: 1.5rem auto; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);">
+</iframe>
+
+<p align="center">
+  <a href="https://vimeo.com/1172401343" target="_blank">Watch full video on Vimeo →</a>
+</p>
+
+## Artistic Concept
+
+*Echoes of the Machine* is a cybernetic artwork that explores **machine-assisted creation** and **inter-species feedback**.
+
+Eleven South African bird species have been translated into procedural audio algorithms running on low-power ESP32 nodes. Each node listens, learns, and speaks — not as a playback device, but as an artificial neuron in a living mesh.
+
+When a visitor whistles or claps, the flock responds with bird calls whose species, timing and volume are shaped by:
+- real-time ambient light
+- the Markov chain that has been learning the audience’s rhythm all day
+- messages broadcast from neighbouring nodes
+
+The result is a self-organising "flock" that feels alive. The machines are not imitating nature — they are co-evolving with it, turning the gallery into a volatile aviary of signals where human, bird and machine voices merge into one emergent language.
+
+This is cybernetics in its purest artistic form: feedback loops that blur the line between observer and observed, between code and creature.
+
+## How the System Works
+
+```mermaid
+graph TD
+    subgraph "Physical Nodes (ESP32)"
+        A[MEMS Mic + Goertzel DSP<br/>whistle / clap / voice / birdsong]
+        B[Light Sensor<br/>BH1750 or analog]
+        C[Markov Chain Learner<br/>16-state ecological model]
+        D[ESP-NOW Mesh<br/>broadcast influence]
+        E[Synthesis Engine<br/>11 procedural bird calls + ADSR]
+        F[Speaker + LED VU meter]
+    end
+
+    subgraph "Central Server (Raspberry Pi)"
+        G[OTA Firmware Server]
+        H[Live Config UI + Fleet Dashboard]
+        I[Config JSON API]
+    end
+
+    A --> C
+    B --> C
+    D <--> C
+    C --> E
+    E --> F
+
+    G <--> Physical Nodes
+    H <--> Physical Nodes
+    I <--> Physical Nodes
+
+    style C fill:#e3f2fd,stroke:#1976d2
+    style D fill:#e8f5e9,stroke:#388e3c
+```
+
 ## Features
 
 - 🎵 Detects whistles, voice, claps, and birdsong
@@ -146,7 +216,7 @@ After the server is running, copy your firmware binary and set the version:
 
 ```bash
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.5.0" > /opt/echoes/firmware/version.txt
+echo "7.5.1" > /opt/echoes/firmware/version.txt
 ```
 
 Or use `./build.sh deploy` after a successful build to do both steps at once.
@@ -197,7 +267,7 @@ All logs are written to `/var/log/echoes/`:
 ### Using build.sh (recommended)
 
 ```bash
-./build.sh version patch     # 7.5.0 → 7.5.1 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh version patch     # 7.5.1 → 7.5.2 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
 ./build.sh deploy            # Copy binary + version.txt to /opt/echoes/firmware/; archive copy saved to firmware/archive/<version>/
 ```
@@ -214,7 +284,7 @@ Or in one step:
 # Edit FIRMWARE_VERSION in main/ota.h, then:
 idf.py build
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.5.0" > /opt/echoes/firmware/version.txt
+echo "7.5.1" > /opt/echoes/firmware/version.txt
 ```
 
 Each deploy also saves a copy of the binary to `/opt/echoes/firmware/archive/<version>/` alongside a `manifest.txt` recording the version, timestamp, deploying user, MD5, and file size. If the same version is deployed again the archive entry is suffixed with a datestamp rather than overwritten.
@@ -233,9 +303,9 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.5.0 → 7.5.1) |
-| `./build.sh version minor` | Increment minor version (e.g. 7.5.0 → 7.6.0) |
-| `./build.sh version major` | Increment major version (e.g. 7.5.0 → 8.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.5.1 → 7.5.2) |
+| `./build.sh version minor` | Increment minor version (e.g. 7.5.1 → 7.6.0) |
+| `./build.sh version major` | Increment major version (e.g. 7.5.1 → 8.0.0) |
 | `./build.sh deploy` | Copy binary and `version.txt` to `/opt/echoes/firmware/`; archive a versioned copy with manifest to `/opt/echoes/firmware/archive/<version>/` |
 | `./build.sh services` | Install the consolidated `echoes-server` as a systemd service (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -384,7 +454,7 @@ I (567) main_task: Calling app_main()
 I (570) ECHOES: LEDs initialized
 I (572) MAIN: ========================================
 I (577) MAIN: Echoes of the Machine
-I (580) MAIN: Firmware Version: 7.5.0
+I (580) MAIN: Firmware Version: 7.5.1
 I (584) MAIN: ========================================
 I (606) RCFG: Remote config initialised with defaults
 I (606) MAIN: Initializing system...
@@ -430,8 +500,9 @@ I (7733) ECHOES: 🎤 Listening for whistles, voice, claps, and birdsong...
 
 ## Version History
 
-**7.5.0** Current version
+**7.5.1** Current version
 - General tidy up of code and documentation
+- Strengthen link between the code and the artistic narrative in README.md
 
 **7.4.2**
 - Minimal nodes correctly use their microphone input
