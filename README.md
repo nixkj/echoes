@@ -16,18 +16,6 @@ A volatile aviary of signals where human whistles, claps and voices meet synthes
 
 *(The video is public and CC-BY licensed — feel free to embed it anywhere.)*
 
-### Gallery
-![Live fleet dashboard](docs/screenshots/dashboard.png)  
-*Live fleet dashboard showing real-time node status, lux levels and Markov activity*
-
-![Node web UI](docs/screenshots/node-config.png)  
-*Node remote configuration panel (zero-reflash tuning)*
-
-![Physical flock in the gallery](docs/screenshots/installation-view.jpg)  
-*Twelve nodes forming an emergent flock at the Origins Centre*
-
-*(Create the `docs/screenshots/` folder and add the three images — they make the repo instantly shareable on social media and grant applications.)*
-
 ## Artistic Concept
 
 *Echoes of the Machine* is a cybernetic artwork that explores **machine-assisted creation** and **inter-species feedback**.
