@@ -6,25 +6,27 @@ A cross-disciplinary interactive art exhibition exploring cybernetics and feedba
 
 ## Experience the Installation
 
-**Echoes of the Machine: A Cybernetic Song** (2025–2026) was exhibited at the Origins Centre, University of the Witwatersrand, Johannesburg in February/March 2026.
+**Echoes of the Machine: A Cybernetic Song (2025–2026)** was exhibited at the Origins Centre, University of the Witwatersrand, Johannesburg in February/March 2026.
 
 A volatile aviary of signals where human whistles, claps and voices meet synthesised South African bird calls in a living, self-organising cybernetic flock.
 
 ### Watch the installation in action (3 minutes)
 
-<iframe 
-  src="https://player.vimeo.com/video/1172401343" 
-  width="640" 
-  height="360" 
-  frameborder="0" 
-  allow="autoplay; fullscreen; picture-in-picture" 
-  allowfullscreen 
-  style="max-width: 100%; height: auto; display: block; margin: 1.5rem auto; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);">
-</iframe>
+**[▶️ Play full video on Vimeo](https://vimeo.com/1172401343)**
 
-<p align="center">
-  <a href="https://vimeo.com/1172401343" target="_blank">Watch full video on Vimeo →</a>
-</p>
+*(The video is public and CC-BY licensed — feel free to embed it anywhere.)*
+
+### Gallery
+![Live fleet dashboard](docs/screenshots/dashboard.png)  
+*Live fleet dashboard showing real-time node status, lux levels and Markov activity*
+
+![Node web UI](docs/screenshots/node-config.png)  
+*Node remote configuration panel (zero-reflash tuning)*
+
+![Physical flock in the gallery](docs/screenshots/installation-view.jpg)  
+*Twelve nodes forming an emergent flock at the Origins Centre*
+
+*(Create the `docs/screenshots/` folder and add the three images — they make the repo instantly shareable on social media and grant applications.)*
 
 ## Artistic Concept
 
@@ -33,11 +35,12 @@ A volatile aviary of signals where human whistles, claps and voices meet synthes
 Eleven South African bird species have been translated into procedural audio algorithms running on low-power ESP32 nodes. Each node listens, learns, and speaks — not as a playback device, but as an artificial neuron in a living mesh.
 
 When a visitor whistles or claps, the flock responds with bird calls whose species, timing and volume are shaped by:
-- real-time ambient light
-- the Markov chain that has been learning the audience’s rhythm all day
-- messages broadcast from neighbouring nodes
 
-The result is a self-organising "flock" that feels alive. The machines are not imitating nature — they are co-evolving with it, turning the gallery into a volatile aviary of signals where human, bird and machine voices merge into one emergent language.
+- real-time ambient light  
+- the Markov chain that has been learning the audience’s rhythm all day  
+- messages broadcast from neighbouring nodes  
+
+The result is a self-organising “flock” that feels alive. The machines are not imitating nature — they are co-evolving with it, turning the gallery into a volatile aviary of signals where human, bird and machine voices merge into one emergent language.
 
 This is cybernetics in its purest artistic form: feedback loops that blur the line between observer and observed, between code and creature.
 
@@ -66,9 +69,9 @@ graph TD
     C --> E
     E --> F
 
-    G <--> Physical Nodes
-    H <--> Physical Nodes
-    I <--> Physical Nodes
+    G <--> D
+    H <--> D
+    I <--> D
 
     style C fill:#e3f2fd,stroke:#1976d2
     style D fill:#e8f5e9,stroke:#388e3c
