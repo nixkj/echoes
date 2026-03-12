@@ -101,20 +101,13 @@ static const char *TAG = "MAIN";
 
 static gptimer_handle_t          s_isr_wdt_timer     = NULL;
 static _Atomic uint32_t          s_isr_wdt_heartbeat  = 0;   /* fed by keepalive, checked by ISR */
-/* uint32_t seconds: _Atomic uint64_t is NOT lock-free on the Xtensa LX6 (ESP32).
- * The 32-bit CPU has no native 64-bit atomic instruction, so libgcc implements
- * __atomic_store_8 / __atomic_load_8 with a global spinlock entered via
- * portENTER_CRITICAL (interrupt-disable on the current core only).  On the
- * dual-core SMP ESP32 this creates a priority-inversion deadlock: if a
- * higher-priority task preempts a lower-priority task that holds the spinlock
- * mid-store, the higher-priority task spins with interrupts disabled and the
- * scheduler on that core freezes — the ISR WDT can't fire, the heartbeat
- * never advances, and the node hangs.  This is only observable on minimal nodes
- * because they are the only nodes with the ISR WDT armed.
- *
- * _Atomic uint32_t IS lock-free on Xtensa LX6.  Storing seconds (not ms)
- * keeps the value safely below UINT32_MAX (wraps after 136 years).
- * Second-granularity is more than sufficient for the LUX_DEAD_MS (10 s) gate. */
+/* _Atomic uint32_t storing seconds: plain volatile uint64_t is not safe on
+ * the 32-bit Xtensa LX6 — a 64-bit read/write is two instructions and can
+ * be torn by the other core.  _Atomic uint64_t is not lock-free on this CPU
+ * (libgcc uses a portENTER_CRITICAL spinlock), which causes a
+ * priority-inversion deadlock on minimal nodes where the ISR WDT is armed.
+ * uint32_t IS natively atomic on Xtensa LX6.  Storing seconds is sufficient
+ * for the LUX_DEAD_MS (10 s) staleness gate.  Wraps after 136 years.      */
 static _Atomic uint32_t          s_lux_alive_s        = 0;   /* seconds; updated by lux_task     */
 
 /* If lux_task has not updated s_lux_alive_s within this window, keepalive
@@ -168,19 +161,9 @@ static bool IRAM_ATTR isr_wdt_alarm_cb(gptimer_handle_t timer,
  * @brief Initialise the ISR-based hardware watchdog.
  *
  * Call once from app_main after all tasks are running.  The timer fires
- * every ISR_WDT_ALARM_INTERVAL_S seconds in ISR context and checks whether
- * s_isr_wdt_heartbeat has advanced since the previous tick.
- *
- * s_isr_wdt_heartbeat has exactly ONE writer: wifi_keepalive_task.  It
- * increments the counter only when BOTH of the following hold:
- *   1. network_ok  — last successful HTTP fetch within NETWORK_DEATH_MS.
- *   2. lux_ok      — isr_wdt_lux_feed() was called within LUX_DEAD_MS.
- *
- * lux_based_birds_task does NOT write the heartbeat directly.  Its role is
- * to keep s_lux_alive_s fresh via isr_wdt_lux_feed().  The keepalive task
- * reads s_lux_alive_s as a gate condition.  This two-signal design means
- * the WDT fires if either the network OR lux_task fails, even if the other
- * is healthy — see isr_wdt_lux_feed() for the full rationale.
+ * a 1-second alarm in ISR context.  Two tasks feed the heartbeat counter:
+ * wifi_keepalive_task (directly) and lux_based_birds_task (via
+ * isr_wdt_lux_feed()).  See isr_wdt_lux_feed() for the rationale.
  */
 static void isr_wdt_init(void)
 {
@@ -251,14 +234,10 @@ static void isr_wdt_init(void)
  */
 void isr_wdt_lux_feed(void)
 {
-    /* Simply stamp the current tick in seconds.  No gate here — the keepalive
-     * decides whether to advance the heartbeat based on both this timestamp
-     * and the network health timestamp.
-     * Storing seconds (not ms) keeps the value in uint32_t range safely;
-     * the LUX_DEAD_MS gate checks staleness at 10-second granularity.     */
-    atomic_store_explicit(&s_lux_alive_s,
-                          (uint32_t)(esp_timer_get_time() / 1000000ULL),
-                          memory_order_relaxed);
+    /* Simply stamp the current tick.  No gate here — the keepalive decides
+     * whether to advance the heartbeat based on both this timestamp and the
+     * network health timestamp.                                            */
+    s_lux_alive_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
 }
 
 /**
@@ -270,7 +249,7 @@ void isr_wdt_lux_feed(void)
  */
 uint64_t main_get_lux_alive_ms(void)
 {
-    return atomic_load_explicit(&s_lux_alive_s, memory_order_relaxed) * 1000ULL;
+    return (uint64_t)s_lux_alive_s * 1000ULL;
 }
 
 /* ========================================================================
@@ -374,7 +353,7 @@ static void wifi_keepalive_task(void *param)
                 bool network_ok   = (last_net != 0)
                                  && ((now_ms - last_net) < NETWORK_DEATH_MS);
 
-                uint64_t last_lux = atomic_load_explicit(&s_lux_alive_s, memory_order_relaxed) * 1000ULL;
+                uint64_t last_lux = (uint64_t)s_lux_alive_s * 1000ULL;
                 bool lux_ok       = (last_lux != 0)
                                  && ((now_ms - last_lux) < LUX_DEAD_MS);
 
