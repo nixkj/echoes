@@ -10,6 +10,10 @@ A cross-disciplinary interactive art exhibition exploring cybernetics and feedba
 
 A volatile aviary of signals where human whistles, claps and voices meet synthesised South African bird calls in a living, self-organising cybernetic flock.
 
+More information available at:
+
+**[ECHOES OF THE MACHINE: A CYBERNETIC SONG](https://renzofilinich.com/echoes_machine)**
+
 ### Watch the installation in action (3 minutes)
 
 **[▶️ Play full video on Vimeo](https://vimeo.com/1172401343)**
