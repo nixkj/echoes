@@ -299,7 +299,14 @@ echo "7.5.5" > /opt/echoes/firmware/version.txt
 
 Each deploy also saves a copy of the binary to `/opt/echoes/firmware/archive/<version>/` alongside a `manifest.txt` recording the version, timestamp, deploying user, MD5, and file size. If the same version is deployed again the archive entry is suffixed with a datestamp rather than overwritten.
 
-Each device checks for updates once at boot. It compares the running version string against `version.txt`; if they differ it downloads and flashes the new binary, then restarts. The attempt retries up to 3 times with linear backoff (15 s, 30 s, 45 s).
+Each device checks for updates once at boot. It compares the running version against `version.txt` and downloads, flashes and restarts only if the published version is **higher**; the same or a lower version is ignored. The attempt retries up to 3 times with linear backoff (15 s, 30 s, 45 s).
+
+### Deploying safely
+
+- **Always build immediately before deploying.** `./build.sh deploy` takes the version from `main/ota.h` but copies whatever `build/echoes.bin` already exists. If the build did not complete, an old binary is published under the new number. Nodes then install it, come back on the old version, see the "newer" version again and loop: repeated `OTA BIN` lines followed by `STARTUP … fw=<old>` every 30–45 s. To stop a loop at once, write the version the nodes are actually running into `version.txt`.
+- **Update one Sonoff group first.** Because nodes only update at boot, you can deploy, power-cycle one group from the dashboard, confirm `STARTUP … fw=<new>` for its nodes, then put the previous `echoes.bin` and `version.txt` back. Updated nodes stay on the new version (a lower version is never installed); the other groups stay on the old one until you are ready.
+- **Rolling back means releasing a higher version.** Copying an older binary back does not downgrade nodes that have already updated. Build the previous code (e.g. `git revert`) under a new, higher version number and deploy that.
+- **OTA rollback only covers the first 30 seconds.** A new image that crashes before it is marked valid is reverted automatically (see Partition Table); a problem that appears later is not. Bench-test new firmware on one minimal and one full node over USB before deploying.
 
 ## build.sh Reference
 
@@ -345,6 +352,7 @@ The server also supports:
 | Startup report failed | off | brief mid blink |
 | System ready | 500 ms pulse | off |
 | Running — idle | dim ambient glow (lux-scaled) | off |
+| Microphone fault (recovering) | off | off |
 | Running — bird call playing | VU meter pulse | off |
 | Running — flock mode | brief double-flash before each call | off |
 
@@ -412,6 +420,36 @@ How this protects the installation: when a new firmware image is flashed via OTA
 
 The only unrecoverable scenario is if both OTA slots are simultaneously corrupted (e.g. power loss mid-flash on both partitions), which requires physical reflashing via USB. For a gallery installation this is an acceptable risk given the impracticality of the factory partition alternative.
 
+## Watchdogs and Recovery
+
+Nodes are designed to run unattended and **autonomously**: if the Pi server or the access point is unavailable they keep running on the last config saved in NVS (or built-in defaults), and a missing server never causes a reboot.
+
+| Layer | Nodes | What it catches | Action |
+|---|---|---|---|
+| Task watchdog (30 s) | all | a subscribed task (audio, lux, flock, ESP-NOW, keepalive) stops running | panic → reboot |
+| Interrupt watchdog (300 ms) | all | interrupts masked / a CPU core stuck | panic → reboot |
+| RTC hardware watchdog (120 s) | minimal | the whole chip freezing (CPU, clock or every task) — fed by the keepalive task only while the lux task is alive; never depends on the network | full chip reset |
+| Microphone supervision | all | stuck, DC-offset or saturated audio for 10 s, or 3 failed reads in a row | LED off → rebuild I2S channel (up to 3×) → reboot (`MIC_STUCK`) |
+| Network recovery | minimal: reboot after 10 failed polls or a hung HTTP request; full: Wi-Fi reconnect after 3 failed polls | this node alone has lost the server | only when ESP-NOW peers report they *can* reach the server — otherwise the node stays up |
+
+The RTC watchdog runs from its own oscillator and resets the chip in hardware, so it recovers lockups that silence every other watchdog (they all depend on the CPU's main clock). It was added in 7.5.5 after the March 2026 server logs showed 199 minimal-node lockups that only a Sonoff power cycle cleared.
+
+All deliberate reboots go through `esp_restart_noos()` (via `echoes_hard_restart()` in `startup.c`), never a raw `RTC_CNTL_SW_SYS_RST` write.
+
+### Reset diagnostics in the server log
+
+| Log line | Meaning |
+|---|---|
+| `STARTUP … RESET=WDT` | the previous boot ended in a watchdog reset; on minimal nodes usually the RTC hardware watchdog (a recovered lockup) |
+| `PREV_BOOT … prev_reset=PANIC / TASK_WDT / INT_WDT / BROWNOUT` | uncontrolled crash or brownout on the previous boot |
+| `PREV_DIAG cause=ISR_WDT` | the lux task stalled and the keepalive stopped feeding the RTC watchdog (label kept from the old ISR watchdog for log continuity) |
+| `PREV_DIAG cause=RCFG_REBOOT` | minimal node rebooted after 10 failed polls while its peers could reach the server |
+| `PREV_DIAG cause=HTTP_STUCK` | an HTTP request hung while peers could reach the server |
+| `PREV_DIAG cause=MIC_STUCK` | microphone data stayed invalid after 3 channel rebuilds |
+| `PREV_DIAG cause=REMOTE_RESTART` | restart requested from the dashboard |
+
+`PREV_DIAG` is kept in RTC memory, which survives a reset but not a power cycle: a Sonoff power cycle clears it.
+
 ## Troubleshooting
 
 ### WiFi Connection Fails
@@ -443,6 +481,16 @@ to normal operation without updating
 - Confirm MAX98357A wiring matches the pin assignments above (SCK=18, WS=19, DIN=17)
 - Check `SILENT_MODE` and `SOUND_OFF` in the remote config UI at port 8002
 - Verify quiet hours are not active (default window: 17:00–08:00)
+
+### Node Stopped Polling / White LED Stuck On
+- Minimal nodes on 7.5.5+ should recover by themselves within about 2 minutes; look for `RESET=WDT` in the server log
+- A node that stays silent with the white LED on despite this points to hardware or power rather than firmware — power-cycle its Sonoff group and note which node it was
+- `grep STALE /var/log/echoes/echoes-server.log | awk '{print $6,$7}' | sort | uniq -c` counts silent periods per node
+
+### Microphone Seems Deaf (no VU on minimal nodes, no detections on full nodes)
+- The I2S microphone uses 32-bit slots with the left channel selected (`I2S_STD_SLOT_LEFT` in `mic_channel_create()`, `echoes.c`), matching SEL tied to GND. If a board reads silence, try `I2S_STD_SLOT_RIGHT`
+- Full-node detections can be checked remotely with the sniffer: `python3 scripts/sniffer/sniffer_monitor.py --filter SOUND` (turn demo mode off first — demo mode sends SOUND frames without using the microphone)
+- Persistent invalid audio makes a node reboot with `PREV_DIAG cause=MIC_STUCK`
 
 ### NVS / Flash Errors at Boot
 ```bash
@@ -490,14 +538,17 @@ I (7455) STARTUP: Server response: {"status": "ok", "message": "Startup report r
 I (7458) STARTUP: HTTP POST status=200 content_length=90
 I (7460) STARTUP: Startup report sent successfully (attempt 1)
 I (7466) MAIN: Startup report sent successfully
-I (7670) MAIN: Task watchdog: 120s timeout, panic on trigger
+I (7670) MAIN: Task watchdog: 30s timeout, panic on trigger
 I (7670) MAIN: WiFi connected successfully
 I (7671) MAIN: Fetching remote configuration...
 I (7727) RCFG: Config applied — vol=0.50 whistle=2000Hz voice=200Hz poll=500ms
 I (7728) MAIN: Remote config applied successfully
+I (7729) ECHOES: Microphone (I2S RX, 32-bit slots) initialized @ 16000 Hz
 I (7729) ECHOES: Audio detection task started
 I (7733) ECHOES: 🎤 Listening for whistles, voice, claps, and birdsong...
 ```
+
+Minimal nodes additionally log `HW WDT: RTC watchdog armed (120 s timeout, full chip reset)` at the end of startup.
 
 ## To Do
 - KiCad/ Fritzing for completeness

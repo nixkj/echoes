@@ -758,7 +758,12 @@ def startup_report():
         # that tells us what state a node was in immediately before it reset.
         if prev_diag:
             cause_raw   = prev_diag.get("cause", "?")
-            cause_label = _CAUSE_LABELS.get(cause_raw, f"UNKNOWN({cause_raw})")
+            # Firmware sends the label as text (startup.c rtc_diag_cause_str());
+            # accept a numeric code too for older or future firmware.
+            if isinstance(cause_raw, str) and cause_raw and cause_raw != "UNKNOWN":
+                cause_label = cause_raw
+            else:
+                cause_label = _CAUSE_LABELS.get(cause_raw, f"UNKNOWN({cause_raw})")
             failures = prev_diag.get("failures", "?")
             heap     = prev_diag.get("heap",     "?")
             rssi     = prev_diag.get("rssi",     "?")

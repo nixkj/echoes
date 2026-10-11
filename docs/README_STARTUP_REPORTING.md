@@ -35,6 +35,21 @@ dashboard and the `startup_reports.log` file.
 crash, the next boot's report carries the crash type via the RTC diagnostic
 region even if WiFi never connected during the crashed session.
 
+When the previous boot ended through one of the firmware's own reset paths,
+the report also carries a `prev_diag` record, logged by the server as
+`PREV_DIAG cause=…`:
+
+| Code | Label | Reset path |
+|---|---|---|
+| 1 | `RCFG_REBOOT` | minimal node: 10 failed config polls while peers could reach the server |
+| 2 | `REMOTE_RESTART` | restart requested from the dashboard |
+| 3 | `ISR_WDT` | lux task stalled; RTC hardware watchdog starved (label kept from the pre-7.5.5 ISR watchdog) |
+| 4 | `HTTP_STUCK` | an HTTP request hung while peers could reach the server |
+| 5 | `MIC_STUCK` | microphone data stayed invalid after 3 I2S channel rebuilds |
+
+The record lives in RTC memory: it survives a software or watchdog reset but
+not a power cycle.
+
 ## Retry Behaviour
 
 The startup report is sent with exponential backoff:

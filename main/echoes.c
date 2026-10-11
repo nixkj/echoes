@@ -1309,8 +1309,9 @@ static const bird_info_t k_all_birds[];
 #define NUM_ALL_BIRDS  11u
 
 /* Forward declaration — defined in main.c.
- * lux_based_birds_task calls this on every poll to stamp s_lux_alive_ms so
- * the wifi_keepalive_task ISR WDT gate can verify lux_task is still running.
+ * lux_based_birds_task calls this on every poll to stamp its liveness so
+ * wifi_keepalive_task can verify lux_task is running before it feeds the
+ * RTC hardware watchdog (minimal nodes).
  * Declared here at file scope rather than inside the function body.        */
 extern void isr_wdt_lux_feed(void);
 
@@ -1325,7 +1326,7 @@ void lux_based_birds_task(void *param) {
 
     /* Subscribe to the task watchdog.  generate_and_play_bird_call() can block
      * for up to 3 s (longest bird call) + 4 s mutex wait = ~7 s per call.
-     * WDT_TIMEOUT_S is 120 s so a single call never trips it, but a deadlock
+     * WDT_TIMEOUT_S is 30 s so a single call never trips it, but a deadlock
      * (e.g. mutex permanently held by a crashed task) would be caught.     */
     esp_err_t wdt_err = esp_task_wdt_add(NULL);
     if (wdt_err != ESP_OK) {
@@ -1345,25 +1346,15 @@ void lux_based_birds_task(void *param) {
     while (1) {
         esp_task_wdt_reset();  /* fed each poll cycle -- proves task is alive */
 
-        /* Record lux_task liveness for the ISR WDT gate in keepalive.
+        /* Record lux_task liveness (both node types).
          *
-         * isr_wdt_lux_feed() stamps s_lux_alive_ms = now_ms.  The
-         * wifi_keepalive_task reads this timestamp alongside last_fetch_ms
-         * and feeds the ISR WDT heartbeat ONLY when both signals are fresh:
-         *   network_ok  (last HTTP fetch within NETWORK_DEATH_MS)  AND
-         *   lux_ok      (this function called within LUX_DEAD_MS)
+         * Minimal nodes: wifi_keepalive_task feeds the RTC hardware watchdog
+         * only while this stamp is < LUX_DEAD_MS old, so a dead lux_task
+         * leads to a full chip reset.  Network health is NOT part of that
+         * gate — see isr_wdt_lux_feed() in main.c.
          *
-         * Either failure starves the heartbeat → ISR WDT fires → reboot.
-         * See isr_wdt_lux_feed() in main.c for the full rationale.        */
-        /* Call unconditionally on both node types.
-         *
-         * On minimal nodes: feeds s_lux_alive_ms for the ISR WDT gate in
-         * wifi_keepalive_task AND populates ESPNOW_FLAG_LUX_ALIVE correctly.
-         *
-         * On full nodes: the ISR WDT is never armed so the WDT-feeding half
-         * is a no-op, but s_lux_alive_ms still needs to be updated so that
-         * ESPNOW_FLAG_LUX_ALIVE reflects actual lux_task health rather than
-         * always reporting false (s_lux_alive_ms == 0).                     */
+         * Both node types: the stamp also drives ESPNOW_FLAG_LUX_ALIVE in
+         * outgoing ESP-NOW messages.                                       */
         isr_wdt_lux_feed();
 
         remote_config_t cfg_snap;
