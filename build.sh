@@ -214,6 +214,16 @@ deploy_ota() {
     # Get version
     local VERSION=$(get_current_version)
     print_info "Version: $VERSION"
+    local BIN="${BUILD_DIR}/${BINARY_NAME}"
+    if ! strings "$BIN" | grep -qx "$VERSION"; then
+        print_error "build/${BINARY_NAME} does not contain version $VERSION"
+        return 1
+    fi
+    if [ -n "$(find "${PROJECT_DIR}/main" -newer "$BIN" -type f | head -1)" ]; then
+        print_error "Source changed since last build - run ./build.sh build"
+        return 1
+    fi
+    print_success "Binary verified: $VERSION"
     
     # Firmware directory must exist and be writable — created by install.sh
     if [ ! -d "$FIRMWARE_DIR" ]; then
