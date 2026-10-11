@@ -58,6 +58,7 @@
 #define RTC_DIAG_CAUSE_REMOTE    2u  /* remote_config_task: server-commanded restart     */
 #define RTC_DIAG_CAUSE_ISR_WDT   3u  /* ISR hardware watchdog timeout                   */
 #define RTC_DIAG_CAUSE_HTTP_STUCK 4u /* wifi_keepalive: HTTP connect() hung > 30 s      */
+#define RTC_DIAG_CAUSE_MIC       5u  /* audio task: mic dead/invalid after re-inits      */
 
 typedef struct {
     uint32_t magic;              /* RTC_DIAG_MAGIC when struct is valid               */
@@ -201,5 +202,17 @@ void startup_write_rtc_diag(uint32_t cause, uint32_t failures,
  * @param uptime_s  current uptime in seconds (0 when called at boot start)
  */
 void startup_record_boot_reason(esp_reset_reason_t reason, uint32_t uptime_s);
+
+/**
+ * @brief Invalidate the RTC diagnostic record (no reset happened after all).
+ */
+void startup_clear_rtc_diag(void);
+
+/**
+ * @brief Forced reboot that is safe even when the WiFi driver is wedged.
+ *        Wraps esp_restart_noos(): arms the RTC WDT, switches CPU to XTAL,
+ *        resets both cores.  Never returns.
+ */
+void echoes_hard_restart(void) __attribute__((noreturn));
 
 #endif /* STARTUP_REPORT_H */

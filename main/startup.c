@@ -14,6 +14,7 @@
 #include "esp_http_client.h"
 #include "esp_mac.h"
 #include "esp_attr.h"
+#include "esp_private/system_internal.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -63,11 +64,33 @@ void IRAM_ATTR startup_write_rtc_diag(uint32_t cause, uint32_t failures,
  * almost certainly not equal RTC_BOOT_MAGIC, so startup_capture_identity()
  * will correctly skip it.
  */
-void startup_record_boot_reason(esp_reset_reason_t reason, uint32_t uptime_s)
+/* IRAM_ATTR: called from the ISR watchdog in main.c, whose comment already
+ * assumed this function was in IRAM — it was not.                        */
+void IRAM_ATTR startup_record_boot_reason(esp_reset_reason_t reason, uint32_t uptime_s)
 {
     s_boot_diag.reason   = (uint32_t)reason;
     s_boot_diag.uptime_s = uptime_s;
     s_boot_diag.magic    = RTC_BOOT_MAGIC;   /* write magic last — same pattern as s_rtc_diag */
+}
+
+/* Invalidate a diagnostic written in anticipation of a reset that did not
+ * happen (e.g. the HW WDT started starving, then health was restored).  */
+void startup_clear_rtc_diag(void)
+{
+    s_rtc_diag.magic = 0;
+}
+
+/* Deliberate hard reset used by every forced-reboot path.
+ *
+ * Previously each path wrote RTC_CNTL_SW_SYS_RST directly.  On the ESP32
+ * that skips what IDF's own restart does first: arm the RTC WDT (so a hang
+ * after the reset is itself recovered), move the CPU off the PLL back to
+ * XTAL, and reset/stall the other core.  esp_restart_noos() does all of
+ * that and, unlike esp_restart(), does NOT run shutdown handlers — so a
+ * wedged WiFi driver (esp_wifi_stop) cannot block it.                    */
+void echoes_hard_restart(void)
+{
+    esp_restart_noos();
 }
 
 /* Human-readable label for RTC_DIAG_CAUSE_* constants */
@@ -78,6 +101,7 @@ static const char *rtc_diag_cause_str(uint32_t cause)
     case RTC_DIAG_CAUSE_REMOTE:     return "REMOTE_RESTART";
     case RTC_DIAG_CAUSE_ISR_WDT:    return "ISR_WDT";
     case RTC_DIAG_CAUSE_HTTP_STUCK: return "HTTP_STUCK";
+    case RTC_DIAG_CAUSE_MIC:        return "MIC_STUCK";
     default:                        return "UNKNOWN";
     }
 }

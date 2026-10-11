@@ -226,7 +226,7 @@ After the server is running, copy your firmware binary and set the version:
 
 ```bash
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.5.4" > /opt/echoes/firmware/version.txt
+echo "7.5.5" > /opt/echoes/firmware/version.txt
 ```
 
 Or use `./build.sh deploy` after a successful build to do both steps at once.
@@ -277,7 +277,7 @@ All logs are written to `/var/log/echoes/`:
 ### Using build.sh (recommended)
 
 ```bash
-./build.sh version patch     # 7.5.4 → 7.5.5 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh version patch     # 7.5.5 → 7.5.6 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
 ./build.sh deploy            # Copy binary + version.txt to /opt/echoes/firmware/; archive copy saved to firmware/archive/<version>/
 ```
@@ -294,7 +294,7 @@ Or in one step:
 # Edit FIRMWARE_VERSION in main/ota.h, then:
 idf.py build
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.5.4" > /opt/echoes/firmware/version.txt
+echo "7.5.5" > /opt/echoes/firmware/version.txt
 ```
 
 Each deploy also saves a copy of the binary to `/opt/echoes/firmware/archive/<version>/` alongside a `manifest.txt` recording the version, timestamp, deploying user, MD5, and file size. If the same version is deployed again the archive entry is suffixed with a datestamp rather than overwritten.
@@ -313,9 +313,9 @@ Each device checks for updates once at boot. It compares the running version str
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.5.4 → 7.5.5) |
-| `./build.sh version minor` | Increment minor version (e.g. 7.5.4 → 7.6.0) |
-| `./build.sh version major` | Increment major version (e.g. 7.5.4 → 8.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.5.5 → 7.5.6) |
+| `./build.sh version minor` | Increment minor version (e.g. 7.5.5 → 7.6.0) |
+| `./build.sh version major` | Increment major version (e.g. 7.5.5 → 8.0.0) |
 | `./build.sh deploy` | Copy binary and `version.txt` to `/opt/echoes/firmware/`; archive a versioned copy with manifest to `/opt/echoes/firmware/archive/<version>/` |
 | `./build.sh services` | Install the consolidated `echoes-server` as a systemd service (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -430,7 +430,7 @@ to normal operation without updating
 ### Remote Config Not Applying
 - Verify `echoes-server` is running: `sudo systemctl status echoes-server`
 - Check device logs for `RCFG` tag — fetch errors are logged as warnings
-- Devices fall back to built-in defaults if the server is unreachable
+- Devices fall back to the last config saved in NVS (or built-in defaults) if the server is unreachable, and keep running indefinitely — a missing Pi or access point never causes a reboot
 
 ### No Sound / Only LED VU Meter
 
@@ -460,7 +460,7 @@ I (567) main_task: Calling app_main()
 I (570) ECHOES: LEDs initialized
 I (572) MAIN: ========================================
 I (577) MAIN: Echoes of the Machine
-I (580) MAIN: Firmware Version: 7.5.4
+I (580) MAIN: Firmware Version: 7.5.5
 I (584) MAIN: ========================================
 I (606) RCFG: Remote config initialised with defaults
 I (606) MAIN: Initializing system...
@@ -506,7 +506,18 @@ I (7733) ECHOES: 🎤 Listening for whistles, voice, claps, and birdsong...
 
 ## Version History
 
-**7.5.4** Current version
+**7.5.5** Current version
+- Minimal nodes: replace the GPTimer "ISR WDT" with the ESP32 RTC watchdog (120 s, full chip reset). It runs from its own oscillator and resets in hardware, so it recovers lockups that froze the CPU/clock and silenced every other watchdog. Server log analysis (March 2026) found 199 minimal-node lockups that only a Sonoff power cycle cleared, against 10 for full nodes, with no software recovery ever succeeding
+- Nodes run autonomously when the Pi server or the access point is unavailable: the RTC watchdog is fed on local health only (keepalive and lux tasks alive), never on server reachability, and is now armed on the no-Wi-Fi path too. Network-recovery reboots (minimal nodes after 10 failed polls, stuck HTTP) and full-node forced reconnects only happen when peers report over ESP-NOW that they can reach the server — i.e. this node alone is cut off
+- All forced reboots (config failures, remote restart, HTTP stuck, mic fault) now use `esp_restart_noos()` instead of writing `RTC_CNTL_SW_SYS_RST` directly: arms the RTC watchdog, returns the CPU to XTAL, skips shutdown handlers that a wedged WiFi driver could block
+- Microphone: I2S now uses 32-bit slots (64 SCK per frame, as the ICS-43434 datasheet requires); samples are reduced to 16 bits at the same scale, so all thresholds are unchanged
+- Microphone health supervision: stuck, DC-offset or saturated audio and repeated read failures turn the LED off, rebuild the I2S channel, and reboot (`MIC_STUCK` diagnostic) if that doesn't clear the fault
+- Minimal VU meter ignores DC offset, so a broken mic stream can no longer hold the white LED on
+- `espnow_rx` task stack 3072 → 4096 bytes
+- Server: recognise the `MIC_STUCK` (5) reset diagnostic
+
+
+**7.5.4**
 - Include Wi-Fi access point and Raspberry Pi in Quick Start
 
 **7.5.3**

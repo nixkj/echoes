@@ -36,207 +36,103 @@
 #include "esp_random.h"
 #include "esp_netif.h"
 #include "lwip/sockets.h"
-#include "driver/gptimer.h"
-#include "soc/rtc_cntl_reg.h"
+#include "hal/wdt_hal.h"
+#include "soc/rtc.h"
 
 static const char *TAG = "MAIN";
 
 /* ========================================================================
- * ISR-BASED HARDWARE WATCHDOG (minimal nodes only)
+ * HARDWARE WATCHDOG (minimal nodes only) — RTC WDT
  * ========================================================================
  *
- * A GP Timer fires a level-1 interrupt every second.  The ISR checks a
- * heartbeat counter that ONLY the wifi_keepalive_task increments.  If
- * the counter stops advancing for ISR_WDT_TIMEOUT_S seconds, the ISR
- * triggers an immediate hardware reset via the RTC control register.
+ * Previous design: a GPTimer interrupt counted heartbeats from the
+ * keepalive task and, on timeout, wrote RTC_CNTL_SW_SYS_RST directly.
+ * It could not recover the "stopped polling, white LED on" lockup because:
  *
- * Why only the keepalive task feeds it:
- *   The purpose is to detect the specific failure where the keepalive
- *   task is blocked (e.g. by esp_now_send or a WiFi driver deadlock)
- *   while other tasks (audio, flock) continue running normally.  If
- *   multiple tasks feed the counter, one healthy task masks the stall
- *   of another — exactly the bug in the previous revision.
+ *   - The GPTimer, the TWDT and the interrupt WDT all run from the APB
+ *     clock and need the CPUs/interrupts to do anything.  So does the LEDC
+ *     peripheral driving the white LED.  A fault that stops that clock or
+ *     wedges the CPUs freezes the LED at its current level AND silences
+ *     every one of those watchdogs at the same time.
+ *   - The raw SW_SYS_RST skipped everything IDF's own restart does first:
+ *     arming the RTC WDT, moving the CPU off the PLL back to XTAL, resetting
+ *     the other core.  If anything after that reset hangs, nothing is armed
+ *     to pull the chip out.
  *
- * Why RTC register write instead of esp_restart():
- *   esp_restart() calls esp_ipc_call_blocking() for cross-core sync.
- *   If the other CPU is stuck (common in WiFi driver deadlocks), the
- *   IPC never completes and the ISR hangs forever.  Writing directly
- *   to RTC_CNTL_OPTIONS0_REG triggers an immediate SoC-level reset
- *   that requires no software cooperation from either CPU.
- */
+ * New design: the RTC watchdog.  It is clocked by the RTC slow oscillator,
+ * lives in the RTC power domain, and resets the chip in hardware with no
+ * CPU, interrupt, APB clock or software involvement.  Stage action
+ * RESET_RTC resets the digital core AND the RTC domain — the closest thing
+ * to a power cycle the chip can do to itself.  It is free after boot (the
+ * app disables the bootloader's use of it during startup).
+ *
+ * Feed gate: LOCAL health only — wifi_keepalive_task is running and
+ * lux_task is alive.  Network/server reachability is deliberately NOT part
+ * of the gate: nodes must run autonomously when the Pi or the AP is down
+ * (README: "devices fall back to built-in defaults if the server is
+ * unreachable").  Network recovery is handled separately and only when
+ * peers prove the server is up — see remote_config_task.              */
 
-#define ISR_WDT_TIMEOUT_S        120  /* seconds without heartbeat → hardware reset */
-#define ISR_WDT_ALARM_INTERVAL_S   5  /* ISR fires every N seconds, not every 1 s.
-                                       * keepalive increments heartbeat every 1 s, so
-                                       * the counter advances 4-5× between ISR ticks.
-                                       * This eliminates the 1s race between keepalive
-                                       * and the ISR, and gives the CPU caches ample
-                                       * time to flush the write before the next read.
-                                       * Miss threshold = TIMEOUT / INTERVAL = 24.    */
+#define HW_WDT_TIMEOUT_S         120  /* seconds without a feed → full chip reset */
 
-/* Network health thresholds for the ISR WDT feeder logic.
- *
- * The ISR WDT heartbeat is only incremented when the node has proof of
- * end-to-end connectivity.  The ONLY such proof is a successful HTTP
- * config fetch (remote_config_task, every 60 s).  All local WiFi checks
- * (wifi_is_connected, esp_wifi_sta_get_ap_info, sendto) return success
- * when the AP has silently dropped the node.
- *
- * NETWORK_GRACE_MS: after boot, always feed the ISR WDT regardless of
- *   fetch status.  Covers OTA validation (30 s), random jitter (10 s),
- *   first poll interval (60 s), and HTTP timeout (8 s).
- *
- * NETWORK_DEATH_MS: after grace, if no successful fetch for this long,
- *   stop feeding the ISR WDT.  The ISR fires ISR_WDT_TIMEOUT_S later.
- *
- * Total worst-case recovery: NETWORK_DEATH_MS + ISR_WDT_TIMEOUT_S
- *   = 4 min + 2 min = 6 minutes from AP drop to hardware reset.
- *
- * ISR fires every ISR_WDT_ALARM_INTERVAL_S (5 s), not every 1 s.
- * keepalive increments every 1 s, so heartbeat advances ~5× between
- * checks.  This eliminates the 1 s race and cross-core cache issue.
- * Miss threshold = 120 / 5 = 24 ticks, same 120 s wall-clock timeout. */
-#define NETWORK_GRACE_MS   ( 2u * 60u * 1000u)   /*  2 min boot grace     */
-#define NETWORK_DEATH_MS   ( 4u * 60u * 1000u)   /* 4 min stale → stop    */
+/* Boot grace: always feed for the first 2 minutes — lux_task is created
+ * suspended and only resumed after OTA / remote-config at boot.          */
+#define BOOT_GRACE_MS      ( 2u * 60u * 1000u)
 
-static gptimer_handle_t          s_isr_wdt_timer     = NULL;
-static _Atomic uint32_t          s_isr_wdt_heartbeat  = 0;   /* fed by keepalive, checked by ISR */
-/* _Atomic uint32_t storing seconds: plain volatile uint64_t is not safe on
- * the 32-bit Xtensa LX6 — a 64-bit read/write is two instructions and can
- * be torn by the other core.  _Atomic uint64_t is not lock-free on this CPU
- * (libgcc uses a portENTER_CRITICAL spinlock), which causes a
- * priority-inversion deadlock on minimal nodes where the ISR WDT is armed.
- * uint32_t IS natively atomic on Xtensa LX6.  Storing seconds is sufficient
- * for the LUX_DEAD_MS (10 s) staleness gate.  Wraps after 136 years.      */
+static wdt_hal_context_t s_hw_wdt       = RWDT_HAL_CONTEXT_DEFAULT();
+static bool              s_hw_wdt_armed = false;
+
+/* _Atomic uint32_t storing seconds: uint32_t is natively atomic on the
+ * 32-bit Xtensa LX6, uint64_t is not.                                    */
 static _Atomic uint32_t          s_lux_alive_s        = 0;   /* seconds; updated by lux_task     */
 
 /* If lux_task has not updated s_lux_alive_s within this window, keepalive
- * treats lux_task as dead and stops feeding the ISR WDT heartbeat.
- * Must be >> lux_poll_interval_ms (500 ms).  10 s = 20× the base rate.   */
+ * treats lux_task as dead and stops feeding the hardware watchdog.       */
 #define LUX_DEAD_MS  10000u
 
-/**
- * @brief GP Timer alarm callback — runs in ISR context every 1 second.
- *
- * Compares the heartbeat counter against its previous value.  If unchanged
- * for ISR_WDT_TIMEOUT_S consecutive seconds, forces a hard restart.
- * IRAM_ATTR ensures the function is in instruction RAM (required for ISR).
- */
-static bool IRAM_ATTR isr_wdt_alarm_cb(gptimer_handle_t timer,
-                                        const gptimer_alarm_event_data_t *edata,
-                                        void *user_ctx)
+static void hw_wdt_init(void)
 {
-    static uint32_t s_last_hb    = 0;
-    static uint32_t s_miss_count = 0;
+    uint32_t ticks = (uint32_t)((uint64_t)HW_WDT_TIMEOUT_S * rtc_clk_slow_freq_get_hz());
 
-    uint32_t hb = atomic_load_explicit(&s_isr_wdt_heartbeat, memory_order_relaxed);
-    if (hb == s_last_hb) {
-        s_miss_count++;
-        if (s_miss_count >= (ISR_WDT_TIMEOUT_S / ISR_WDT_ALARM_INTERVAL_S)) {
-            /* Write diagnostic state before resetting.  We are in ISR context
-             * so heap size and RSSI cannot be safely read — pass 0 for both.
-             * startup_write_rtc_diag() and startup_record_boot_reason() are
-             * both IRAM_ATTR (pure memory writes, safe from ISR).           */
-            uint32_t uptime_now = (uint32_t)(esp_timer_get_time() / 1000000ULL);
-            startup_write_rtc_diag(
-                RTC_DIAG_CAUSE_ISR_WDT,
-                0,           /* consecutive_failures not accessible from ISR */
-                0,           /* heap not safely readable from ISR             */
-                0,           /* RSSI not safely readable from ISR             */
-                uptime_now);
-            startup_record_boot_reason(ESP_RST_SW, uptime_now);
-            /* Direct RTC hardware reset — no software cooperation needed.
-             * Safe from ISR context, safe with both CPUs stuck.           */
-            SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
-            while (1) { }   /* never reached */
-        }
-    } else {
-        s_last_hb    = hb;
-        s_miss_count = 0;
-    }
-    return false;   /* no high-priority task wakeup needed */
+    wdt_hal_init(&s_hw_wdt, WDT_RWDT, 0, false);
+    wdt_hal_write_protect_disable(&s_hw_wdt);
+    wdt_hal_config_stage(&s_hw_wdt, WDT_STAGE0, ticks, WDT_STAGE_ACTION_RESET_RTC);
+    wdt_hal_enable(&s_hw_wdt);
+    wdt_hal_feed(&s_hw_wdt);
+    wdt_hal_write_protect_enable(&s_hw_wdt);
+    s_hw_wdt_armed = true;
+
+    ESP_LOGI(TAG, "HW WDT: RTC watchdog armed (%d s timeout, full chip reset)",
+             HW_WDT_TIMEOUT_S);
+}
+
+static void hw_wdt_feed(void)
+{
+    if (!s_hw_wdt_armed) return;
+    wdt_hal_write_protect_disable(&s_hw_wdt);
+    wdt_hal_feed(&s_hw_wdt);
+    wdt_hal_write_protect_enable(&s_hw_wdt);
 }
 
 /**
- * @brief Initialise the ISR-based hardware watchdog.
+ * @brief Record lux_based_birds_task liveness for the HW WDT gate.
  *
- * Call once from app_main after all tasks are running.  The timer fires
- * a 1-second alarm in ISR context.  Two tasks feed the heartbeat counter:
- * wifi_keepalive_task (directly) and lux_based_birds_task (via
- * isr_wdt_lux_feed()).  See isr_wdt_lux_feed() for the rationale.
- */
-static void isr_wdt_init(void)
-{
-    gptimer_config_t timer_cfg = {
-        .clk_src       = GPTIMER_CLK_SRC_DEFAULT,
-        .direction     = GPTIMER_COUNT_UP,
-        .resolution_hz = 1000000,   /* 1 MHz → 1 µs per tick */
-    };
-    esp_err_t err = gptimer_new_timer(&timer_cfg, &s_isr_wdt_timer);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "ISR WDT: failed to create timer: %s", esp_err_to_name(err));
-        return;
-    }
-
-    gptimer_alarm_config_t alarm_cfg = {
-        .alarm_count               = ISR_WDT_ALARM_INTERVAL_S * 1000000ULL,  /* N seconds at 1 MHz */
-        .reload_count              = 0,
-        .flags.auto_reload_on_alarm = true,
-    };
-    gptimer_event_callbacks_t cbs = {
-        .on_alarm = isr_wdt_alarm_cb,
-    };
-    ESP_ERROR_CHECK(gptimer_register_event_callbacks(s_isr_wdt_timer, &cbs, NULL));
-    ESP_ERROR_CHECK(gptimer_set_alarm_action(s_isr_wdt_timer, &alarm_cfg));
-    ESP_ERROR_CHECK(gptimer_enable(s_isr_wdt_timer));
-    ESP_ERROR_CHECK(gptimer_start(s_isr_wdt_timer));
-
-    ESP_LOGI(TAG, "ISR WDT: armed (%d s timeout, RTC reset)", ISR_WDT_TIMEOUT_S);
-}
-
-/**
- * @brief Record lux_based_birds_task liveness for the ISR WDT gate.
- *
- * Architecture — why keepalive alone is not enough:
- *
- *   wifi_keepalive_task feeds s_isr_wdt_heartbeat while end-to-end network
- *   connectivity is confirmed (last_fetch_ms fresh).  If lux_task dies
- *   silently it is removed from the TWDT watchlist, so the TWDT never fires.
- *   wifi_keepalive_task keeps running, HTTP keeps succeeding, and the ISR WDT
- *   heartbeat keeps advancing — the failure is completely masked.
- *
- * Two-signal gate in wifi_keepalive_task:
- *
- *   The keepalive feeds the heartbeat ONLY when BOTH of the following hold:
- *     1. network_ok  — last HTTP fetch was within NETWORK_DEATH_MS
- *     2. lux_ok      — this function was called within LUX_DEAD_MS
- *
- *   This function's sole job is to update s_lux_alive_s unconditionally on
- *   every lux_task poll cycle (~500 ms).  It does NOT touch the heartbeat.
- *   The keepalive is the single writer of the heartbeat; it reads both signals
- *   and decides whether to advance it.
+ * wifi_keepalive_task feeds the RTC watchdog only while lux_task has
+ * stamped s_lux_alive_s within LUX_DEAD_MS.  If lux_task dies silently it
+ * drops off the TWDT watchlist, so without this check nothing would notice.
  *
  * Failure modes caught:
- *   WiFi dead        → network_ok=false  → keepalive stops feeding → WDT fires
- *   lux_task dead    → lux_ok=false      → keepalive stops feeding → WDT fires
- *   keepalive stalls → heartbeat stalls  → ISR WDT fires directly
- *   All healthy      → both true         → heartbeat advances      → no WDT
- *
- * Previous approach (7.2.0): lux_task incremented the heartbeat directly with
- *   a network-health gate mirroring the keepalive.  Flaw: if lux_task is alive
- *   but the network is dead, lux_task correctly stops feeding — but if lux_task
- *   is dead and the network is alive, keepalive alone keeps advancing the
- *   heartbeat, and the WDT never fires.  The gate belongs in keepalive, where
- *   both signals can be evaluated together.
+ *   lux_task dead        → lux_ok=false → keepalive stops feeding → reset
+ *   keepalive stalls     → no feed                                → reset
+ *   chip / clock frozen  → no feed                                → reset
+ *   Pi or AP down        → still fed — node keeps running autonomously
  *
  * Called unconditionally from lux_based_birds_task on each iteration.
  * Safe from any task context; not safe from ISR context (not IRAM_ATTR).
  */
 void isr_wdt_lux_feed(void)
 {
-    /* Simply stamp the current tick.  No gate here — the keepalive decides
-     * whether to advance the heartbeat based on both this timestamp and the
-     * network health timestamp.                                            */
+    /* Simply stamp the current time; the keepalive decides whether to feed. */
     s_lux_alive_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
 }
 
@@ -256,18 +152,9 @@ uint64_t main_get_lux_alive_ms(void)
  * WIFI KEEPALIVE (minimal nodes only)
  * ========================================================================
  *
- * This task is one of TWO feeders of the ISR hardware watchdog.  The other
- * is lux_based_birds_task, via isr_wdt_lux_feed() — see that function for
- * the full rationale.
- *
- * This task's role: detect keepalive blocked (e.g. WiFi driver deadlock,
- * esp_now_send TX-buffer full).  If this task stalls for ISR_WDT_TIMEOUT_S
- * seconds without lux_task compensating, the ISR WDT fires.
- *
- * Because lux_task feeds the counter at 500 ms intervals, a stalled
- * keepalive alone will NOT trigger the ISR WDT while lux_task is healthy.
- * The ISR WDT fires only when BOTH tasks stop feeding — i.e. when the node
- * is genuinely unresponsive, not merely when keepalive stalls briefly.
+ * This task is the sole feeder of the RTC hardware watchdog (see
+ * isr_wdt_lux_feed() for the gate).  If it stalls for HW_WDT_TIMEOUT_S
+ * seconds — WiFi driver deadlock, frozen chip — the RTC WDT resets the chip.
  *
  * KEEPALIVE MECHANISM: a 1-byte UDP datagram to the gateway's discard
  * port (RFC 863), sent via a socket with SO_SNDTIMEO = 1 s.  This
@@ -287,10 +174,10 @@ uint64_t main_get_lux_alive_ms(void)
  * Every local check sees a healthy system.
  *
  * APPLICATION-LAYER VERIFICATION: the remote_config_task polls the
- * server every 60 seconds via HTTP.  This is the ONLY operation that
- * proves end-to-end bidirectional connectivity.  After 3 consecutive
- * failures (~3 min), it forces a WiFi stop/start.  After 5 failures
- * (~5 min), it forces a full reboot.  See remote_config.c.
+ * server every 60 seconds via HTTP.  After RCFG_FAILURES_HARD_REBOOT
+ * failures it reboots — but ONLY if peers report via ESP-NOW that the
+ * server is reachable (this node alone is cut off).  If nobody can reach
+ * the server the node stays up and runs autonomously.  See remote_config.c.
  */
 #define WIFI_KEEPALIVE_INTERVAL_MS  1000
 
@@ -311,57 +198,39 @@ static void wifi_keepalive_task(void *param)
     while (1) {
         esp_task_wdt_reset();
 
-        /* ── ISR WDT feed gate ───────────────────────────────────────────
+        /* ── HW WDT feed gate ───────────────────────────────────────────
          *
-         * Feed the hardware watchdog ONLY when we have proof that BOTH
-         * end-to-end network connectivity AND lux_task are healthy.
-         *
-         * Two signals, evaluated here (and only here):
-         *
-         *   network_ok — last successful HTTP config fetch was within
-         *                NETWORK_DEATH_MS.  remote_config_task updates
-         *                last_fetch_ms on every successful HTTP poll (~60 s).
-         *                This is the only operation that proves bidirectional
-         *                connectivity; all local WiFi driver state is cached
-         *                and can appear healthy even when the AP has silently
-         *                dropped this node.
-         *
-         *   lux_ok     — isr_wdt_lux_feed() was called within LUX_DEAD_MS.
-         *                lux_based_birds_task calls it unconditionally on
-         *                every ~500 ms poll.  If lux_task crashes silently
-         *                it is removed from the TWDT watchlist; TWDT never
-         *                fires for it.  This signal detects that gap.
-         *
-         * During the boot grace period always feed — the first HTTP fetch
-         * and lux_task's first poll haven't happened yet.
-         *
-         * After grace: feed only if network_ok AND lux_ok.  Either failure
-         * starves the heartbeat → ISR WDT fires ISR_WDT_TIMEOUT_S later.
-         *
-         * Failure modes caught:
-         *   WiFi dead      → network_ok=false → WDT fires            ✓
-         *   lux_task dead  → lux_ok=false     → WDT fires            ✓
-         *   keepalive dead → heartbeat stalls → ISR fires directly   ✓  */
+         * Local health only: this task is running (or we would not be here)
+         * and lux_task stamped s_lux_alive_s within LUX_DEAD_MS.  Server or
+         * AP availability is deliberately ignored so the installation runs
+         * autonomously without the Pi.  Always feed during boot grace.    */
         {
-            uint64_t now_ms  = (uint64_t)(esp_timer_get_time() / 1000ULL);
-            bool boot_grace  = (now_ms < NETWORK_GRACE_MS);
+            /* Starvation is announced once in RTC memory so that, if the
+             * RTC WDT fires, the next boot's startup report says why.  A
+             * hardware reset cannot write anything at the moment it fires. */
+            static bool s_starving = false;
 
-            if (boot_grace) {
-                atomic_fetch_add_explicit(&s_isr_wdt_heartbeat, 1u, memory_order_relaxed);
-            } else {
-                uint64_t last_net = remote_config_get()->last_fetch_ms;
-                bool network_ok   = (last_net != 0)
-                                 && ((now_ms - last_net) < NETWORK_DEATH_MS);
+            uint64_t now_ms   = (uint64_t)(esp_timer_get_time() / 1000ULL);
+            uint64_t last_lux = (uint64_t)s_lux_alive_s * 1000ULL;
+            bool lux_ok       = (last_lux != 0)
+                             && ((now_ms - last_lux) < LUX_DEAD_MS);
+            bool feed         = (now_ms < BOOT_GRACE_MS) || lux_ok;
 
-                uint64_t last_lux = (uint64_t)s_lux_alive_s * 1000ULL;
-                bool lux_ok       = (last_lux != 0)
-                                 && ((now_ms - last_lux) < LUX_DEAD_MS);
-
-                if (network_ok && lux_ok) {
-                    atomic_fetch_add_explicit(&s_isr_wdt_heartbeat, 1u, memory_order_relaxed);
-                }
-                /* else: network or lux_task dead — starve the ISR WDT */
+            if (!feed && !s_starving) {
+                ESP_LOGE(TAG, "HW WDT: lux_task stalled — chip reset in ~%d s",
+                         HW_WDT_TIMEOUT_S);
+                startup_write_rtc_diag(RTC_DIAG_CAUSE_ISR_WDT, 0,
+                                       (uint32_t)esp_get_free_heap_size(), 0,
+                                       (uint32_t)(now_ms / 1000));
             }
+            if (feed) {
+                if (s_starving) {
+                    ESP_LOGW(TAG, "HW WDT: lux_task alive again — feeding");
+                    startup_clear_rtc_diag();
+                }
+                hw_wdt_feed();
+            }
+            s_starving = !feed;
         }
 
         /* ── HTTP stuck detector ─────────────────────────────────────────
@@ -375,10 +244,12 @@ static void wifi_keepalive_task(void *param)
          * HTTP_TIMEOUT_MS — permanently blocking remote_config_task.
          *
          * A blocked remote_config_task never increments consecutive_
-         * failures and never reaches RCFG_FAILURES_HARD_REBOOT.  The ISR
-         * WDT should still fire (keepalive_task is independent), but as a
-         * belt-and-suspenders measure we also detect the stuck HTTP call
-         * here and trigger a direct hardware reset.
+         * failures and never reaches RCFG_FAILURES_HARD_REBOOT, so we detect
+         * the stuck call here.  We only reboot if peers report the server
+         * is reachable: if the Pi or AP is down for everyone, a reboot
+         * cannot help and the node should keep running autonomously.  If
+         * the server comes back later, peer evidence appears and the reboot
+         * then gets this node polling again.
          *
          * g_rcfg_http_attempt_start_ms is set just before
          * esp_http_client_perform() and cleared on return.  If it has
@@ -389,7 +260,9 @@ static void wifi_keepalive_task(void *param)
             if (attempt_start != 0) {
                 uint64_t now_ms     = (uint64_t)(esp_timer_get_time() / 1000ULL);
                 uint64_t attempt_ms = now_ms - attempt_start;
-                if (attempt_ms > HTTP_STUCK_TIMEOUT_MS) {
+                if (attempt_ms > HTTP_STUCK_TIMEOUT_MS &&
+                    attempt_ms > HTTP_STUCK_PEER_PROOF_MS &&
+                    espnow_mesh_peer_reports_server_ok(PEER_SERVER_OK_RECENT_MS)) {
                     /* Read diagnostics from task context (safe here). */
                     int8_t rssi = 0;
                     wifi_ap_record_t ap;
@@ -408,8 +281,7 @@ static void wifi_keepalive_task(void *param)
                         (int32_t)rssi,
                         uptime_s_now);
                     startup_record_boot_reason(ESP_RST_SW, uptime_s_now);
-                    SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
-                    while (1) { }   /* never reached */
+                    echoes_hard_restart();
                 }
             }
         }
@@ -482,7 +354,7 @@ void app_main(void)
      *
      * uptime_s = 0 here; it gets overwritten with the real uptime immediately
      * before every deliberate reset (startup_record_boot_reason call sites in
-     * remote_config.c and the ISR WDT/HTTP-stuck paths in main.c).          */
+     * remote_config.c and the HW WDT/HTTP-stuck paths in main.c).          */
     esp_reset_reason_t boot_reason = esp_reset_reason();
     startup_record_boot_reason(boot_reason, 0);
 
@@ -853,58 +725,33 @@ void app_main(void)
     ESP_LOGI(TAG, "System started successfully!");
 
     /* Remote config + keepalive tasks: started unconditionally so they run
-     * even when the initial WiFi connection failed.
-     *
-     * If these were only created on the wifi_connected path then a failed
-     * initial connection followed by isr_wdt_init() below would arm the ISR
-     * WDT with no task ever feeding it → permanent 120 s reset loop.
-     *
-     * The WiFi reconnect timer in ota.c retries every 30 s.  Once connectivity
-     * is established, remote_config_task will succeed on its next 60 s poll and
-     * keepalive_task will start feeding the ISR WDT heartbeat.  The 10-minute
-     * boot grace period in wifi_keepalive_task gives ample time for this.    */
+     * even when the initial WiFi connection failed.  The WiFi reconnect
+     * timer in ota.c retries every 30 s; once connected, remote_config_task
+     * picks up live settings on its next poll.  Until then the node runs on
+     * NVS / built-in defaults.                                             */
     xTaskCreate(remote_config_task, "rcfg", 8192, NULL, 3, NULL);
     ESP_LOGI(TAG, "Remote config polling task started");
 
-    /* wifi_keepalive_task is one of two ISR WDT feeders (the other is
-     * lux_based_birds_task via isr_wdt_lux_feed()).  If keepalive stalls
-     * while lux_task is also dead, the ISR fires and resets the SoC.
-     * See isr_wdt_lux_feed() in this file for the full rationale.          */
+    /* wifi_keepalive_task is the sole feeder of the RTC hardware watchdog.
+     * See isr_wdt_lux_feed() for the (local-health-only) feed gate.       */
     if (hw_config == HW_CONFIG_MINIMAL) {
         xTaskCreate(wifi_keepalive_task, "wifi_ka", 8192, NULL, 4, NULL);
         ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
                  WIFI_KEEPALIVE_INTERVAL_MS / 1000);
     }
 
-    /* Arm ISR hardware watchdog — minimal nodes only, AND only when WiFi
-     * connected at boot.
+    /* Arm the RTC hardware watchdog on minimal nodes — with or without WiFi.
      *
-     * The ISR WDT's purpose is to catch WiFi-driver deadlocks: scenarios
-     * where the radio stack is wedged and remote_config_task can no longer
-     * complete an HTTP fetch.  Without a successful fetch, last_fetch_ms
-     * never advances and the heartbeat starves → hardware reset.
+     * The feed gate uses only local health (keepalive + lux_task alive), so
+     * a missing AP or Pi can never starve it; there is no reset-loop risk on
+     * the no-WiFi path any more, and that path gets the same protection
+     * against chip lockups.
      *
-     * When the AP is absent at boot there is no WiFi stack in use, so the
-     * deadlock scenario cannot occur and last_fetch_ms will never be
-     * populated — arming the WDT would cause a permanent reset loop every
-     * NETWORK_GRACE_MS + ISR_WDT_TIMEOUT_S seconds.
-     *
-     * Full nodes are intentionally excluded.  Their continuous 500 ms lux
-     * broadcasts keep the radio continuously active, making the specific
-     * silent-drop/deadlock scenario significantly less likely than on
-     * minimal nodes.  In the event of a WiFi-driver deadlock on a full node,
-     * the software TWDT (30 s) remains active and will panic → reboot.
-     * The only unguarded gap is a deadlock that simultaneously stalls BOTH
-     * the wedged WiFi driver AND the TWDT's own FreeRTOS tick — a scenario
-     * that would require both CPU cores to be stuck, at which point no
-     * software-cooperative mechanism can recover anyway.  The RTC watchdog
-     * (configured via sdkconfig.defaults) provides the final hardware-level
-     * backstop for that extreme case.                                       */
-    if (hw_config == HW_CONFIG_MINIMAL && wifi_connected) {
-        isr_wdt_init();
-        ESP_LOGI(TAG, "ISR WDT armed (WiFi connected)");
-    } else if (hw_config == HW_CONFIG_MINIMAL) {
-        ESP_LOGI(TAG, "ISR WDT skipped (no WiFi — TWDT only)");
+     * Full nodes are not armed: the March 2026 server log shows 10
+     * power-cycle-only lockups on full nodes vs 199 on minimal nodes.  They
+     * can be added later by starting wifi_keepalive_task on them too.     */
+    if (hw_config == HW_CONFIG_MINIMAL) {
+        hw_wdt_init();
     }
 
     /* Log final startup summary */

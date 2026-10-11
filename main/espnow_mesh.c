@@ -85,6 +85,12 @@ static uint64_t s_last_sound_broadcast_ms = 0;
 static uint8_t  s_tx_seq             = 0;
 static uint64_t s_last_status_ms     = 0;   /* when we last sent a STATUS msg */
 
+/* Last time (seconds since boot) any peer's message carried
+ * ESPNOW_FLAG_HTTP_RECENT, i.e. some node in the mesh can currently reach
+ * the server.  Written from the WiFi task (on_data_recv), read from other
+ * tasks; uint32_t is a single atomic load/store on Xtensa.  0 = never.    */
+static volatile uint32_t s_peer_http_ok_s = 0;
+
 /* Guard against double-initialisation */
 static bool s_initialized = false;
 
@@ -108,6 +114,18 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info,
 
     const espnow_msg_t *msg = (const espnow_msg_t *)data;
     if (msg->magic != ESPNOW_MAGIC) return;
+
+    /* Peer evidence that the server is reachable.  The flags byte sits at a
+     * different offset in STATUS frames than in SOUND/LIGHT frames.        */
+    {
+        uint8_t flags = (msg->msg_type == ESPNOW_MSG_STATUS)
+            ? ((const espnow_status_msg_t *)(const void *)data)->status_flags
+            : msg->status_flags;
+        if (flags & ESPNOW_FLAG_HTTP_RECENT) {
+            uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+            s_peer_http_ok_s = now_s ? now_s : 1u;
+        }
+    }
 
     /* Record arrival timestamp for flock mode detection.
      *
@@ -501,7 +519,10 @@ bool espnow_mesh_init(bird_call_mapper_t *mapper, markov_chain_t *mc)
     }
 
     /* Start the receive processing task */
-    BaseType_t rc = xTaskCreate(espnow_rx_task, "espnow_rx", 3072, NULL, 4, NULL);
+    /* 4096 (was 3072): this task formats floats in ESP_LOGx, builds STATUS
+     * frames and calls esp_wifi_sta_get_ap_info()/esp_now_send() — 3 KB was
+     * the only stack in the firmware not given the "8192 for headroom" bump. */
+    BaseType_t rc = xTaskCreate(espnow_rx_task, "espnow_rx", 4096, NULL, 4, NULL);
     if (rc != pdPASS) {
         ESP_LOGE(TAG, "Failed to create espnow_rx task");
         esp_now_deinit();
@@ -641,6 +662,15 @@ bool espnow_mesh_is_flock_mode(void)
     }
 
     return s_flock_active;
+}
+
+bool espnow_mesh_peer_reports_server_ok(uint32_t within_ms)
+{
+    uint32_t last_s = s_peer_http_ok_s;
+    if (last_s == 0) return false;
+    uint64_t now_ms = millis();
+    uint64_t last_ms = (uint64_t)last_s * 1000ULL;
+    return (now_ms >= last_ms) && ((now_ms - last_ms) <= within_ms);
 }
 
 markov_chain_t *espnow_mesh_get_markov(void)

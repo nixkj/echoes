@@ -8,8 +8,10 @@
 #include "espnow_mesh.h"
 #include "markov.h"
 #include "remote_config.h"
+#include "startup.h"
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
 // ESP32-specific includes
 #include "driver/i2s_std.h"
@@ -25,6 +27,7 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_task_wdt.h"
+#include "esp_system.h"
 
 static const char *TAG = "ECHOES";
 
@@ -107,15 +110,37 @@ void led_init(void) {
     ESP_LOGI(TAG, "LEDs initialized");
 }
 
-esp_err_t i2s_microphone_init(void)
+/* Create, configure and enable the microphone RX channel.
+ *
+ * The ICS-43434 datasheet requires exactly 64 SCK cycles per WS frame
+ * (32-bit slots).  The previous configuration used 16-bit data with
+ * SLOT_BIT_WIDTH_AUTO, which gives 16-bit slots = 32 SCK per frame at
+ * 512 kHz — outside the mic's spec.  It works most of the time, but leaves
+ * the mic free to lose frame sync and start emitting garbage/stuck data.
+ *
+ * Now: 32-bit slots (64 SCK/frame, 1.024 MHz SCK at 16 kHz).  The audio task
+ * reads int32 samples and keeps the top 16 bits (raw >> 16), which is exactly
+ * the same scale the 16-bit configuration produced, so every remote-config
+ * threshold, gain and noise floor keeps its meaning.
+ *
+ * slot_mask is set explicitly to LEFT to match SEL tied to GND.  If the mic
+ * reads silence after this change on your boards, try I2S_STD_SLOT_RIGHT
+ * (the ESP32 I2S block has some well-known left/right quirks).
+ *
+ * Non-fatal: returns an error instead of aborting so it can be reused by
+ * mic_channel_reinit() at runtime.                                       */
+static esp_err_t mic_channel_create(void)
 {
+    i2s_chan_handle_t chan = NULL;
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, NULL, &mic_chan));
+    esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &chan);
+    if (err != ESP_OK) return err;
 
     i2s_std_slot_config_t slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-        I2S_DATA_BIT_WIDTH_16BIT,   // or try I2S_DATA_BIT_WIDTH_32BIT
+        I2S_DATA_BIT_WIDTH_32BIT,
         I2S_SLOT_MODE_MONO
     );
+    slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
 
     i2s_std_config_t std_cfg = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
@@ -134,11 +159,42 @@ esp_err_t i2s_microphone_init(void)
         },
     };
 
-    ESP_ERROR_CHECK(i2s_channel_init_std_mode(mic_chan, &std_cfg));
-    ESP_ERROR_CHECK(i2s_channel_enable(mic_chan));
+    err = i2s_channel_init_std_mode(chan, &std_cfg);
+    if (err == ESP_OK) err = i2s_channel_enable(chan);
+    if (err != ESP_OK) {
+        i2s_del_channel(chan);
+        return err;
+    }
 
-    ESP_LOGI(TAG, "Microphone (I2S RX) initialized @ %d Hz", SAMPLE_RATE);
+    mic_chan = chan;
     return ESP_OK;
+}
+
+esp_err_t i2s_microphone_init(void)
+{
+    ESP_ERROR_CHECK(mic_channel_create());
+    ESP_LOGI(TAG, "Microphone (I2S RX, 32-bit slots) initialized @ %d Hz", SAMPLE_RATE);
+    return ESP_OK;
+}
+
+/* Tear the mic channel down completely and build it again.  A disable/enable
+ * cycle only restarts DMA; deleting the channel also resets the I2S0
+ * peripheral state and stops SCK long enough for the ICS-43434 to drop into
+ * power-down and resynchronise when the clock returns.
+ * Only called from audio_detection_task, the sole user of mic_chan.      */
+static esp_err_t mic_channel_reinit(void)
+{
+    if (mic_chan != NULL) {
+        i2s_channel_disable(mic_chan);   /* may already be disabled — ignore */
+        i2s_del_channel(mic_chan);
+        mic_chan = NULL;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));      /* SCK off → mic enters power-down */
+    esp_err_t err = mic_channel_create();
+    if (err == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(100));  /* ICS-43434 wake-up time         */
+    }
+    return err;
 }
 
 esp_err_t i2s_speaker_init(void)
@@ -597,13 +653,22 @@ static hardware_config_t detect_hardware_config(void)
  */
 static float calculate_vu_level(const int16_t *buffer, size_t num_samples)
 {
-    // Calculate RMS (Root Mean Square) of audio signal
-    float sum_squares = 0.0f;
+    if (num_samples == 0) return 0.0f;
+
+    /* AC RMS (DC removed).  A plain RMS treats any DC offset as loudness, so a
+     * mic stream stuck at a constant non-zero value (lost frame sync, floating
+     * data line) drove the meter to full scale permanently — a white LED that
+     * stays on while every task and watchdog looks healthy.  Real acoustic
+     * signal from the ICS-43434 has no DC (internal high-pass filter).      */
+    float sum = 0.0f, sum_squares = 0.0f;
     for (size_t i = 0; i < num_samples; i++) {
         float sample = (float)buffer[i] / 32768.0f;  // Normalize to -1.0 to 1.0
+        sum         += sample;
         sum_squares += sample * sample;
     }
-    float rms = sqrtf(sum_squares / num_samples);
+    float mean = sum / (float)num_samples;
+    float var  = sum_squares / (float)num_samples - mean * mean;
+    float rms  = sqrtf(var > 0.0f ? var : 0.0f);
     
     // Scale to reasonable range (reduced sensitivity)
     float level = rms * 5.0f;  // Much less sensitive than before (was 20.0f)
@@ -798,14 +863,119 @@ static void generate_and_play_bird_call_nowait(bird_call_mapper_t *mapper,
     vTaskDelay(pdMS_TO_TICKS(100));
 }
 
+/* =========================================================================
+ * MICROPHONE HEALTH SUPERVISION
+ *
+ * The old loop fed the task watchdog on every pass, whether or not the mic
+ * was delivering usable audio.  Two failure modes therefore hung forever
+ * with every watchdog satisfied:
+ *
+ *   1. i2s_channel_read() times out / errors permanently.  The loop cycled
+ *      the channel every ~5 s forever, never touched the LED again (frozen
+ *      at its last VU value), and never escalated to a reboot.
+ *   2. i2s_channel_read() succeeds but the data is junk — stuck at one value,
+ *      large DC, or saturated noise.  On minimal nodes that maps straight to
+ *      a full-scale VU level: white LED on solid.  Full nodes show nothing
+ *      (Goertzel ignores DC, their LED only follows playback), which is why
+ *      the symptom appeared only on minimal nodes.
+ *
+ * Now both are detected and escalated: LED off → full channel re-init →
+ * reboot (with an RTC diagnostic) if re-initialising does not fix it.
+ * ========================================================================= */
+#define MIC_BAD_HOLD_MS         10000u   /* continuous junk audio before re-init      */
+#define MIC_READ_FAIL_LIMIT     3u       /* consecutive read failures before re-init  */
+#define MIC_MAX_REINITS         3u       /* re-inits within window before reboot      */
+#define MIC_REINIT_WINDOW_MS    (10u * 60u * 1000u)
+#define MIC_DC_LIMIT            4096     /* |mean| of a buffer, 16-bit scale, pre-gain */
+#define MIC_CLIP_LEVEL          32000
+
+static uint64_t mic_millis(void)
+{
+    return (uint64_t)(esp_timer_get_time() / 1000ULL);
+}
+
+/* Convert raw 32-bit slots to 16-bit samples (same scale as the old 16-bit
+ * configuration) and judge whether the buffer could be real audio.        */
+static bool mic_convert_and_check(const int32_t *raw, int16_t *out, size_t n,
+                                  int32_t *mean_out)
+{
+    int32_t raw_min = INT32_MAX, raw_max = INT32_MIN;
+    int64_t sum = 0;
+    size_t  clipped = 0;
+
+    for (size_t i = 0; i < n; i++) {
+        int32_t r = raw[i];
+        if (r < raw_min) raw_min = r;
+        if (r > raw_max) raw_max = r;
+        int16_t s = (int16_t)(r >> 16);
+        out[i] = s;
+        sum += s;
+        if (s >= MIC_CLIP_LEVEL || s <= -MIC_CLIP_LEVEL) clipped++;
+    }
+
+    int32_t mean = (int32_t)(sum / (int64_t)n);
+    *mean_out = mean;
+
+    /* The comparison uses the full 24-bit data, so even a near-silent room
+     * (mic noise ≈ 1 LSB at 16-bit) never looks "constant".               */
+    bool stuck     = (raw_min == raw_max);
+    bool dc        = (mean > MIC_DC_LIMIT || mean < -MIC_DC_LIMIT);
+    /* Half the buffer hard-clipped means > ~120 dB SPL (the mic's acoustic
+     * overload point) for 32 ms, held for MIC_BAD_HOLD_MS — not real sound,
+     * even with a full node's own speaker right next to the mic.        */
+    bool saturated = (clipped * 2 > n);
+    return !(stuck || dc || saturated);
+}
+
+/* Escalation step: LED off, full channel re-init; reboot if re-inits keep
+ * failing to clear the fault.  Bounded, so the TWDT can keep being fed.   */
+static void mic_recover(const char *why)
+{
+    static uint32_t s_reinits        = 0;
+    static uint64_t s_first_reinit_ms = 0;
+
+    uint64_t now = mic_millis();
+    set_led(BRIGHT_OFF, BRIGHT_OFF);   /* never leave the LED frozen on */
+
+    if (s_reinits == 0 || (now - s_first_reinit_ms) > MIC_REINIT_WINDOW_MS) {
+        s_reinits = 0;
+        s_first_reinit_ms = now;
+    }
+
+    if (s_reinits >= MIC_MAX_REINITS) {
+        uint32_t uptime_s = (uint32_t)(now / 1000ULL);
+        ESP_LOGE(TAG, "Mic still faulty (%s) after %lu re-inits — rebooting",
+                 why, (unsigned long)s_reinits);
+        startup_write_rtc_diag(RTC_DIAG_CAUSE_MIC, s_reinits,
+                               (uint32_t)esp_get_free_heap_size(), 0, uptime_s);
+        startup_record_boot_reason(ESP_RST_SW, uptime_s);
+        vTaskDelay(pdMS_TO_TICKS(100));   /* let the log line drain */
+        echoes_hard_restart();
+    }
+
+    s_reinits++;
+    ESP_LOGW(TAG, "Mic fault (%s) — full I2S re-init %lu/%u",
+             why, (unsigned long)s_reinits, MIC_MAX_REINITS);
+    esp_err_t err = mic_channel_reinit();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Mic re-init failed: %s", esp_err_to_name(err));
+    }
+}
+
 void audio_detection_task(void *param) {
     int16_t *buffer = (int16_t*)malloc(BUFFER_SIZE * sizeof(int16_t));
-    if (!buffer) {
+    int32_t *raw    = (int32_t*)malloc(BUFFER_SIZE * sizeof(int32_t));
+    if (!buffer || !raw) {
         ESP_LOGE(TAG, "Failed to allocate audio buffer");
+        free(buffer);
+        free(raw);
         vTaskDelete(NULL);
         return;
     }
-    
+
+    uint32_t read_failures = 0;   /* consecutive i2s_channel_read failures   */
+    uint64_t bad_since_ms  = 0;   /* start of current junk-audio run (0=ok)  */
+
     detection_state_t *state = &g_system_state.detection;
     set_led(BRIGHT_OFF, BRIGHT_OFF);
     
@@ -849,37 +1019,74 @@ void audio_detection_task(void *param) {
     }
 
     while (1) {
+        /* Feeding the TWDT every pass is safe now because every failure path
+         * below is bounded: it either recovers or reaches esp_restart().    */
+        esp_task_wdt_reset();
+
+        if (mic_chan == NULL) {
+            /* A previous re-init failed — keep retrying through mic_recover. */
+            mic_recover("no channel");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
         size_t bytes_read = 0;
         esp_err_t ret = i2s_channel_read(
             mic_chan,
-            buffer,
-            BUFFER_SIZE * sizeof(int16_t),
+            raw,
+            BUFFER_SIZE * sizeof(int32_t),
             &bytes_read,
             pdMS_TO_TICKS(I2S_READ_TIMEOUT_MS)
         );
-        esp_task_wdt_reset();  /* fed every iteration whether read succeeded or timed out */
+        esp_task_wdt_reset();
 
-        if (ret == ESP_ERR_TIMEOUT) {
-            /* Peripheral stalled — cycle the channel to recover without rebooting. */
-            ESP_LOGW(TAG, "I2S read timeout — cycling mic channel");
-            i2s_channel_disable(mic_chan);
-            vTaskDelay(pdMS_TO_TICKS(50));
-            i2s_channel_enable(mic_chan);
-            vTaskDelay(pdMS_TO_TICKS(50));
+        if (ret != ESP_OK || bytes_read < sizeof(int32_t)) {
+            read_failures++;
+            ESP_LOGW(TAG, "I2S read %s (%lu in a row)",
+                     ret == ESP_ERR_TIMEOUT ? "timeout" : esp_err_to_name(ret),
+                     (unsigned long)read_failures);
+            set_led(BRIGHT_OFF, BRIGHT_OFF);
+            vu_level = 0.0f;
+            if (read_failures >= MIC_READ_FAIL_LIMIT) {
+                read_failures = 0;
+                mic_recover("read failures");
+            } else {
+                /* Light-weight first attempt: cycle the channel. */
+                i2s_channel_disable(mic_chan);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                i2s_channel_enable(mic_chan);
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
             continue;
         }
+        read_failures = 0;
 
-        if (ret != ESP_OK || bytes_read == 0) {
-            ESP_LOGE(TAG, "I2S read error: %s — reinitialising mic channel",
-                     esp_err_to_name(ret));
-            i2s_channel_disable(mic_chan);
-            vTaskDelay(pdMS_TO_TICKS(50));
-            i2s_channel_enable(mic_chan);
-            vTaskDelay(pdMS_TO_TICKS(50));
+        size_t num_samples = bytes_read / sizeof(int32_t);
+
+        int32_t mic_mean = 0;
+        if (!mic_convert_and_check(raw, buffer, num_samples, &mic_mean)) {
+            uint64_t now = mic_millis();
+            if (bad_since_ms == 0) {
+                bad_since_ms = now;
+                ESP_LOGW(TAG, "Mic data looks invalid (mean=%ld) — watching",
+                         (long)mic_mean);
+            }
+            /* Junk audio must never drive the LED or trigger detections. */
+            set_led(BRIGHT_OFF, BRIGHT_OFF);
+            vu_level = 0.0f;
+            if ((now - bad_since_ms) >= MIC_BAD_HOLD_MS) {
+                bad_since_ms = 0;
+                mic_recover("invalid data");
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
             continue;
         }
-
-        size_t num_samples = bytes_read / sizeof(int16_t);
+        if (bad_since_ms != 0) {
+            ESP_LOGI(TAG, "Mic data valid again after %llu ms",
+                     (unsigned long long)(mic_millis() - bad_since_ms));
+            bad_since_ms = 0;
+        }
         
         // Apply gain from remote config
         apply_gain_inplace(buffer, num_samples, remote_config_get()->gain);
@@ -1048,15 +1255,12 @@ void audio_detection_task(void *param) {
             // Blue LED stays off in minimal mode
             set_led(vu_level, 0.0f);
 
-	    // ─────────────────────────────────────────────────────────────
-            // FEED THE WATCHDOG EVERY ITERATION
-            // This is the critical line. The loop runs at ~1 ms, so feeding
-            // the WDT here guarantees that even if the node is in the
-            // "stuck with white LED on" state, the watchdog will still
-            // trigger a clean reboot instead of hanging forever.
-            // ─────────────────────────────────────────────────────────────
-            esp_task_wdt_reset();
-            
+            /* NOTE: the previous version fed the TWDT here with a comment
+             * claiming it would force a reboot in the "stuck with white LED
+             * on" state.  It did the opposite — feeding the watchdog is what
+             * stops it firing.  Liveness is now handled by the mic health
+             * supervision at the top of the loop.                         */
+
             // Small delay
             vTaskDelay(pdMS_TO_TICKS(1));
         }

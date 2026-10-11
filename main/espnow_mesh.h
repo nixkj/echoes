@@ -182,6 +182,31 @@ void espnow_mesh_tick(void);
 markov_chain_t *espnow_mesh_get_markov(void);
 
 /**
+ * @brief True if any peer's ESP-NOW message within the last @p within_ms
+ *        carried ESPNOW_FLAG_HTTP_RECENT — i.e. the server is up and
+ *        reachable by at least one other node.
+ *
+ * Used to tell "this node's networking is broken" (reboot may help) from
+ * "the Pi / AP is down for everyone" (stay autonomous, never reboot).
+ */
+bool espnow_mesh_peer_reports_server_ok(uint32_t within_ms);
+
+/* Evidence windows.  A peer sets ESPNOW_FLAG_HTTP_RECENT while its last
+ * successful fetch is < 150 s old, so a flag seen at time r proves the
+ * server answered at some point after r - 150 s.  Each caller picks a
+ * window that proves the server was up DURING its own failure period, so
+ * the Pi going down never looks like "only this node is cut off".
+ *
+ *  - Minimal-node reboot after 10 failed polls (~10 min of failures):
+ *    5 min window → server answered within the last 7.5 min.  ✓
+ *  - Stuck-HTTP reboot / full-node reconnect: 60 s window, and the stuck
+ *    detector also waits HTTP_STUCK_PEER_PROOF_MS so peer evidence must
+ *    postdate the start of the hung request.                          */
+#define PEER_SERVER_OK_WINDOW_MS   (5u * 60u * 1000u)
+#define PEER_SERVER_OK_RECENT_MS   (60u * 1000u)
+#define HTTP_STUCK_PEER_PROOF_MS   (240u * 1000u)   /* 150 s flag life + 60 s window + 30 s margin */
+
+/**
  * @brief Returns true when the network is in "flock mode".
  *
  * Flock mode fires when FLOCK_MSG_COUNT (default 12, overridable via

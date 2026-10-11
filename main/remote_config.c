@@ -28,6 +28,7 @@
 #include "startup.h"
 #include "ota.h"
 #include "echoes.h"
+#include "espnow_mesh.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -40,7 +41,10 @@
  * all return success when the AP has silently dropped the node.
  *
  * Recovery for minimal nodes:
- *   RCFG_FAILURES_HARD_REBOOT consecutive failures → RTC hard reboot.
+ *   RCFG_FAILURES_HARD_REBOOT consecutive failures → hard reboot, BUT only
+ *   if peers report over ESP-NOW that the server is reachable.  If no peer
+ *   can reach it either, the Pi or AP is down for everyone: a reboot cannot
+ *   help, and the node keeps running autonomously on NVS / default config.
  *
  * There is intentionally NO intermediate "WiFi disconnect and reconnect"
  * escalation level for minimal nodes.  Calling esp_wifi_disconnect() while
@@ -57,8 +61,9 @@
  * from entering the stuck-reconnect state.
  *
  * For minimal nodes: let the WiFi driver manage its own reconnection via
- * the event handler.  The ISR WDT in main.c is the backstop for genuine
- * driver deadlocks.  Only force a hard reboot after sustained failure.
+ * the event handler.  The RTC hardware WDT in main.c is the backstop for a
+ * frozen chip.  Only force a hard reboot after sustained failure while the
+ * rest of the mesh can still reach the server.
  * ========================================================================= */
 #define RCFG_MAX_CONSECUTIVE_FAILURES   3
 #define RCFG_FAILURES_HARD_REBOOT       10  /* minimal: hard reboot after ~10 min */
@@ -850,12 +855,24 @@ void remote_config_task(void *param)
                  * Recovery: let the WiFi driver manage its own reconnection
                  * via the WIFI_EVENT_STA_DISCONNECTED handler in ota.c.
                  * After RCFG_FAILURES_HARD_REBOOT sustained failures (~10 min
-                 * at 60 s poll interval) force a hard RTC reset as last resort.
-                 * The ISR WDT in main.c is the backstop if THIS task stalls. */
+                 * at 60 s poll interval) force a hard reset as last resort —
+                 * only if peers prove the server is up (see header comment).
+                 * The RTC WDT in main.c is the backstop for a frozen chip.   */
 
-                if (consecutive_failures >= RCFG_FAILURES_HARD_REBOOT) {
-                    ESP_LOGE(TAG, "Watchdog: %d config failures — "
-                                  "forcing hard reboot", consecutive_failures);
+                bool peers_ok = espnow_mesh_peer_reports_server_ok(PEER_SERVER_OK_WINDOW_MS);
+                if (consecutive_failures >= RCFG_FAILURES_HARD_REBOOT && !peers_ok) {
+                    if (consecutive_failures == RCFG_FAILURES_HARD_REBOOT ||
+                        (consecutive_failures % 30) == 0) {
+                        ESP_LOGW(TAG, "%d config failures, but no peer can reach "
+                                      "the server either — server/AP down, "
+                                      "staying up and running autonomously",
+                                 consecutive_failures);
+                    }
+                }
+                if (consecutive_failures >= RCFG_FAILURES_HARD_REBOOT && peers_ok) {
+                    ESP_LOGE(TAG, "Watchdog: %d config failures while peers "
+                                  "reach the server — forcing hard reboot",
+                             consecutive_failures);
                     vTaskDelay(pdMS_TO_TICKS(esp_random() % 10000));
                     {
                         wifi_ap_record_t ap;
@@ -870,8 +887,7 @@ void remote_config_task(void *param)
                             uptime_s_now);
                         startup_record_boot_reason(ESP_RST_SW, uptime_s_now);
                     }
-                    SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
-                    while (1) { }   /* does not return — RTC reset fires */
+                    echoes_hard_restart();
                 }
 
             } else {
@@ -882,6 +898,11 @@ void remote_config_task(void *param)
                     if (!wifi_is_connected()) {
                         ESP_LOGI(TAG, "Watchdog: WiFi already disconnected — "
                                       "reconnect loop running");
+                    } else if (!espnow_mesh_peer_reports_server_ok(PEER_SERVER_OK_RECENT_MS)) {
+                        /* Nobody can reach the server: the Pi/AP is down, not
+                         * this node.  Reconnecting cannot help — stay put.  */
+                        ESP_LOGI(TAG, "Watchdog: no peer can reach the server "
+                                      "either — not forcing a reconnect");
                     } else {
                         uint32_t jitter_ms = esp_random() % 30000;
                         ESP_LOGW(TAG, "Watchdog: forcing WiFi reconnect "
@@ -946,9 +967,7 @@ void remote_config_task(void *param)
                         uptime_s_now);
                     startup_record_boot_reason(ESP_RST_SW, uptime_s_now);
                 }
-		// Better than esp_restart()
-                SET_PERI_REG_MASK(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
-		while (1) { }   /* never reached */
+	                echoes_hard_restart();
             }
         }
     }

@@ -569,6 +569,7 @@ _CAUSE_LABELS = {
     2: "REMOTE_CMD",
     3: "ISR_WDT",
     4: "HTTP_STUCK",
+    5: "MIC_STUCK",
 }
 
 def _stale_node_monitor() -> None:
