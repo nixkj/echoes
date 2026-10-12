@@ -42,7 +42,7 @@
 static const char *TAG = "MAIN";
 
 /* ========================================================================
- * HARDWARE WATCHDOG (minimal nodes only) — RTC WDT
+ * HARDWARE WATCHDOG (all nodes since 7.5.6) — RTC WDT
  * ========================================================================
  *
  * Previous design: a GPTimer interrupt counted heartbeats from the
@@ -87,8 +87,12 @@ static bool              s_hw_wdt_armed = false;
 static _Atomic uint32_t          s_lux_alive_s        = 0;   /* seconds; updated by lux_task     */
 
 /* If lux_task has not updated s_lux_alive_s within this window, keepalive
- * treats lux_task as dead and stops feeding the hardware watchdog.       */
-#define LUX_DEAD_MS  10000u
+ * treats lux_task as dead and stops feeding the hardware watchdog.
+ * 30 s (was 10 s): on full nodes a flash response blocks lux_task for up to
+ * ~8 s (4 s speaker-mutex wait + 3 s bird call + synthesis).  A short miss
+ * would only pause feeding — the RTC WDT still needs 120 s without a feed —
+ * but 30 s keeps the "starving" log meaningful.                          */
+#define LUX_DEAD_MS  30000u
 
 static void hw_wdt_init(void)
 {
@@ -149,7 +153,7 @@ uint64_t main_get_lux_alive_ms(void)
 }
 
 /* ========================================================================
- * WIFI KEEPALIVE (minimal nodes only)
+ * WIFI KEEPALIVE (all nodes since 7.5.6)
  * ========================================================================
  *
  * This task is the sole feeder of the RTC hardware watchdog (see
@@ -733,26 +737,23 @@ void app_main(void)
     ESP_LOGI(TAG, "Remote config polling task started");
 
     /* wifi_keepalive_task is the sole feeder of the RTC hardware watchdog.
-     * See isr_wdt_lux_feed() for the (local-health-only) feed gate.       */
-    if (hw_config == HW_CONFIG_MINIMAL) {
-        xTaskCreate(wifi_keepalive_task, "wifi_ka", 8192, NULL, 4, NULL);
-        ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
-                 WIFI_KEEPALIVE_INTERVAL_MS / 1000);
-    }
+     * See isr_wdt_lux_feed() for the (local-health-only) feed gate.
+     * Runs on every node type since 7.5.6.                                */
+    xTaskCreate(wifi_keepalive_task, "wifi_ka", 8192, NULL, 4, NULL);
+    ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
+             WIFI_KEEPALIVE_INTERVAL_MS / 1000);
 
-    /* Arm the RTC hardware watchdog on minimal nodes — with or without WiFi.
+    /* Arm the RTC hardware watchdog on every node — with or without WiFi.
      *
      * The feed gate uses only local health (keepalive + lux_task alive), so
      * a missing AP or Pi can never starve it; there is no reset-loop risk on
-     * the no-WiFi path any more, and that path gets the same protection
-     * against chip lockups.
+     * the no-WiFi path, and that path gets the same protection against chip
+     * lockups.
      *
-     * Full nodes are not armed: the March 2026 server log shows 10
-     * power-cycle-only lockups on full nodes vs 199 on minimal nodes.  They
-     * can be added later by starting wifi_keepalive_task on them too.     */
-    if (hw_config == HW_CONFIG_MINIMAL) {
-        hw_wdt_init();
-    }
+     * 7.5.5 armed minimal nodes only.  Its first night (2026-10-11/12) had no
+     * minimal-node lockups but one full node (id 7) locked up at 03:11 and
+     * stayed down until power-cycled, so 7.5.6 arms full nodes too.      */
+    hw_wdt_init();
 
     /* Log final startup summary */
     ESP_LOGI(TAG, "Startup Summary:");

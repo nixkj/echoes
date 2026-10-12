@@ -226,7 +226,7 @@ After the server is running, copy your firmware binary and set the version:
 
 ```bash
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.5.5" > /opt/echoes/firmware/version.txt
+echo "7.5.6" > /opt/echoes/firmware/version.txt
 ```
 
 Or use `./build.sh deploy` after a successful build to do both steps at once.
@@ -277,7 +277,7 @@ All logs are written to `/var/log/echoes/`:
 ### Using build.sh (recommended)
 
 ```bash
-./build.sh version patch     # 7.5.5 → 7.5.6 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh version patch     # 7.5.6 → 7.5.7 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
 ./build.sh deploy            # Copy binary + version.txt to /opt/echoes/firmware/; archive copy saved to firmware/archive/<version>/
 ```
@@ -294,7 +294,7 @@ Or in one step:
 # Edit FIRMWARE_VERSION in main/ota.h, then:
 idf.py build
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.5.5" > /opt/echoes/firmware/version.txt
+echo "7.5.6" > /opt/echoes/firmware/version.txt
 ```
 
 Each deploy also saves a copy of the binary to `/opt/echoes/firmware/archive/<version>/` alongside a `manifest.txt` recording the version, timestamp, deploying user, MD5, and file size. If the same version is deployed again the archive entry is suffixed with a datestamp rather than overwritten.
@@ -320,9 +320,9 @@ Each device checks for updates once at boot. It compares the running version aga
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.5.5 → 7.5.6) |
-| `./build.sh version minor` | Increment minor version (e.g. 7.5.5 → 7.6.0) |
-| `./build.sh version major` | Increment major version (e.g. 7.5.5 → 8.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.5.6 → 7.5.7) |
+| `./build.sh version minor` | Increment minor version (e.g. 7.5.6 → 7.6.0) |
+| `./build.sh version major` | Increment major version (e.g. 7.5.6 → 8.0.0) |
 | `./build.sh deploy` | Copy binary and `version.txt` to `/opt/echoes/firmware/`; archive a versioned copy with manifest to `/opt/echoes/firmware/archive/<version>/` |
 | `./build.sh services` | Install the consolidated `echoes-server` as a systemd service (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -428,11 +428,11 @@ Nodes are designed to run unattended and **autonomously**: if the Pi server or t
 |---|---|---|---|
 | Task watchdog (30 s) | all | a subscribed task (audio, lux, flock, ESP-NOW, keepalive) stops running | panic → reboot |
 | Interrupt watchdog (300 ms) | all | interrupts masked / a CPU core stuck | panic → reboot |
-| RTC hardware watchdog (120 s) | minimal | the whole chip freezing (CPU, clock or every task) — fed by the keepalive task only while the lux task is alive; never depends on the network | full chip reset |
+| RTC hardware watchdog (120 s) | all (minimal since 7.5.5, full since 7.5.6) | the whole chip freezing (CPU, clock or every task) — fed by the keepalive task only while the lux task is alive; never depends on the network | full chip reset |
 | Microphone supervision | all | stuck, DC-offset or saturated audio for 10 s, or 3 failed reads in a row | LED off → rebuild I2S channel (up to 3×) → reboot (`MIC_STUCK`) |
 | Network recovery | minimal: reboot after 10 failed polls or a hung HTTP request; full: Wi-Fi reconnect after 3 failed polls | this node alone has lost the server | only when ESP-NOW peers report they *can* reach the server — otherwise the node stays up |
 
-The RTC watchdog runs from its own oscillator and resets the chip in hardware, so it recovers lockups that silence every other watchdog (they all depend on the CPU's main clock). It was added in 7.5.5 after the March 2026 server logs showed 199 minimal-node lockups that only a Sonoff power cycle cleared.
+The RTC watchdog runs from its own oscillator and resets the chip in hardware, so it recovers lockups that silence every other watchdog (they all depend on the CPU's main clock). It was added in 7.5.5 after the March 2026 server logs showed 199 minimal-node lockups that only a Sonoff power cycle cleared, and extended to full nodes in 7.5.6.
 
 All deliberate reboots go through `esp_restart_noos()` (via `echoes_hard_restart()` in `startup.c`), never a raw `RTC_CNTL_SW_SYS_RST` write.
 
@@ -440,7 +440,7 @@ All deliberate reboots go through `esp_restart_noos()` (via `echoes_hard_restart
 
 | Log line | Meaning |
 |---|---|
-| `STARTUP … RESET=WDT` | the previous boot ended in a watchdog reset; on minimal nodes usually the RTC hardware watchdog (a recovered lockup) |
+| `STARTUP … RESET=WDT` | the previous boot ended in a watchdog reset; usually the RTC hardware watchdog (a recovered lockup) |
 | `PREV_BOOT … prev_reset=PANIC / TASK_WDT / INT_WDT / BROWNOUT` | uncontrolled crash or brownout on the previous boot |
 | `PREV_DIAG cause=ISR_WDT` | the lux task stalled and the keepalive stopped feeding the RTC watchdog (label kept from the old ISR watchdog for log continuity) |
 | `PREV_DIAG cause=RCFG_REBOOT` | minimal node rebooted after 10 failed polls while its peers could reach the server |
@@ -483,7 +483,7 @@ to normal operation without updating
 - Verify quiet hours are not active (default window: 17:00–08:00)
 
 ### Node Stopped Polling / White LED Stuck On
-- Minimal nodes on 7.5.5+ should recover by themselves within about 2 minutes; look for `RESET=WDT` in the server log
+- Nodes on 7.5.6+ (minimal nodes from 7.5.5) should recover by themselves within about 2 minutes; look for `RESET=WDT` in the server log
 - A node that stays silent with the white LED on despite this points to hardware or power rather than firmware — power-cycle its Sonoff group and note which node it was
 - `grep STALE /var/log/echoes/echoes-server.log | awk '{print $6,$7}' | sort | uniq -c` counts silent periods per node
 
@@ -508,7 +508,7 @@ I (567) main_task: Calling app_main()
 I (570) ECHOES: LEDs initialized
 I (572) MAIN: ========================================
 I (577) MAIN: Echoes of the Machine
-I (580) MAIN: Firmware Version: 7.5.5
+I (580) MAIN: Firmware Version: 7.5.6
 I (584) MAIN: ========================================
 I (606) RCFG: Remote config initialised with defaults
 I (606) MAIN: Initializing system...
@@ -548,7 +548,7 @@ I (7729) ECHOES: Audio detection task started
 I (7733) ECHOES: 🎤 Listening for whistles, voice, claps, and birdsong...
 ```
 
-Minimal nodes additionally log `HW WDT: RTC watchdog armed (120 s timeout, full chip reset)` at the end of startup.
+All nodes also log `HW WDT: RTC watchdog armed (120 s timeout, full chip reset)` at the end of startup (minimal nodes only before 7.5.6).
 
 ## To Do
 - KiCad/ Fritzing for completeness
@@ -557,7 +557,12 @@ Minimal nodes additionally log `HW WDT: RTC watchdog armed (120 s timeout, full 
 
 ## Version History
 
-**7.5.5** Current version
+**7.5.6** Current version
+- RTC hardware watchdog now armed on full nodes as well as minimal nodes. First night on 7.5.5 (2026-10-11/12, ~10 h): no minimal-node lockups (around 150 expected at the March rate), but one full node (id 7) locked up at 03:11 and stayed down until power-cycled
+- Lux-task liveness window for the watchdog feed 10 s → 30 s, so a full node's flash response (up to ~8 s) is not mistaken for a stalled task
+
+
+**7.5.5**
 - Minimal nodes: replace the GPTimer "ISR WDT" with the ESP32 RTC watchdog (120 s, full chip reset). It runs from its own oscillator and resets in hardware, so it recovers lockups that froze the CPU/clock and silenced every other watchdog. Server log analysis (March 2026) found 199 minimal-node lockups that only a Sonoff power cycle cleared, against 10 for full nodes, with no software recovery ever succeeding
 - Nodes run autonomously when the Pi server or the access point is unavailable: the RTC watchdog is fed on local health only (keepalive and lux tasks alive), never on server reachability, and is now armed on the no-Wi-Fi path too. Network-recovery reboots (minimal nodes after 10 failed polls, stuck HTTP) and full-node forced reconnects only happen when peers report over ESP-NOW that they can reach the server — i.e. this node alone is cut off
 - All forced reboots (config failures, remote restart, HTTP stuck, mic fault) now use `esp_restart_noos()` instead of writing `RTC_CNTL_SW_SYS_RST` directly: arms the RTC watchdog, returns the CPU to XTAL, skips shutdown handlers that a wedged WiFi driver could block
