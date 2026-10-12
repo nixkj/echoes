@@ -1,0 +1,19 @@
+[Unit]
+Description=Echoes of the Machine — live fleet charts (read-only, port 8003)
+After=network.target echoes-server.service
+
+[Service]
+Type=simple
+User=echoes
+Group=echoes
+ExecStart=/usr/bin/python3 /opt/echoes/echoes-charts.py --port 8003
+Restart=on-failure
+RestartSec=5
+SyslogIdentifier=echoes-charts
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/var/log/echoes
+
+[Install]
+WantedBy=multi-user.target
