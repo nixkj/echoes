@@ -1,0 +1,12 @@
+[Unit]
+Description=Echoes sniffer monitor (ESP-NOW SOUND frames to /var/log/echoes/sound.jsonl)
+After=network.target
+
+[Service]
+User=nixon
+ExecStart=/usr/bin/python3 /home/nixon/echoes/scripts/sniffer/sniffer_monitor.py --filter SOUND --quiet --log /var/log/echoes/sound.jsonl
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

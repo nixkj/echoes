@@ -244,11 +244,17 @@ echoes/
 │   ├── README_STARTUP_REPORTING.md
 │   └── VU_METER_CONFIG.md
 ├── scripts/
-│   └── server/
-│       ├── echoes-server.py          # Consolidated server — OTA, startup reports, config UI (port 8002)
-│       ├── echoes-server.service     # systemd unit file
-│       ├── install.sh                # Creates echoes user/group, installs service
-│       └── requirements.txt
+│   ├── server/
+│   │   ├── echoes-server.py          # Consolidated server — OTA, startup reports, config UI (port 8002)
+│   │   ├── echoes-server.service     # systemd unit file
+│   │   ├── echoes-charts.py          # Live fleet charts, read-only (port 8003)
+│   │   ├── echoes-charts.service     # systemd unit file for the charts page
+│   │   ├── install.sh                # Creates echoes user/group, installs service
+│   │   └── requirements.txt
+│   └── sniffer/
+│       ├── main/sniffer_main.c       # Firmware for the passive ESP-NOW sniffer node
+│       ├── sniffer_monitor.py        # Pi-side reader: JSON Lines log + live summary
+│       └── echoes-sniffer.service    # systemd unit: logs SOUND frames for the charts page
 └── main/
     ├── CMakeLists.txt
     ├── Kconfig.projbuild             # WiFi credentials and server address via menuconfig
@@ -267,10 +273,56 @@ echoes/
 | Server | File | Port | Purpose |
 |---|---|---|---|
 | Consolidated server | `echoes-server.py` | 8002 | OTA firmware (`/firmware/*`), startup reports (`POST /startup`), config UI + fleet dashboard (`/`), config JSON API (`/config`), node registry (`/nodes`) |
+| Fleet charts (optional) | `echoes-charts.py` | 8003 | Read-only live charts built from the server log and `/nodes` — see [Fleet Charts](#fleet-charts) |
+| Sniffer monitor (optional) | `sniffer_monitor.py` | — | Logs ESP-NOW SOUND frames from the sniffer node for the charts page |
 
 All logs are written to `/var/log/echoes/`:
 - `echoes-server.log` — general server activity (rotating, 10 MB × 5)
 - `startup_reports.log` — one line per node boot event (rotating, 10 MB × 10)
+- `sound.jsonl` — sniffer SOUND frames, if the sniffer service is installed (appended, ~100 KB/day, not rotated)
+
+## Fleet Charts
+
+`echoes-charts.py` serves a live, read-only page on port 8003. It only reads `/var/log/echoes/` and the server's `/nodes` endpoint, so it cannot affect the server or the nodes. Standard-library Python only; no `pip install`. The page is self-contained (no internet access needed) and refreshes every 30 seconds, with 6 h / 24 h / 7 day views and light/dark themes.
+
+It shows:
+- **Headline tiles** — nodes online now, unexpected silences, watchdog self-recoveries, crashes/brownouts, firmware versions.
+- **Node timeline** — one row per node, in dashboard order and groups. **Red** = the node stopped polling while the rest of its group kept running (the lockup signature). **Grey** = the whole group was silent (power off). Tick marks show reboots, watchdog self-recoveries and crashes.
+- **Reboots per hour** by type.
+- **Sound detections per hour** by type (whistle, voice, clap, birdsong) — only when the sniffer log exists.
+
+Times are shown in the Pi's timezone, whichever device views the page.
+
+### Install (on the Pi)
+
+```bash
+cd ~/echoes && git pull
+sudo cp scripts/server/echoes-charts.py /opt/echoes/
+sudo cp scripts/server/echoes-charts.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now echoes-charts
+systemctl is-active echoes-charts      # → active
+```
+
+Open `http://<pi-ip>:8003` on site. Off site, tunnel through SSH and open `http://localhost:8003`:
+
+```bash
+ssh -L 8003:localhost:8003 nixon@<pi-address>
+```
+
+To remove it: `sudo systemctl disable --now echoes-charts`.
+
+### Sound detections (optional sniffer logging)
+
+The sound chart needs the sniffer node (see `scripts/sniffer/README.md`) plugged into the Pi over USB and `sniffer_monitor.py` running continuously. The service runs as `nixon`, the user that has `pyserial` installed and access to the USB serial port; edit `User=` and the path in `echoes-sniffer.service` if yours differ.
+
+```bash
+sudo touch /var/log/echoes/sound.jsonl && sudo chown nixon /var/log/echoes/sound.jsonl
+sudo cp scripts/sniffer/echoes-sniffer.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now echoes-sniffer
+systemctl is-active echoes-sniffer     # → active
+```
+
+The charts page picks the file up within 30 seconds; nothing needs restarting. Demo mode sends SOUND frames without using the microphones, so detections logged while it is on are not real audience activity.
 
 ## Deploying a Firmware Update
 
@@ -486,6 +538,13 @@ to normal operation without updating
 - Nodes on 7.5.6+ (minimal nodes from 7.5.5) should recover by themselves within about 2 minutes; look for `RESET=WDT` in the server log
 - A node that stays silent with the white LED on despite this points to hardware or power rather than firmware — power-cycle its Sonoff group and note which node it was
 - `grep STALE /var/log/echoes/echoes-server.log | awk '{print $6,$7}' | sort | uniq -c` counts silent periods per node
+
+### Brownouts (`RESET=BROWNOUT`)
+- A brownout means the node's supply voltage dropped low enough for the ESP32 to reset itself. It is a power problem, not a firmware one
+- **A whole Sonoff group browning out at the same moment** points to that group's shared supply: the power supply itself, a loose or corroded connection on the run, or the Sonoff relay contacts. Watchdog and task-watchdog resets in the same group a minute or two later are usually nodes failing to boot cleanly on the sagging supply, not separate faults
+- **One node browning out on its own** points to that node's own lead or connector
+- Find the worst nodes: `grep BROWNOUT /var/log/echoes/startup_reports.log | grep -o "IP: [0-9.]*" | sort | uniq -c | sort -rn | head`
+- Example: on 2026-10-12, group 3 browned out together about 8 times in a morning, worst at nodes S and 18, and node 25 (group 4) repeatedly on its own; there were none at all in March. Measure the 5 V at the far end of the affected run while the nodes are playing
 
 ### Microphone Seems Deaf (no VU on minimal nodes, no detections on full nodes)
 - The I2S microphone uses 32-bit slots with the left channel selected (`I2S_STD_SLOT_LEFT` in `mic_channel_create()`, `echoes.c`), matching SEL tied to GND. If a board reads silence, try `I2S_STD_SLOT_RIGHT`
