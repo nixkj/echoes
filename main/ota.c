@@ -5,6 +5,7 @@
 
 #include "ota.h"
 #include "echoes.h"
+#include "startup.h"    /* hw_wdt_feed() — boot watchdog, 7.5.7 */
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -457,6 +458,7 @@ bool ota_perform_update(const char *url)
         return false;
     }
 
+    hw_wdt_feed();      /* esp_ota_begin() erase can take several seconds */
     err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open HTTP connection: %s", esp_err_to_name(err));
@@ -498,6 +500,7 @@ bool ota_perform_update(const char *url)
             err = ESP_FAIL;
             break;
         } else if (data_read > 0) {
+            hw_wdt_feed();
             consecutive_empty = 0;
             err = esp_ota_write(ota_handle, (const void *)buffer, data_read);
             if (err != ESP_OK) {
@@ -660,6 +663,7 @@ bool ota_check_and_update(void)
 
         s_ota_state.ota_status = OTA_STATUS_CHECKING;
         bool do_retry = false;
+        hw_wdt_feed();
 
         /* ── Step 1: fetch version ──────────────────────────────────── */
         char available_version[32];
@@ -699,7 +703,12 @@ bool ota_check_and_update(void)
             uint32_t delay_ms = (uint32_t)attempt * OTA_RETRY_BASE_DELAY_MS;
             ESP_LOGI(TAG, "Retrying in %lu s…", (unsigned long)(delay_ms / 1000));
             s_ota_state.ota_status = OTA_STATUS_FAILED;
-            vTaskDelay(pdMS_TO_TICKS(delay_ms));
+            /* Sleep in 5 s chunks so the boot watchdog stays fed. */
+            for (uint32_t waited = 0; waited < delay_ms; waited += 5000) {
+                uint32_t chunk = (delay_ms - waited) < 5000 ? (delay_ms - waited) : 5000;
+                vTaskDelay(pdMS_TO_TICKS(chunk));
+                hw_wdt_feed();
+            }
         }
     }
 

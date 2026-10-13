@@ -226,7 +226,7 @@ After the server is running, copy your firmware binary and set the version:
 
 ```bash
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.5.6" > /opt/echoes/firmware/version.txt
+echo "7.5.7" > /opt/echoes/firmware/version.txt
 ```
 
 Or use `./build.sh deploy` after a successful build to do both steps at once.
@@ -329,7 +329,7 @@ The charts page picks the file up within 30 seconds; nothing needs restarting. D
 ### Using build.sh (recommended)
 
 ```bash
-./build.sh version patch     # 7.5.6 → 7.5.7 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh version patch     # 7.5.7 → 7.5.8 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
 ./build.sh deploy            # Copy binary + version.txt to /opt/echoes/firmware/; archive copy saved to firmware/archive/<version>/
 ```
@@ -346,7 +346,7 @@ Or in one step:
 # Edit FIRMWARE_VERSION in main/ota.h, then:
 idf.py build
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.5.6" > /opt/echoes/firmware/version.txt
+echo "7.5.7" > /opt/echoes/firmware/version.txt
 ```
 
 Each deploy also saves a copy of the binary to `/opt/echoes/firmware/archive/<version>/` alongside a `manifest.txt` recording the version, timestamp, deploying user, MD5, and file size. If the same version is deployed again the archive entry is suffixed with a datestamp rather than overwritten.
@@ -372,9 +372,9 @@ Each device checks for updates once at boot. It compares the running version aga
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.5.6 → 7.5.7) |
-| `./build.sh version minor` | Increment minor version (e.g. 7.5.6 → 7.6.0) |
-| `./build.sh version major` | Increment major version (e.g. 7.5.6 → 8.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.5.7 → 7.5.8) |
+| `./build.sh version minor` | Increment minor version (e.g. 7.5.7 → 7.6.0) |
+| `./build.sh version major` | Increment major version (e.g. 7.5.7 → 8.0.0) |
 | `./build.sh deploy` | Copy binary and `version.txt` to `/opt/echoes/firmware/`; archive a versioned copy with manifest to `/opt/echoes/firmware/archive/<version>/` |
 | `./build.sh services` | Install the consolidated `echoes-server` as a systemd service (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -480,11 +480,12 @@ Nodes are designed to run unattended and **autonomously**: if the Pi server or t
 |---|---|---|---|
 | Task watchdog (30 s) | all | a subscribed task (audio, lux, flock, ESP-NOW, keepalive) stops running | panic → reboot |
 | Interrupt watchdog (300 ms) | all | interrupts masked / a CPU core stuck | panic → reboot |
+| RTC boot watchdog (300 s) | all (since 7.5.7) | boot hanging before the tasks start (Wi-Fi connect, startup report, config fetch, OTA check or download) — armed first thing in `app_main`, fed at each boot step and per OTA chunk | full chip reset |
 | RTC hardware watchdog (120 s) | all (minimal since 7.5.5, full since 7.5.6) | the whole chip freezing (CPU, clock or every task) — fed by the keepalive task only while the lux task is alive; never depends on the network | full chip reset |
 | Microphone supervision | all | stuck, DC-offset or saturated audio for 10 s, or 3 failed reads in a row | LED off → rebuild I2S channel (up to 3×) → reboot (`MIC_STUCK`) |
 | Network recovery | minimal: reboot after 10 failed polls or a hung HTTP request; full: Wi-Fi reconnect after 3 failed polls | this node alone has lost the server | only when ESP-NOW peers report they *can* reach the server — otherwise the node stays up |
 
-The RTC watchdog runs from its own oscillator and resets the chip in hardware, so it recovers lockups that silence every other watchdog (they all depend on the CPU's main clock). It was added in 7.5.5 after the March 2026 server logs showed 199 minimal-node lockups that only a Sonoff power cycle cleared, and extended to full nodes in 7.5.6.
+The RTC watchdog runs from its own oscillator and resets the chip in hardware, so it recovers lockups that silence every other watchdog (they all depend on the CPU's main clock). It was added in 7.5.5 after the March 2026 server logs showed 199 minimal-node lockups that only a Sonoff power cycle cleared, and extended to full nodes in 7.5.6. From 7.5.7 the same watchdog also guards the boot: it is armed with a 300 s timeout before anything else runs and switched to 120 s once the tasks are running. Before that a node could hang during boot with nothing to reset it (node 7, 2026-10-12, silent for about 6 hours after a remote restart).
 
 All deliberate reboots go through `esp_restart_noos()` (via `echoes_hard_restart()` in `startup.c`), never a raw `RTC_CNTL_SW_SYS_RST` write.
 
@@ -567,7 +568,7 @@ I (567) main_task: Calling app_main()
 I (570) ECHOES: LEDs initialized
 I (572) MAIN: ========================================
 I (577) MAIN: Echoes of the Machine
-I (580) MAIN: Firmware Version: 7.5.6
+I (580) MAIN: Firmware Version: 7.5.7
 I (584) MAIN: ========================================
 I (606) RCFG: Remote config initialised with defaults
 I (606) MAIN: Initializing system...
@@ -607,7 +608,7 @@ I (7729) ECHOES: Audio detection task started
 I (7733) ECHOES: 🎤 Listening for whistles, voice, claps, and birdsong...
 ```
 
-All nodes also log `HW WDT: RTC watchdog armed (120 s timeout, full chip reset)` at the end of startup (minimal nodes only before 7.5.6).
+All nodes log `HW WDT: boot watchdog armed (300 s timeout, full chip reset)` at the start of boot (7.5.7+) and `HW WDT: RTC watchdog armed (120 s timeout, full chip reset)` at the end of startup (minimal nodes only before 7.5.6).
 
 ## To Do
 - KiCad/ Fritzing for completeness
@@ -616,7 +617,13 @@ All nodes also log `HW WDT: RTC watchdog armed (120 s timeout, full chip reset)`
 
 ## Version History
 
-**7.5.6** Current version
+**7.5.7** Current version
+- Boot watchdog: the RTC watchdog is now armed at the very start of boot (300 s) and fed at each step and through the OTA check and download, then switched to the normal 120 s once the tasks are running. Previously nothing could reset a node that hung during boot: node 7 hung after a remote restart at 11:04 on 2026-10-12 (startup report and OTA version check reached the server) and stayed silent for about 6 hours
+- The keepalive's 2-minute feed grace now counts from the end of boot rather than from power-on, so a slow boot (e.g. OTA retries) cannot eat into it
+- `wifi_ka` task stack 8192 → 6144 bytes (full-node free heap fell from ~57 KB to ~44 KB when 7.5.6 started this task on them)
+
+
+**7.5.6**
 - RTC hardware watchdog now armed on full nodes as well as minimal nodes. First night on 7.5.5 (2026-10-11/12, ~10 h): no minimal-node lockups (around 150 expected at the March rate), but one full node (id 7) locked up at 03:11 and stayed down until power-cycled
 - Lux-task liveness window for the watchdog feed 10 s → 30 s, so a full node's flash response (up to ~8 s) is not mistaken for a stalled task
 

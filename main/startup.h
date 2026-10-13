@@ -215,4 +215,12 @@ void startup_clear_rtc_diag(void);
  */
 void echoes_hard_restart(void) __attribute__((noreturn));
 
+/**
+ * @brief Feed the RTC hardware watchdog (defined in main.c).
+ *        No-op until it is armed.  During boot (7.5.7) app_main and the OTA
+ *        code call this at each milestone; after boot only
+ *        wifi_keepalive_task calls it.
+ */
+void hw_wdt_feed(void);
+
 #endif /* STARTUP_REPORT_H */

@@ -75,12 +75,24 @@ static const char *TAG = "MAIN";
 
 #define HW_WDT_TIMEOUT_S         120  /* seconds without a feed → full chip reset */
 
-/* Boot grace: always feed for the first 2 minutes — lux_task is created
- * suspended and only resumed after OTA / remote-config at boot.          */
+/* Boot watchdog (7.5.7): the same RTC WDT is armed at the very start of
+ * app_main with a longer timeout and fed at each boot milestone and through
+ * the OTA check/download.  Before 7.5.7 nothing guarded the boot itself:
+ * app tasks are suspended (or not yet created) and the RTC WDT was only
+ * armed at the end of app_main.  Node 7 hung after a remote restart on
+ * 2026-10-12 11:04 — startup report and OTA version check reached the
+ * server, then silence for ~6 h with no ESP-NOW and no reset.
+ * 300 s is well above the longest gap between boot feeds (one OTA attempt:
+ * 30 s version fetch + erase + 30 s connect + download, fed per chunk).  */
+#define HW_WDT_BOOT_TIMEOUT_S    300
+
+/* Run-phase grace: always feed for the first 2 minutes after the run-phase
+ * watchdog is armed (end of app_main), so lux_task has time to stamp.     */
 #define BOOT_GRACE_MS      ( 2u * 60u * 1000u)
 
 static wdt_hal_context_t s_hw_wdt       = RWDT_HAL_CONTEXT_DEFAULT();
 static bool              s_hw_wdt_armed = false;
+static uint64_t          s_hw_wdt_run_ms = 0;  /* when the run-phase WDT was armed */
 
 /* _Atomic uint32_t storing seconds: uint32_t is natively atomic on the
  * 32-bit Xtensa LX6, uint64_t is not.                                    */
@@ -94,10 +106,12 @@ static _Atomic uint32_t          s_lux_alive_s        = 0;   /* seconds; updated
  * but 30 s keeps the "starving" log meaningful.                          */
 #define LUX_DEAD_MS  30000u
 
-static void hw_wdt_init(void)
+static void hw_wdt_arm(uint32_t timeout_s)
 {
-    uint32_t ticks = (uint32_t)((uint64_t)HW_WDT_TIMEOUT_S * rtc_clk_slow_freq_get_hz());
+    uint32_t ticks = (uint32_t)((uint64_t)timeout_s * rtc_clk_slow_freq_get_hz());
 
+    /* wdt_hal_init() disables the RWDT and all stages first, so this is
+     * safe to call again to change the timeout of an armed watchdog.     */
     wdt_hal_init(&s_hw_wdt, WDT_RWDT, 0, false);
     wdt_hal_write_protect_disable(&s_hw_wdt);
     wdt_hal_config_stage(&s_hw_wdt, WDT_STAGE0, ticks, WDT_STAGE_ACTION_RESET_RTC);
@@ -105,12 +119,27 @@ static void hw_wdt_init(void)
     wdt_hal_feed(&s_hw_wdt);
     wdt_hal_write_protect_enable(&s_hw_wdt);
     s_hw_wdt_armed = true;
+}
 
+/* Boot phase: called first thing in app_main. */
+static void hw_wdt_boot_arm(void)
+{
+    hw_wdt_arm(HW_WDT_BOOT_TIMEOUT_S);
+    ESP_LOGI(TAG, "HW WDT: boot watchdog armed (%d s timeout, full chip reset)",
+             HW_WDT_BOOT_TIMEOUT_S);
+}
+
+/* Run phase: called at the end of app_main; wifi_keepalive_task feeds. */
+static void hw_wdt_init(void)
+{
+    hw_wdt_arm(HW_WDT_TIMEOUT_S);
+    s_hw_wdt_run_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
     ESP_LOGI(TAG, "HW WDT: RTC watchdog armed (%d s timeout, full chip reset)",
              HW_WDT_TIMEOUT_S);
 }
 
-static void hw_wdt_feed(void)
+/* Declared in startup.h — also called from ota.c during boot. */
+void hw_wdt_feed(void)
 {
     if (!s_hw_wdt_armed) return;
     wdt_hal_write_protect_disable(&s_hw_wdt);
@@ -218,7 +247,7 @@ static void wifi_keepalive_task(void *param)
             uint64_t last_lux = (uint64_t)s_lux_alive_s * 1000ULL;
             bool lux_ok       = (last_lux != 0)
                              && ((now_ms - last_lux) < LUX_DEAD_MS);
-            bool feed         = (now_ms < BOOT_GRACE_MS) || lux_ok;
+            bool feed         = ((now_ms - s_hw_wdt_run_ms) < BOOT_GRACE_MS) || lux_ok;
 
             if (!feed && !s_starving) {
                 ESP_LOGE(TAG, "HW WDT: lux_task stalled — chip reset in ~%d s",
@@ -347,6 +376,9 @@ void app_main(void)
 {
     led_init();   /* Default initialisation is full on */
 
+    /* Guard the whole boot (7.5.7) — see HW_WDT_BOOT_TIMEOUT_S. */
+    hw_wdt_boot_arm();
+
     /* ── Boot-reason stamp ───────────────────────────────────────────────────
      * Read and record the reset reason for THIS boot as early as possible —
      * before WiFi, before any tasks, before anything that could crash.
@@ -398,6 +430,7 @@ void app_main(void)
         ESP_LOGI(TAG, "Startup jitter: %lu ms (hardware RNG)", jitter_ms);
         vTaskDelay(pdMS_TO_TICKS(jitter_ms));
     }
+    hw_wdt_feed();
 
     /* Capture any errors on startup */
     startup_report_t startup_report;
@@ -405,6 +438,7 @@ void app_main(void)
     /* Initialize WiFi and connect */
     ESP_LOGI(TAG, "Connecting to WiFi...");
     bool wifi_connected = wifi_init_and_connect();
+    hw_wdt_feed();
 
     /* Small delay to ensure all hardware is stable before sampling */
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -432,6 +466,7 @@ void app_main(void)
     if (wifi_connected) {
         ESP_LOGI(TAG, "Sending startup report...");
         esp_err_t report_err = startup_send_report(&startup_report);
+        hw_wdt_feed();
         if (report_err == ESP_OK) {
             ESP_LOGI(TAG, "Startup report sent successfully");
             set_led(BRIGHT_MID, 0);
@@ -477,6 +512,7 @@ void app_main(void)
         /* Fetch remote config from server (best-effort — defaults used on failure) */
         ESP_LOGI(TAG, "Fetching remote configuration...");
         esp_err_t cfg_err = remote_config_fetch(0);
+        hw_wdt_feed();
         if (cfg_err == ESP_OK) {
             ESP_LOGI(TAG, "Remote config applied successfully");
         } else {
@@ -573,6 +609,7 @@ void app_main(void)
                     float intensity = 0.3f * (0.5f + 0.5f * sinf(2.0f * M_PI * phase));
                     set_led(0.0f, intensity);
                     vTaskDelay(pdMS_TO_TICKS(step_ms));
+                    hw_wdt_feed();
                 }
                 set_led(0.0f, 0.0f);
 
@@ -587,7 +624,8 @@ void app_main(void)
 
         /* Check for updates — retries internally up to OTA_MAX_ATTEMPTS times */
         ESP_LOGI(TAG, "Checking for firmware updates...");
-        bool updated = ota_check_and_update();
+        bool updated = ota_check_and_update();   /* feeds the HW WDT internally */
+        hw_wdt_feed();
 
         if (updated) {
             ESP_LOGI(TAG, "Update completed, device restarting...");
@@ -610,6 +648,7 @@ void app_main(void)
          * before any task can call it. No Markov for minimal nodes.         */
 	espnow_mesh_init(get_bird_mapper(),
                  (get_hardware_config() == HW_CONFIG_FULL) ? (markov_chain_t *)get_markov() : NULL);
+        hw_wdt_feed();
 
         /* Initialise audio hardware HERE — as late as possible, immediately
          * before the tasks that consume it are resumed.  Enabling the I2S DMA
@@ -690,6 +729,7 @@ void app_main(void)
          * immediately on first run. No Markov on minimal nodes.            */
 	espnow_mesh_init(get_bird_mapper(),
                  (get_hardware_config() == HW_CONFIG_FULL) ? (markov_chain_t *)get_markov() : NULL);
+        hw_wdt_feed();
 
         /* Initialise audio hardware HERE — same reasoning as WiFi path above.
          * No OTA delay on this path, but keeping init here ensures both paths
@@ -739,11 +779,14 @@ void app_main(void)
     /* wifi_keepalive_task is the sole feeder of the RTC hardware watchdog.
      * See isr_wdt_lux_feed() for the (local-health-only) feed gate.
      * Runs on every node type since 7.5.6.                                */
-    xTaskCreate(wifi_keepalive_task, "wifi_ka", 8192, NULL, 4, NULL);
+    /* 6144 (was 8192): frees 2 KB of heap on full nodes, which dropped from
+     * ~57 KB to ~44 KB free when 7.5.6 started this task on them.         */
+    xTaskCreate(wifi_keepalive_task, "wifi_ka", 6144, NULL, 4, NULL);
     ESP_LOGI(TAG, "WiFi keepalive task started (%d s interval)",
              WIFI_KEEPALIVE_INTERVAL_MS / 1000);
 
-    /* Arm the RTC hardware watchdog on every node — with or without WiFi.
+    /* Switch the RTC hardware watchdog from the boot timeout to the normal
+     * run-phase timeout — on every node, with or without WiFi.
      *
      * The feed gate uses only local health (keepalive + lux_task alive), so
      * a missing AP or Pi can never starve it; there is no reset-loop risk on
