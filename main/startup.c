@@ -102,6 +102,7 @@ static const char *rtc_diag_cause_str(uint32_t cause)
     case RTC_DIAG_CAUSE_ISR_WDT:    return "ISR_WDT";
     case RTC_DIAG_CAUSE_HTTP_STUCK: return "HTTP_STUCK";
     case RTC_DIAG_CAUSE_MIC:        return "MIC_STUCK";
+    case RTC_DIAG_CAUSE_RADIO:      return "RADIO_DEAD";
     default:                        return "UNKNOWN";
     }
 }

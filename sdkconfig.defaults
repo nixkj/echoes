@@ -28,6 +28,16 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 CONFIG_ESP_INT_WDT=y
 CONFIG_ESP_INT_WDT_TIMEOUT_MS=300
 
+# ── Panic handling: always reboot (7.5.8) ─────────────────────────────────────
+# With OCD-aware panic handling (the IDF default) a crash checks whether a JTAG
+# debugger seems attached; if so it switches off EVERY watchdog — including
+# the RTC WDT — and halts instead of rebooting.  The white LED is on GPIO13
+# (MTCK, a JTAG pin) and GPIO12/14/15 are unused, so noise could make the chip
+# believe a debugger is present.  A halted node looks exactly like the stuck
+# nodes: LED frozen, radio silent, watchdog never fires, EN recovers it.
+# Re-enable only for bench debugging with a JTAG probe.
+CONFIG_ESP_DEBUG_OCDAWARE=n
+
 # ── Stack overflow detection ──────────────────────────────────────────────────
 # Canary-based detection for all tasks.  A corrupted stack could silently
 # hang the scheduler without triggering any watchdog, because the TCB or

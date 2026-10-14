@@ -28,7 +28,7 @@
  * under "Server Configuration".  You should not need to edit this
  * file directly — set the IP and port in menuconfig instead.
  */
-#define FIRMWARE_VERSION    "7.5.7"
+#define FIRMWARE_VERSION    "7.5.8"
 
 /* STRINGIFY is needed to turn an integer Kconfig value into a string
  * literal so it can be concatenated with other string literals.       */
@@ -101,6 +101,12 @@ bool wifi_reconnect_timer_ok(void);
  * @return true if connected, false otherwise
  */
 bool wifi_is_connected(void);
+
+/**
+ * @brief Seconds since boot of the last WiFi/IP driver event (0 = none).
+ *        Radio-health evidence for the hardware watchdog gate (7.5.8).
+ */
+uint32_t wifi_last_event_s(void);
 
 /**
  * @brief Register task handles that will be suspended during OTA download.

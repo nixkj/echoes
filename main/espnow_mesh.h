@@ -191,6 +191,12 @@ markov_chain_t *espnow_mesh_get_markov(void);
  */
 bool espnow_mesh_peer_reports_server_ok(uint32_t within_ms);
 
+/**
+ * @brief Seconds since boot when any valid ESP-NOW frame from another node
+ *        was last received (0 = never).  Radio-health evidence (7.5.8).
+ */
+uint32_t espnow_mesh_last_rx_s(void);
+
 /* Evidence windows.  A peer sets ESPNOW_FLAG_HTTP_RECENT while its last
  * successful fetch is < 150 s old, so a flag seen at time r proves the
  * server answered at some point after r - 150 s.  Each caller picks a

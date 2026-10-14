@@ -570,6 +570,7 @@ _CAUSE_LABELS = {
     3: "ISR_WDT",
     4: "HTTP_STUCK",
     5: "MIC_STUCK",
+    6: "RADIO_DEAD",
 }
 
 def _stale_node_monitor() -> None:

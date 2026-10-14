@@ -59,6 +59,7 @@
 #define RTC_DIAG_CAUSE_ISR_WDT   3u  /* ISR hardware watchdog timeout                   */
 #define RTC_DIAG_CAUSE_HTTP_STUCK 4u /* wifi_keepalive: HTTP connect() hung > 30 s      */
 #define RTC_DIAG_CAUSE_MIC       5u  /* audio task: mic dead/invalid after re-inits      */
+#define RTC_DIAG_CAUSE_RADIO     6u  /* HW WDT starved: no radio activity for 10 min    */
 
 typedef struct {
     uint32_t magic;              /* RTC_DIAG_MAGIC when struct is valid               */

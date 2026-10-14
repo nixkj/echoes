@@ -226,7 +226,7 @@ After the server is running, copy your firmware binary and set the version:
 
 ```bash
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.5.7" > /opt/echoes/firmware/version.txt
+echo "7.5.8" > /opt/echoes/firmware/version.txt
 ```
 
 Or use `./build.sh deploy` after a successful build to do both steps at once.
@@ -329,7 +329,7 @@ The charts page picks the file up within 30 seconds; nothing needs restarting. D
 ### Using build.sh (recommended)
 
 ```bash
-./build.sh version patch     # 7.5.7 → 7.5.8 (updates FIRMWARE_VERSION in main/ota.h)
+./build.sh version patch     # 7.5.8 → 7.5.9 (updates FIRMWARE_VERSION in main/ota.h)
 ./build.sh build             # Build firmware
 ./build.sh deploy            # Copy binary + version.txt to /opt/echoes/firmware/; archive copy saved to firmware/archive/<version>/
 ```
@@ -346,7 +346,7 @@ Or in one step:
 # Edit FIRMWARE_VERSION in main/ota.h, then:
 idf.py build
 cp build/echoes.bin /opt/echoes/firmware/echoes.bin
-echo "7.5.7" > /opt/echoes/firmware/version.txt
+echo "7.5.8" > /opt/echoes/firmware/version.txt
 ```
 
 Each deploy also saves a copy of the binary to `/opt/echoes/firmware/archive/<version>/` alongside a `manifest.txt` recording the version, timestamp, deploying user, MD5, and file size. If the same version is deployed again the archive entry is suffixed with a datestamp rather than overwritten.
@@ -358,6 +358,7 @@ Each device checks for updates once at boot. It compares the running version aga
 - **Always build immediately before deploying.** `./build.sh deploy` takes the version from `main/ota.h` but copies whatever `build/echoes.bin` already exists. If the build did not complete, an old binary is published under the new number. Nodes then install it, come back on the old version, see the "newer" version again and loop: repeated `OTA BIN` lines followed by `STARTUP … fw=<old>` every 30–45 s. To stop a loop at once, write the version the nodes are actually running into `version.txt`.
 - **Update one Sonoff group first.** Because nodes only update at boot, you can deploy, power-cycle one group from the dashboard, confirm `STARTUP … fw=<new>` for its nodes, then put the previous `echoes.bin` and `version.txt` back. Updated nodes stay on the new version (a lower version is never installed); the other groups stay on the old one until you are ready.
 - **Rolling back means releasing a higher version.** Copying an older binary back does not downgrade nodes that have already updated. Build the previous code (e.g. `git revert`) under a new, higher version number and deploy that.
+- **Changes to `sdkconfig.defaults` don't reach an existing `sdkconfig`.** `sdkconfig` is not in git; once it exists, ESP-IDF keeps its values. Update the same lines in `sdkconfig` (or delete it and let the build regenerate it from `sdkconfig.defaults` and `../sdkconfig.local`), then check `build/config/sdkconfig.h` after building.
 - **OTA rollback only covers the first 30 seconds.** A new image that crashes before it is marked valid is reverted automatically (see Partition Table); a problem that appears later is not. Bench-test new firmware on one minimal and one full node over USB before deploying.
 
 ## build.sh Reference
@@ -372,9 +373,9 @@ Each device checks for updates once at boot. It compares the running version aga
 | `./build.sh flash` | Flash via USB (auto-detects port) |
 | `./build.sh erase` | Erase flash completely (prompts for confirmation) |
 | `./build.sh monitor` | Open serial monitor (auto-detects port) |
-| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.5.7 → 7.5.8) |
-| `./build.sh version minor` | Increment minor version (e.g. 7.5.7 → 7.6.0) |
-| `./build.sh version major` | Increment major version (e.g. 7.5.7 → 8.0.0) |
+| `./build.sh version patch` | Increment patch version in `main/ota.h` (e.g. 7.5.8 → 7.5.9) |
+| `./build.sh version minor` | Increment minor version (e.g. 7.5.8 → 7.6.0) |
+| `./build.sh version major` | Increment major version (e.g. 7.5.8 → 8.0.0) |
 | `./build.sh deploy` | Copy binary and `version.txt` to `/opt/echoes/firmware/`; archive a versioned copy with manifest to `/opt/echoes/firmware/archive/<version>/` |
 | `./build.sh services` | Install the consolidated `echoes-server` as a systemd service (run on host/Pi) |
 | `./build.sh all` | Patch version bump + build + deploy |
@@ -481,11 +482,13 @@ Nodes are designed to run unattended and **autonomously**: if the Pi server or t
 | Task watchdog (30 s) | all | a subscribed task (audio, lux, flock, ESP-NOW, keepalive) stops running | panic → reboot |
 | Interrupt watchdog (300 ms) | all | interrupts masked / a CPU core stuck | panic → reboot |
 | RTC boot watchdog (300 s) | all (since 7.5.7) | boot hanging before the tasks start (Wi-Fi connect, startup report, config fetch, OTA check or download) — armed first thing in `app_main`, fed at each boot step and per OTA chunk | full chip reset |
-| RTC hardware watchdog (120 s) | all (minimal since 7.5.5, full since 7.5.6) | the whole chip freezing (CPU, clock or every task) — fed by the keepalive task only while the lux task is alive; never depends on the network | full chip reset |
+| RTC hardware watchdog (120 s) | all (minimal since 7.5.5, full since 7.5.6) | the whole chip freezing (CPU, clock or every task), and since 7.5.8 a deaf radio — fed by the keepalive task only while the lux task is alive and the radio shows signs of life (a server poll, an ESP-NOW frame from another node, or a Wi-Fi driver event within 10 min); the Pi or the router being down never starves it | full chip reset |
 | Microphone supervision | all | stuck, DC-offset or saturated audio for 10 s, or 3 failed reads in a row | LED off → rebuild I2S channel (up to 3×) → reboot (`MIC_STUCK`) |
 | Network recovery | minimal: reboot after 10 failed polls or a hung HTTP request; full: Wi-Fi reconnect after 3 failed polls | this node alone has lost the server | only when ESP-NOW peers report they *can* reach the server — otherwise the node stays up |
 
 The RTC watchdog runs from its own oscillator and resets the chip in hardware, so it recovers lockups that silence every other watchdog (they all depend on the CPU's main clock). It was added in 7.5.5 after the March 2026 server logs showed 199 minimal-node lockups that only a Sonoff power cycle cleared, and extended to full nodes in 7.5.6. From 7.5.7 the same watchdog also guards the boot: it is armed with a 300 s timeout before anything else runs and switched to 120 s once the tasks are running. Before that a node could hang during boot with nothing to reset it (node 7, 2026-10-12, silent for about 6 hours after a remote restart).
+
+Crashes always reboot: OCD-aware panic handling is switched off (`CONFIG_ESP_DEBUG_OCDAWARE=n`, 7.5.8). With it on, a crash that thinks a JTAG debugger is attached switches off every watchdog and halts — and the white LED sits on a JTAG pin (GPIO13).
 
 All deliberate reboots go through `esp_restart_noos()` (via `echoes_hard_restart()` in `startup.c`), never a raw `RTC_CNTL_SW_SYS_RST` write.
 
@@ -499,6 +502,7 @@ All deliberate reboots go through `esp_restart_noos()` (via `echoes_hard_restart
 | `PREV_DIAG cause=RCFG_REBOOT` | minimal node rebooted after 10 failed polls while its peers could reach the server |
 | `PREV_DIAG cause=HTTP_STUCK` | an HTTP request hung while peers could reach the server |
 | `PREV_DIAG cause=MIC_STUCK` | microphone data stayed invalid after 3 channel rebuilds |
+| `PREV_DIAG cause=RADIO_DEAD` | no server poll, no ESP-NOW frame from another node and no Wi-Fi driver event for 10 minutes — the radio went deaf, so the keepalive stopped feeding the RTC watchdog (7.5.8+) |
 | `PREV_DIAG cause=REMOTE_RESTART` | restart requested from the dashboard |
 
 `PREV_DIAG` is kept in RTC memory, which survives a reset but not a power cycle: a Sonoff power cycle clears it.
@@ -568,7 +572,7 @@ I (567) main_task: Calling app_main()
 I (570) ECHOES: LEDs initialized
 I (572) MAIN: ========================================
 I (577) MAIN: Echoes of the Machine
-I (580) MAIN: Firmware Version: 7.5.7
+I (580) MAIN: Firmware Version: 7.5.8
 I (584) MAIN: ========================================
 I (606) RCFG: Remote config initialised with defaults
 I (606) MAIN: Initializing system...
@@ -617,7 +621,14 @@ All nodes log `HW WDT: boot watchdog armed (300 s timeout, full chip reset)` at 
 
 ## Version History
 
-**7.5.7** Current version
+**7.5.8** Current version
+- Router log (2026-10-14) showed stuck nodes K, T, W and J go completely silent on the radio and never try to reconnect, while the hardware watchdog did not fire; EN always recovers them. Two fixes, one for each explanation that fits:
+  - Crashes always reboot: OCD-aware panic handling switched off (`CONFIG_ESP_DEBUG_OCDAWARE=n` in `sdkconfig.defaults`). With it on, a crash that believes a JTAG debugger is attached disables every watchdog and halts. The white LED is on GPIO13 (MTCK) and GPIO12/14/15 are unused, so pin noise could trigger this; it would also explain why minimal nodes (white LED driven constantly as a VU meter) were affected far more than full nodes
+  - Hardware watchdog also requires radio health: a successful poll, an ESP-NOW frame from another node, or a Wi-Fi driver event within 10 minutes. A node whose radio goes deaf now resets itself (`PREV_DIAG cause=RADIO_DEAD`, code 6). The Pi or the router being down never causes a reset — peers' ESP-NOW frames or the driver's own reconnect attempts keep it fed
+- `sdkconfig` is not tracked: an existing one keeps the old setting until it is updated (see Deploying safely)
+
+
+**7.5.7**
 - Boot watchdog: the RTC watchdog is now armed at the very start of boot (300 s) and fed at each step and through the OTA check and download, then switched to the normal 120 s once the tasks are running. Previously nothing could reset a node that hung during boot: node 7 hung after a remote restart at 11:04 on 2026-10-12 (startup report and OTA version check reached the server) and stayed silent for about 6 hours
 - The keepalive's 2-minute feed grace now counts from the end of boot rather than from power-on, so a slow boot (e.g. OTA retries) cannot eat into it
 - `wifi_ka` task stack 8192 → 6144 bytes (full-node free heap fell from ~57 KB to ~44 KB when 7.5.6 started this task on them)

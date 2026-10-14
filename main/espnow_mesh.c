@@ -90,6 +90,9 @@ static uint64_t s_last_status_ms     = 0;   /* when we last sent a STATUS msg */
  * the server.  Written from the WiFi task (on_data_recv), read from other
  * tasks; uint32_t is a single atomic load/store on Xtensa.  0 = never.    */
 static volatile uint32_t s_peer_http_ok_s = 0;
+/* Seconds since boot when any valid Echoes frame was last received (7.5.8).
+ * Radio-health evidence for the hardware watchdog gate in main.c.        */
+static volatile uint32_t s_last_rx_s = 0;
 
 /* Guard against double-initialisation */
 static bool s_initialized = false;
@@ -114,6 +117,11 @@ static void on_data_recv(const esp_now_recv_info_t *recv_info,
 
     const espnow_msg_t *msg = (const espnow_msg_t *)data;
     if (msg->magic != ESPNOW_MAGIC) return;
+
+    {
+        uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+        s_last_rx_s = now_s ? now_s : 1u;
+    }
 
     /* Peer evidence that the server is reachable.  The flags byte sits at a
      * different offset in STATUS frames than in SOUND/LIGHT frames.        */
@@ -671,6 +679,11 @@ bool espnow_mesh_peer_reports_server_ok(uint32_t within_ms)
     uint64_t now_ms = millis();
     uint64_t last_ms = (uint64_t)last_s * 1000ULL;
     return (now_ms >= last_ms) && ((now_ms - last_ms) <= within_ms);
+}
+
+uint32_t espnow_mesh_last_rx_s(void)
+{
+    return s_last_rx_s;
 }
 
 markov_chain_t *espnow_mesh_get_markov(void)

@@ -106,6 +106,29 @@ static _Atomic uint32_t          s_lux_alive_s        = 0;   /* seconds; updated
  * but 30 s keeps the "starving" log meaningful.                          */
 #define LUX_DEAD_MS  30000u
 
+/* Radio health (7.5.8).  The router log for 2026-10-14 showed stuck nodes
+ * (K, T, W, J) go completely silent on the radio and never attempt to
+ * reconnect, yet the RTC WDT did not fire — keepalive and lux_task kept
+ * feeding it.  So the feed now also requires evidence that the radio is
+ * alive, from ANY of:
+ *   - a successful server poll          (Pi and AP up)
+ *   - an ESP-NOW frame from another node (AP or Pi down — peers still heard)
+ *   - a WiFi driver event                (AP down — failed reconnects every 30 s)
+ * within RADIO_DEAD_MS.  Only a node whose radio has gone deaf AND whose
+ * WiFi driver has gone quiet starves the watchdog.  Network/server
+ * availability alone can never cause a reset: with the Pi or the AP down,
+ * peers' ESP-NOW frames or the driver's own reconnect attempts keep it fed.
+ * Edge case: a node running entirely alone with the AP up but the Pi down
+ * and no other node powered would reset about every 12 minutes.          */
+#define RADIO_DEAD_MS  (10u * 60u * 1000u)
+
+static bool radio_recent(uint32_t stamp_s, uint64_t now_ms)
+{
+    if (stamp_s == 0) return false;
+    uint64_t t = (uint64_t)stamp_s * 1000ULL;
+    return (now_ms >= t) && ((now_ms - t) < RADIO_DEAD_MS);
+}
+
 static void hw_wdt_arm(uint32_t timeout_s)
 {
     uint32_t ticks = (uint32_t)((uint64_t)timeout_s * rtc_clk_slow_freq_get_hz());
@@ -247,18 +270,32 @@ static void wifi_keepalive_task(void *param)
             uint64_t last_lux = (uint64_t)s_lux_alive_s * 1000ULL;
             bool lux_ok       = (last_lux != 0)
                              && ((now_ms - last_lux) < LUX_DEAD_MS);
-            bool feed         = ((now_ms - s_hw_wdt_run_ms) < BOOT_GRACE_MS) || lux_ok;
+
+            uint64_t last_http_ms = remote_config_get()->last_fetch_ms;
+            bool radio_ok     = ((now_ms - s_hw_wdt_run_ms) < RADIO_DEAD_MS)
+                             || (last_http_ms != 0 && (now_ms - last_http_ms) < RADIO_DEAD_MS)
+                             || radio_recent(espnow_mesh_last_rx_s(), now_ms)
+                             || radio_recent(wifi_last_event_s(), now_ms);
+
+            bool feed         = (s_hw_wdt_run_ms == 0)   /* run-phase WDT not armed yet */
+                             || ((now_ms - s_hw_wdt_run_ms) < BOOT_GRACE_MS)
+                             || (lux_ok && radio_ok);
 
             if (!feed && !s_starving) {
-                ESP_LOGE(TAG, "HW WDT: lux_task stalled — chip reset in ~%d s",
-                         HW_WDT_TIMEOUT_S);
-                startup_write_rtc_diag(RTC_DIAG_CAUSE_ISR_WDT, 0,
+                if (!lux_ok) {
+                    ESP_LOGE(TAG, "HW WDT: lux_task stalled — chip reset in ~%d s",
+                             HW_WDT_TIMEOUT_S);
+                } else {
+                    ESP_LOGE(TAG, "HW WDT: no radio activity for %u min — chip reset in ~%d s",
+                             RADIO_DEAD_MS / 60000u, HW_WDT_TIMEOUT_S);
+                }
+                startup_write_rtc_diag(lux_ok ? RTC_DIAG_CAUSE_RADIO : RTC_DIAG_CAUSE_ISR_WDT, 0,
                                        (uint32_t)esp_get_free_heap_size(), 0,
                                        (uint32_t)(now_ms / 1000));
             }
             if (feed) {
                 if (s_starving) {
-                    ESP_LOGW(TAG, "HW WDT: lux_task alive again — feeding");
+                    ESP_LOGW(TAG, "HW WDT: health restored — feeding");
                     startup_clear_rtc_diag();
                 }
                 hw_wdt_feed();

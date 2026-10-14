@@ -18,6 +18,7 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_http_client.h"
+#include "esp_timer.h"
 #include "esp_netif.h"
 
 #include <string.h>
@@ -74,9 +75,23 @@ static ota_state_t s_ota_state = {
  * WIFI EVENT HANDLER
  * ======================================================================== */
 
+/* Seconds since boot of the last WiFi/IP event (7.5.8).  A driver that is
+ * alive produces events — connects, disconnects, failed reconnect attempts
+ * every 30 s — so this is radio-health evidence even when the AP is down. */
+static volatile uint32_t s_wifi_event_s = 0;
+
+uint32_t wifi_last_event_s(void)
+{
+    return s_wifi_event_s;
+}
+
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
 {
+    {
+        uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+        s_wifi_event_s = now_s ? now_s : 1u;
+    }
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
